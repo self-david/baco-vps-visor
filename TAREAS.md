@@ -149,7 +149,7 @@ Estado: **parcial** (respaldos, auditoría operativa limitada y actualización m
 - [ ] Roles.
 - [ ] MFA.
 - [x] Consultar releases estables de GitHub y ofrecer actualización manual verificada de VPS Manager desde el VPS.
-- [ ] Diagnóstico (desde el panel).
+- [x] Mostrar diagnóstico bajo demanda desde el panel para Docker, Swarm, servicios, redes, PostgreSQL y respaldos; conservar el comando SSH para información del host.
 - [ ] Recuperación automática.
 
 **Resultado:** plataforma preparada para producción.

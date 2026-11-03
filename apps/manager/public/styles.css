@@ -77,6 +77,16 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .backup-settings-status, #backup-settings-status { grid-column: 1 / -1; margin: 0; font-size: .76rem; }
 #backups-status { margin: 8px 0; font-size: .78rem; }
 #audit-status { margin: 8px 0; font-size: .78rem; }
+.diagnostic-list { display: grid; gap: 8px; margin-top: 14px; }
+.diagnostic-check { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 4px 12px; padding: 10px 12px; border: 1px solid #263247; border-radius: 8px; background: #0e1521; }
+.diagnostic-check-title { color: #e1e9f5; font-size: .84rem; font-weight: 650; }
+.diagnostic-check-detail { grid-column: 1 / -1; color: #9ba8bc; font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
+.diagnostic-check-state { font-size: .76rem; font-weight: 700; }
+.diagnostic-check-state.status-ok { color: #9fe2b5; }
+.diagnostic-check-state.status-warning { color: #ffcb75; }
+.diagnostic-check-state.status-error { color: #ff9a9a; }
+.diagnostic-note { margin: 14px 0 0; font-size: .78rem; }
+.diagnostic-note code { color: #cbd6e7; }
 .update-note, .update-release-notes { margin: 8px 0; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .update-action { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .update-action code { overflow-wrap: anywhere; padding: 8px 10px; border: 1px solid #34435b; border-radius: 8px; color: #cbd6e7; background: #0e1521; }

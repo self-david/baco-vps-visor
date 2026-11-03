@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { collectContainerMetrics } from "./container-metrics.mjs";
 import { createBackupManager } from "./backup-manager.mjs";
 import { createBackupScheduler } from "./backup-scheduler.mjs";
+import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
@@ -39,6 +40,11 @@ const dockerApi = process.env.DOCKER_API_URL ?? "http://docker-proxy:2375";
 const metricsRetentionDays = 7;
 const backupRetentionDays = 7;
 const backupManager = createBackupManager();
+const collectDiagnostics = createDiagnosticsCollector({
+  dockerGet,
+  getDatabaseStatus,
+  listBackups: () => backupManager.list(),
+});
 const currentVersion = (await readFile(join(root, "VERSION"), "utf8")).trim();
 const updateChecker = createUpdateChecker({
   repository: process.env.VPS_MANAGER_GITHUB_REPOSITORY ?? "self-david/baco-vps-visor",
@@ -545,6 +551,20 @@ const server = createServer(async (request, response) => {
       return;
     }
     respondJson(response, 200, { database: await getDatabaseStatus() });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/system/diagnostics") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      respondJson(response, 200, await collectDiagnostics());
+    } catch (error) {
+      console.error("System diagnostics request failed:", error);
+      respondJson(response, 503, { error: "No se pudo completar el diagnóstico del sistema." });
+    }
     return;
   }
 

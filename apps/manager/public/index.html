@@ -47,6 +47,15 @@
             </div>
             <div id="server-info" class="server-details"></div>
           </section>
+          <section class="card backups-card" aria-labelledby="diagnostics-title">
+            <div class="card-heading">
+              <h3 id="diagnostics-title">Diagnóstico del sistema</h3>
+              <button id="refresh-diagnostics" class="button secondary resource-action" type="button">Ejecutar diagnóstico</button>
+            </div>
+            <p id="diagnostics-status" class="muted" aria-live="polite">Aún no se ha ejecutado.</p>
+            <div id="diagnostics-list" class="diagnostic-list" aria-live="polite"></div>
+            <p class="muted diagnostic-note">El panel comprueba Docker, Swarm, servicios, redes, PostgreSQL y respaldos. Para detalles del sistema operativo, disco y puertos, ejecuta <code>sudo vps-manager-diagnostics</code> por SSH.</p>
+          </section>
           <section class="card backups-card" aria-labelledby="backups-title">
             <div class="card-heading">
               <h3 id="backups-title">Respaldos de PostgreSQL</h3>

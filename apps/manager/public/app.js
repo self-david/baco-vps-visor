@@ -45,6 +45,9 @@ const updatesStatus = document.querySelector("#updates-status");
 const updatesReleaseNotes = document.querySelector("#updates-release-notes");
 const updatesAction = document.querySelector("#updates-action");
 const updateCommand = document.querySelector("#update-command");
+const diagnosticsStatus = document.querySelector("#diagnostics-status");
+const diagnosticsList = document.querySelector("#diagnostics-list");
+const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let metricsLoaded = false;
@@ -681,6 +684,47 @@ async function loadContainerMetrics() {
   }
 }
 
+async function loadDiagnostics() {
+  refreshDiagnosticsButton.disabled = true;
+  diagnosticsStatus.textContent = "Ejecutando comprobaciones…";
+  try {
+    const result = await request("/api/system/diagnostics");
+    diagnosticsList.replaceChildren();
+    const statusLabels = {
+      ok: "Correcto",
+      warning: "Atención",
+      error: "Error",
+    };
+    for (const check of result.checks) {
+      const item = document.createElement("div");
+      item.className = "diagnostic-check";
+      const title = document.createElement("span");
+      title.className = "diagnostic-check-title";
+      title.textContent = check.title;
+      const state = document.createElement("span");
+      state.className = `diagnostic-check-state status-${check.status}`;
+      state.textContent = statusLabels[check.status] ?? "Desconocido";
+      const detail = document.createElement("span");
+      detail.className = "diagnostic-check-detail";
+      detail.textContent = check.detail;
+      item.append(title, state, detail);
+      diagnosticsList.append(item);
+    }
+    const overallLabels = {
+      ok: "Sin problemas detectados",
+      warning: "Revisa las comprobaciones con advertencias",
+      error: "Se detectaron problemas que requieren atención",
+    };
+    const generatedAt = new Date(result.generatedAt).toLocaleString("es-MX");
+    diagnosticsStatus.textContent = `${overallLabels[result.status] ?? "Resultado desconocido"} · ${generatedAt}`;
+  } catch (error) {
+    diagnosticsList.replaceChildren();
+    diagnosticsStatus.textContent = error.message;
+  } finally {
+    refreshDiagnosticsButton.disabled = false;
+  }
+}
+
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
@@ -708,6 +752,7 @@ async function loadResources() {
       loadMetricAlerts(),
       loadBackups(),
       loadAuditLog(),
+      loadDiagnostics(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
@@ -744,6 +789,7 @@ logoutButton.addEventListener("click", async () => {
 });
 
 refreshButton.addEventListener("click", loadResources);
+refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
 document.querySelector("#refresh-history").addEventListener("click", loadMetricsHistory);
 document.querySelector("#refresh-backups").addEventListener("click", loadBackups);

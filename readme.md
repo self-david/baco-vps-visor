@@ -218,11 +218,31 @@ sudo vps-manager-reset-password
 sudo vps-manager-uninstall
 ```
 
+El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de Docker Engine, Swarm, réplicas de los servicios del stack, redes, conexión PostgreSQL y disponibilidad de archivos de respaldo cifrados. No realiza cambios. Los detalles del host que requieren acceso al sistema operativo (Ubuntu, memoria, espacio de disco y puertos) siguen disponibles con `sudo vps-manager-diagnostics` por SSH; el panel conserva el acceso Docker de solo lectura y no recibe privilegios de host.
+
 La comprobación de actualizaciones consulta `GET /repos/{owner}/{repo}/releases/latest` de la API pública de GitHub. Solo considera tags estables `vMAJOR.MINOR.PATCH`; el panel compara esa versión con la versión instalada y muestra las notas y el enlace a la release. Cuando hay una actualización utilizable, el panel permite copiar `sudo vps-manager-update`. La acción no se ejecuta en el navegador: el administrador debe abrir una sesión SSH y ejecutar el comando. Así se conserva el proxy Docker de solo lectura y la API web no recibe privilegios de escritura sobre Swarm.
 
 El comando del VPS obtiene la última release estable y requiere que tenga el asset `vps-manager-source.tar.gz` con un digest SHA-256 publicado por GitHub. Verifica ese digest, valida las rutas del archivo y que `apps/manager/VERSION` coincida con el tag antes de ejecutar el instalador. Antes de actualizar crea un respaldo cifrado de PostgreSQL con la clave Swarm ya configurada; después reconstruye la imagen, despliega la nueva versión y valida el endpoint de salud. Ante un fallo intenta solicitar a Swarm rollback del servicio manager. PostgreSQL y los volúmenes/secretos persistentes no se eliminan.
 
-La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto ya está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador descarga el tag inicial `v0.1.0`. Al momento de documentar este flujo, GitHub confirma que el repositorio es público pero aún no tiene tags ni releases: por ello, el actualizador informa que no hay releases publicadas, y la instalación remota desde un checkout vacío todavía requiere crear/publicar primero el tag `v0.1.0`. Una vez publicado el tag inicial, los tags/releases posteriores habilitarán la detección y actualización.
+La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto ya está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador descarga el tag inicial `v0.1.0`. Si todavía no hay tags ni releases, publica primero `v0.1.0`; después, los tags/releases posteriores habilitarán la detección y actualización.
+
+##### Crear y publicar un tag de release
+
+En PowerShell, desde la raíz del repositorio, verifica que `apps/manager/VERSION` tenga la versión que se va a publicar y que todos los cambios estén confirmados y subidos a GitHub. El tag apunta al commit actual, por lo que no incluirá cambios sin confirmar:
+
+```powershell
+git status
+Get-Content .\apps\manager\VERSION
+```
+
+Para publicar la versión inicial `0.1.0`, crea un tag anotado y súbelo al remoto:
+
+```powershell
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Para cada release posterior, actualiza `apps/manager/VERSION` (por ejemplo, a `0.1.1`), confirma y sube ese cambio, y crea y publica el tag correspondiente (`v0.1.1` en este ejemplo). La versión del archivo debe coincidir exactamente con el tag sin la `v`. Al subir el tag, GitHub Actions ejecuta el workflow de release; revisa la pestaña **Actions** para confirmar que terminó correctamente y que publicó la release con el asset `vps-manager-source.tar.gz`. No reutilices un tag ya publicado.
 
 El comando de cambio de contraseña solicita y confirma una nueva contraseña de al menos 16 caracteres. Actualiza el secreto Swarm y reinicia el servicio del panel; no modifica el secreto de sesión ni los datos persistentes.
 
