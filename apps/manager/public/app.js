@@ -53,6 +53,8 @@ const diagnosticsStatus = document.querySelector("#diagnostics-status");
 const diagnosticsList = document.querySelector("#diagnostics-list");
 const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
 const serviceOperationStatus = document.querySelector("#service-operation-status");
+const tasksList = document.querySelector("#tasks-list");
+const tasksStatus = document.querySelector("#tasks-status");
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let metricsLoaded = false;
@@ -429,10 +431,58 @@ async function loadServiceOperationStatus() {
       const result = await request("/api/docker/services");
       resourceData.services = result.services;
       renderFilteredResources();
+      await loadTaskHistory();
     }
   } catch (error) {
     serviceOperationStatus.textContent = error.message;
     if (serviceOperationPending) scheduleServiceOperationPoll();
+  }
+}
+
+async function loadTaskHistory() {
+  const refreshTasksButton = document.querySelector("#refresh-tasks");
+  refreshTasksButton.disabled = true;
+  tasksStatus.textContent = "Consultando tareas guardadas…";
+  try {
+    const result = await request("/api/system/tasks");
+    tasksList.replaceChildren();
+    const statusLabels = {
+      pending: "Pendiente",
+      in_progress: "En curso",
+      completed: "Completada",
+      failed: "Fallida",
+    };
+    for (const task of result.tasks) {
+      const row = document.createElement("div");
+      row.className = "resource task-row";
+      const main = document.createElement("div");
+      main.className = "resource-main";
+      const title = document.createElement("div");
+      title.className = "resource-name";
+      title.textContent = `Reinicio de ${task.serviceName}`;
+      const details = document.createElement("div");
+      details.className = "resource-detail task-detail";
+      const createdAt = new Date(task.createdAt).toLocaleString("es-MX");
+      const finishedAt = task.completedAt
+        ? ` · finalizada ${new Date(task.completedAt).toLocaleString("es-MX")}`
+        : "";
+      details.textContent = `${statusLabels[task.status] ?? "Estado desconocido"} · ${createdAt}${finishedAt}`;
+      main.append(title, details);
+      row.append(main);
+      if (task.error || task.result?.message) {
+        const message = document.createElement("div");
+        message.className = `task-result${task.status === "failed" ? " status-error" : ""}`;
+        message.textContent = task.error ?? task.result.message;
+        row.append(message);
+      }
+      tasksList.append(row);
+    }
+    tasksStatus.textContent = `${result.tasks.length} tarea(s) recientes · el historial se conserva en PostgreSQL.`;
+  } catch (error) {
+    tasksList.replaceChildren();
+    tasksStatus.textContent = error.message;
+  } finally {
+    refreshTasksButton.disabled = false;
   }
 }
 
@@ -448,6 +498,7 @@ async function requestServiceRestart(service) {
       method: "POST",
     });
     serviceOperationStatus.textContent = `${result.serviceName}: reinicio en cola.`;
+    await loadTaskHistory();
     scheduleServiceOperationPoll();
   } catch (error) {
     serviceOperationPending = false;
@@ -952,6 +1003,7 @@ async function loadResources() {
       loadAuditLog(),
       loadDiagnostics(),
       loadServiceOperationStatus(),
+      loadTaskHistory(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
@@ -994,6 +1046,7 @@ document.querySelector("#refresh-history").addEventListener("click", loadMetrics
 document.querySelector("#refresh-backups").addEventListener("click", loadBackups);
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
+document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
 webUpdateButton.addEventListener("click", startWebUpdate);
 document.querySelector("#copy-update-command").addEventListener("click", async () => {
   try {

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { evaluateContainerMetricAlerts } from "./metric-alerts.mjs";
 import { evaluateOperationalAlerts } from "./operational-alerts.mjs";
+import { createServiceTaskStore } from "./service-task-store.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(root, "database", "migrations");
@@ -17,6 +18,7 @@ if (!databasePassword) {
 }
 
 let pool;
+let serviceTaskStore;
 let databaseReady = false;
 
 function sleep(milliseconds) {
@@ -36,6 +38,7 @@ export async function initDatabase() {
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 5_000,
   });
+  serviceTaskStore = createServiceTaskStore({ pool, insertAuditEvent });
   pool.on("error", (error) => {
     databaseReady = false;
     console.error("PostgreSQL pool error:", error.message);
@@ -195,6 +198,18 @@ export async function getRecentAuditEvents() {
     details: row.details,
     createdAt: row.created_at.toISOString(),
   }));
+}
+
+export async function createServiceRestartTask(task) {
+  return serviceTaskStore.createRestartTask(task);
+}
+
+export async function updateServiceRestartTask(id, state, message) {
+  return serviceTaskStore.updateRestartTask(id, state, message);
+}
+
+export async function getRecentServiceRestartTasks(limit = 50) {
+  return serviceTaskStore.listRecentRestartTasks(limit);
 }
 
 export async function getBackupIntervalHours() {

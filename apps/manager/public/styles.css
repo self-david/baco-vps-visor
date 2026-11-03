@@ -70,6 +70,10 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .resource-action { flex: 0 0 auto; padding: 6px 9px; font-size: .78rem; }
 .resource-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
 .operation-status { min-height: 1.2em; margin: 10px 0 0; font-size: .8rem; }
+.task-row { display: grid; gap: 6px; }
+.task-detail { white-space: normal; }
+.task-result { color: #9fe2b5; font-size: .8rem; overflow-wrap: anywhere; }
+.task-result.status-error { color: #ff9a9a; }
 .container-heading-actions { display: flex; align-items: center; gap: 8px; }
 .metrics-status { min-height: 1.2em; margin: 8px 0 0; font-size: .78rem; }
 .metrics-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 10px; }

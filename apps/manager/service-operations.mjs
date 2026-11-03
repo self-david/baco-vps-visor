@@ -101,9 +101,12 @@ export function createServiceOperationAgent({
     return status ?? null;
   }
 
-  async function requestRestart(serviceId) {
+  async function requestRestart(serviceId, requestId = createId()) {
     if (typeof serviceId !== "string" || !serviceIdPattern.test(serviceId)) {
       throw new TypeError("A full Docker Swarm service identifier is required.");
+    }
+    if (!requestIdPattern.test(requestId)) {
+      throw new Error("The service operation request identifier is invalid.");
     }
     const currentStatus = await getStatus();
     if (activeStates.has(currentStatus?.state)) {
@@ -112,12 +115,8 @@ export function createServiceOperationAgent({
       throw error;
     }
 
-    const id = createId();
-    if (!requestIdPattern.test(id)) {
-      throw new Error("The service operation agent generated an invalid request identifier.");
-    }
-    const request = JSON.stringify({ id, operation: "restart-service", serviceId });
-    const temporaryPath = join(directory, `.request-${id}.tmp`);
+    const request = JSON.stringify({ id: requestId, operation: "restart-service", serviceId });
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
     try {
       await writeFile(temporaryPath, `${request}\n`, { flag: "wx", mode: 0o600 });
       await link(temporaryPath, requestPath);
@@ -135,7 +134,7 @@ export function createServiceOperationAgent({
     }
 
     return {
-      id,
+      id: requestId,
       state: "queued",
       serviceId,
       message: "Solicitud aceptada; el reinicio comenzará en el VPS.",

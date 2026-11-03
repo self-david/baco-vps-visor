@@ -302,14 +302,35 @@ fi
 
 log "Esperando que el panel responda por ${PANEL_SCHEME^^}."
 panel_ready=false
+consecutive_ready_checks=0
+last_root_status="000"
+last_app_status="000"
+last_styles_status="000"
+last_health_status="000"
 for attempt in $(seq 1 36); do
-  if health_response="$(curl -fsS --connect-timeout 5 --max-time 10 "${PANEL_SCHEME}://${DOMAIN}/api/health" 2>/dev/null)" && [[ "${health_response}" == *'"status":"ok"'* ]]; then
-    panel_ready=true
-    break
+  panel_url="${PANEL_SCHEME}://${DOMAIN}"
+  last_root_status="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "${panel_url}/" 2>/dev/null || true)"
+  last_app_status="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "${panel_url}/app.js" 2>/dev/null || true)"
+  last_styles_status="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "${panel_url}/styles.css" 2>/dev/null || true)"
+  health_result="$(curl -sS -w $'\n%{http_code}' --connect-timeout 2 --max-time 3 "${panel_url}/api/health" 2>/dev/null || true)"
+  last_health_status="${health_result##*$'\n'}"
+  health_response="${health_result%$'\n'*}"
+  if [[ "${last_root_status}" == "200" && "${last_app_status}" == "200" && "${last_styles_status}" == "200" ]] \
+    && [[ "${last_health_status}" == "200" ]] \
+    && [[ "${health_response}" == *'"status":"ok"'* ]]; then
+    consecutive_ready_checks=$((consecutive_ready_checks + 1))
+    log "Panel y recursos disponibles (${consecutive_ready_checks}/3 comprobaciones consecutivas)."
+    if (( consecutive_ready_checks >= 3 )); then
+      panel_ready=true
+      break
+    fi
+  else
+    consecutive_ready_checks=0
   fi
-  sleep 5
+  sleep 3
 done
 if [[ "${panel_ready}" != "true" ]]; then
+  log "Últimos códigos HTTP: /=${last_root_status}, /app.js=${last_app_status}, /styles.css=${last_styles_status}, /api/health=${last_health_status}."
   docker service logs --tail 100 "${STACK_NAME}_traefik" || true
   docker service logs --tail 100 "${STACK_NAME}_manager" || true
   if [[ "${TEST_MODE}" == "true" ]]; then

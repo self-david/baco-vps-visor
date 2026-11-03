@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile, statfs } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
@@ -17,6 +17,7 @@ import {
   getContainerMetricsHistory,
   getContainerMetricAlerts,
   getRecentAuditEvents,
+  getRecentServiceRestartTasks,
   getBackupIntervalHours,
   getOperationalAlerts,
   getDatabaseStatus,
@@ -26,6 +27,8 @@ import {
   saveContainerRestartSamples,
   saveContainerMetrics,
   recordAuditEvent,
+  createServiceRestartTask,
+  updateServiceRestartTask,
   updateMetricAlertThresholds,
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
@@ -658,10 +661,32 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      respondJson(response, 200, { operation: await serviceOperationAgent.getStatus() });
+      const operation = await serviceOperationAgent.getStatus();
+      if (operation && operation.state !== "queued") {
+        await updateServiceRestartTask(operation.id, operation.state, operation.message);
+      }
+      respondJson(response, 200, { operation });
     } catch (error) {
       console.error("Service operation status request failed:", error);
       respondJson(response, 503, { error: "No se pudo consultar el estado de la operación." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/system/tasks") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const operation = await serviceOperationAgent.getStatus();
+      if (operation && operation.state !== "queued") {
+        await updateServiceRestartTask(operation.id, operation.state, operation.message);
+      }
+      respondJson(response, 200, { tasks: await getRecentServiceRestartTasks() });
+    } catch (error) {
+      console.error("Task history request failed:", error);
+      respondJson(response, 503, { error: "No se pudo consultar o actualizar el historial de tareas." });
     }
     return;
   }
@@ -1009,17 +1034,25 @@ const server = createServer(async (request, response) => {
           }
           throw error;
         }
-        const operation = await serviceOperationAgent.requestRestart(service.ID);
-        const audited = await recordAuditEventOrRespond(response, {
-          action: "service.restart.requested",
-          resourceType: "service",
-          resourceId: service.ID,
-          details: { serviceName: service.Spec?.Name ?? "unknown", operationId: operation.id },
-        }, "La solicitud de reinicio");
-        if (!audited) return;
+        const taskId = randomUUID();
+        const serviceName = service.Spec?.Name ?? "unknown";
+        try {
+          await createServiceRestartTask({ id: taskId, serviceId: service.ID, serviceName });
+        } catch (error) {
+          console.error("Could not persist the service restart task:", error);
+          respondJson(response, 503, { error: "No se pudo guardar la tarea; no se envió el reinicio al host." });
+          return;
+        }
+        let operation;
+        try {
+          operation = await serviceOperationAgent.requestRestart(service.ID, taskId);
+        } catch (error) {
+          await updateServiceRestartTask(taskId, "failed", error.message);
+          throw error;
+        }
         respondJson(response, 202, {
           operation,
-          serviceName: service.Spec?.Name ?? "unknown",
+          serviceName,
         });
         return;
       }

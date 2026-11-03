@@ -50,7 +50,8 @@ Estado: **parcial**
 - [x] Implementar consulta de Docker.
 - [x] Implementar reinicio autenticado y auditado de servicios administrados con confirmación y estado de resultado.
 - [ ] Implementar otras operaciones permitidas de escritura mediante una lista explícita.
-- [ ] Crear sistema general de tareas persistentes; el reinicio actual conserva solo el estado de su última operación.
+- [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
+- [ ] Ampliar el sistema a una cola general con reintentos y recuperación de distintas clases de tareas.
 
 **Resultado:** backend capaz de administrar Docker.
 
