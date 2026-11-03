@@ -124,7 +124,9 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
             continue
         if member.name.startswith("/") or any(part in ("", ".", "..") for part in parts):
             raise SystemExit("El archivo contiene una ruta no segura.")
-        if not member.name.startswith("vps-manager/"):
+        if name == "vps-manager" and not member.isdir():
+            raise SystemExit("El archivo contiene una entrada raíz no válida.")
+        if name != "vps-manager" and not member.name.startswith("vps-manager/"):
             raise SystemExit("El archivo no contiene el prefijo esperado.")
         if not (member.isdir() or member.isfile()):
             raise SystemExit("El archivo contiene un tipo de entrada no permitido.")
