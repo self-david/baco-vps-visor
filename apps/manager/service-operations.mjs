@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { lstat, link, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, link, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
-const allowedOperations = new Set(["restart-service", "scale-service", "install-gitea"]);
+const allowedOperations = new Set(["restart-service", "scale-service", "install-gitea", "configure-gitea-token"]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
@@ -78,7 +78,7 @@ function validateStatus(status) {
     || (status.operation !== undefined && !allowedOperations.has(status.operation))
     || (status.operation === "install-gitea"
       ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
-      : !serviceIdPattern.test(status.serviceId ?? ""))
+      : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))) {
     throw new Error("The service operation status file has an invalid format.");
@@ -88,6 +88,7 @@ function validateStatus(status) {
 
 export function createServiceOperationAgent({
   directory = process.env.SERVICE_OPERATIONS_DIRECTORY ?? "/var/lib/vps-manager/service-operations",
+  giteaApiTokenPath = process.env.GITEA_API_TOKEN_FILE ?? "/run/secrets/gitea_api_token",
   createId = randomUUID,
 } = {}) {
   const requestPath = join(directory, "request.json");
@@ -128,7 +129,9 @@ export function createServiceOperationAgent({
         && allowedOperations.has(queuedRequest.operation)
         && (queuedRequest.operation === "install-gitea"
           ? isPublicHostname(queuedRequest.domain)
-          : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
+          : queuedRequest.operation === "configure-gitea-token"
+            ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
+            : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
       if (!validCommonFields) {
         throw new Error("The service operation request file has an invalid format.");
       }
@@ -136,6 +139,8 @@ export function createServiceOperationAgent({
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
       const expectedFields = queuedRequest.operation === "install-gitea"
         ? ["id", "operation", "domain"]
+        : queuedRequest.operation === "configure-gitea-token"
+          ? ["id", "operation", "token"]
         : queuedRequest.operation === "scale-service"
         ? ["id", "operation", "serviceId", "replicas"]
         : ["id", "operation", "serviceId"];
@@ -150,10 +155,14 @@ export function createServiceOperationAgent({
           operation: queuedRequest.operation,
           ...(queuedRequest.operation === "install-gitea"
             ? { domain: queuedRequest.domain }
-            : { serviceId: queuedRequest.serviceId }),
+            : queuedRequest.operation === "configure-gitea-token"
+              ? {}
+              : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
           message: queuedRequest.operation === "install-gitea"
             ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
+            : queuedRequest.operation === "configure-gitea-token"
+              ? "Configuración del token de Gitea aceptada; esperando al agente del VPS."
             : queuedRequest.operation === "scale-service"
             ? "Solicitud aceptada; esperando que el agente del VPS escale el servicio."
             : "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
@@ -278,6 +287,63 @@ export function createServiceOperationAgent({
     };
   }
 
+  async function requestGiteaApiToken(token, requestId = createId()) {
+    if (typeof token !== "string" || !/^[A-Za-z0-9._-]{20,512}$/.test(token)) {
+      throw new TypeError("El token de Gitea debe contener entre 20 y 512 caracteres válidos.");
+    }
+    if (!requestIdPattern.test(requestId)) {
+      throw new Error("The service operation request identifier is invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify({
+        id: requestId,
+        operation: "configure-gitea-token",
+        token,
+      })}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      state: "queued",
+      operation: "configure-gitea-token",
+      message: "Configuración del token de Gitea aceptada; el agente del VPS iniciará el cambio.",
+    };
+  }
+
+  async function hasGiteaApiToken() {
+    try {
+      const metadata = await stat(giteaApiTokenPath);
+      if (!metadata.isFile()) throw new Error("The Gitea API token secret must be a regular file.");
+      const token = await readFile(giteaApiTokenPath, "utf8");
+      if (token === "NOT_CONFIGURED") return false;
+      if (!/^[A-Za-z0-9._-]{20,512}$/.test(token)) {
+        throw new Error("The Gitea API token secret has an invalid format.");
+      }
+      return true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
   async function hasGiteaCredentials(requestId) {
     if (!requestIdPattern.test(requestId ?? "")) return false;
     const path = credentialsPath(requestId);
@@ -349,5 +415,7 @@ export function createServiceOperationAgent({
     requestScale: (serviceId, replicas, requestId = createId()) =>
       requestOperation("scale-service", serviceId, requestId, replicas),
     requestGiteaInstall,
+    requestGiteaApiToken,
+    hasGiteaApiToken,
   };
 }

@@ -130,12 +130,37 @@ import "../styles/tailwind.css";
               <ApplicationRequirementNotice
                 applicationName="Gitea"
                 feature="los proyectos Git"
-                detail="La conexión de repositorios dependerá de Gitea. La instalación automática desde el catálogo todavía está en desarrollo."
+                detail="Instala Gitea y conecta un token para asociar repositorios y ramas de producción."
               />
-              <section class="card roadmap-card">
-                <div class="card-heading"><h3>Proyectos Git</h3><span class="badge roadmap-badge">Próximamente</span></div>
-                <p class="muted">Registra repositorios para preparar y administrar despliegues propios.</p>
-                <ul class="roadmap-list"><li>Conectar repositorios Git y credenciales seguras</li><li>Seleccionar ramas y configurar webhooks</li><li>Construir imágenes con BuildKit</li><li>Desplegar en Swarm y consultar historial o rollback</li></ul>
+              <section class="card backups-card" aria-labelledby="projects-title">
+                <div class="card-heading">
+                  <h3 id="projects-title">Proyectos Git</h3>
+                  <span class="badge">Sin despliegue</span>
+                </div>
+                <p class="muted">Asocia cada proyecto con un repositorio privado de Gitea y una rama de producción. Esta fase solo registra la configuración; los pushes todavía no construyen ni despliegan servicios.</p>
+                <form id="project-form" class="gitea-form hidden">
+                  <h4 id="project-form-title">Registrar proyecto</h4>
+                  <input id="project-id" name="id" type="hidden">
+                  <label for="project-name">Nombre</label>
+                  <input id="project-name" name="name" type="text" pattern="[A-Za-z0-9][A-Za-z0-9._ -]{0,99}" maxLength="100" required>
+                  <label for="project-description">Descripción (opcional)</label>
+                  <input id="project-description" name="description" type="text" maxLength="500">
+                  <label for="project-repository">Repositorio</label>
+                  <select id="project-repository" name="repository" required>
+                    <option value="">Conecta Gitea para consultar repositorios</option>
+                  </select>
+                  <label for="project-production-branch">Rama de producción</label>
+                  <select id="project-production-branch" name="productionBranch" disabled required>
+                    <option value="">Selecciona un repositorio</option>
+                  </select>
+                  <p id="project-form-status" class="muted" role="status" aria-live="polite"></p>
+                  <div class="container-heading-actions">
+                    <button id="project-save" class="button" type="submit">Registrar proyecto</button>
+                    <button id="project-cancel-edit" class="button secondary hidden" type="button">Cancelar edición</button>
+                  </div>
+                </form>
+                <p id="projects-status" class="muted" role="status" aria-live="polite">Consultando proyectos…</p>
+                <div id="projects-list" class="resource-list"></div>
               </section>
             </div>
           </section>

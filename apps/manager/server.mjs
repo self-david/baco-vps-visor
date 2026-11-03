@@ -25,12 +25,24 @@ import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
 import {
+  createGiteaClient,
+  validateRepositoryInput,
+  validateRepositoryReference,
+} from "./gitea-client.mjs";
+import { createGiteaWebhookProcessor, deriveGiteaWebhookSecret } from "./gitea-webhooks.mjs";
+import { validateProjectId, validateProjectInput } from "./project-manager.mjs";
+import {
   getContainerMetricsHistory,
   getContainerMetricAlerts,
   getRecentAuditEvents,
   getRecentTasks,
   getTaskById,
   getLatestTaskByType,
+  getProjects,
+  getProject,
+  createProject,
+  updateProject,
+  deleteProject,
   getBackupIntervalHours,
   getOperationalAlerts,
   getDatabaseStatus,
@@ -44,6 +56,7 @@ import {
   saveContainerRestartSamples,
   saveContainerMetrics,
   recordAuditEvent,
+  recordGiteaWebhookDelivery,
   createGiteaInstallTask,
   createServiceRestartTask,
   createServiceScaleTask,
@@ -115,6 +128,11 @@ const sessionKey = Buffer.from(
 if (!/^[a-f0-9]{64}$/i.test(sessionKey.toString("hex"))) {
   throw new Error("The session key secret must contain 32 bytes encoded as hex.");
 }
+
+const processGiteaWebhook = createGiteaWebhookProcessor({
+  signingKey: sessionKey,
+  recordDelivery: recordGiteaWebhookDelivery,
+});
 
 const [passwordSalt, passwordHash] = credentials.split(":");
 if (!/^[a-f0-9]{32}$/i.test(passwordSalt ?? "") || !/^[a-f0-9]{128}$/i.test(passwordHash ?? "")) {
@@ -218,6 +236,17 @@ async function readJson(request) {
   } catch {
     throw new RequestError(400, "Invalid JSON request body.");
   }
+}
+
+async function readRawBody(request, maximumBytes = 1_048_576) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > maximumBytes) throw new RequestError(413, "Request body exceeds 1 MB.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function clientKey(request) {
@@ -496,6 +525,11 @@ async function getGiteaApplicationState() {
   const domain = !testMode && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
   const latestTask = await getLatestTaskByType("application.gitea.install");
   const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
+  const apiTokenConfigured = installed && await serviceOperationAgent.hasGiteaApiToken();
+  const agentStatus = await serviceOperationAgent.getStatus();
+  const tokenOperation = agentStatus?.operation === "configure-gitea-token"
+    ? { state: agentStatus.state, message: agentStatus.message }
+    : null;
   const credentialsAvailable = latestTask?.status === "completed"
     && latestTask.result?.credentialsAvailable === true
     && await serviceOperationAgent.hasGiteaCredentials(latestTask.id);
@@ -510,6 +544,8 @@ async function getGiteaApplicationState() {
       installed,
       installing,
       nameConflict,
+      apiTokenConfigured,
+      tokenOperation,
       credentialsAvailable,
       latestTask: latestTask ? {
         id: latestTask.id,
@@ -522,6 +558,33 @@ async function getGiteaApplicationState() {
       } : null,
     },
   };
+}
+
+async function getGiteaApiContext() {
+  const { application } = await getGiteaApplicationState();
+  if (!application.installed || !application.domain) {
+    throw new RequestError(409, "Gitea no está instalado con un dominio público.");
+  }
+  if (!application.apiTokenConfigured) {
+    throw new RequestError(409, "Conecta primero un token válido de Gitea.");
+  }
+  const token = await readFile(
+    process.env.GITEA_API_TOKEN_FILE ?? "/run/secrets/gitea_api_token",
+    "utf8",
+  );
+  return { application, client: createGiteaClient({ domain: application.domain }), token };
+}
+
+async function validateProjectSource(client, token, project) {
+  const repositories = await client.listRepositories(token);
+  const repository = repositories.find((item) => item.fullName === project.repository);
+  if (!repository) {
+    throw new RequestError(404, "No se encontró el repositorio en la cuenta conectada.");
+  }
+  const branches = await client.listBranches(token, repository.fullName);
+  if (!branches.some((branch) => branch.name === project.productionBranch)) {
+    throw new RequestError(409, "La rama de producción seleccionada ya no existe en el repositorio.");
+  }
 }
 
 async function getStacks() {
@@ -605,6 +668,41 @@ async function serveStatic(pathname, response) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://localhost");
 
+  if (url.pathname === "/api/webhooks/gitea") {
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    try {
+      const result = await processGiteaWebhook({
+        body: await readRawBody(request),
+        deliveryId: request.headers["x-gitea-delivery"],
+        event: request.headers["x-gitea-event"],
+        signature: request.headers["x-gitea-signature"],
+      });
+      respondJson(response, 202, {
+        accepted: true,
+        duplicate: result.duplicate,
+      });
+    } catch (error) {
+      if (error?.code === "INVALID_WEBHOOK") {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error?.code === "INVALID_WEBHOOK_SIGNATURE") {
+        respondJson(response, 401, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: "El webhook supera el límite de tamaño permitido." });
+        return;
+      }
+      console.error("Could not record Gitea webhook delivery:", error);
+      respondJson(response, 503, { error: "No se pudo registrar la entrega del webhook." });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/health") {
     const database = await getDatabaseStatus();
     if (!database.connected) {
@@ -617,6 +715,149 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/auth/session") {
     respondJson(response, 200, { authenticated: hasSession(request) });
+    return;
+  }
+
+  if (url.pathname === "/api/projects") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        respondJson(response, 200, { projects: await getProjects() });
+      } catch (error) {
+        console.error("Could not list projects:", error);
+        respondJson(response, 503, { error: "No se pudieron consultar los proyectos." });
+      }
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const projectInput = validateProjectInput(await readJson(request));
+      const { client, token } = await getGiteaApiContext();
+      await validateProjectSource(client, token, projectInput);
+      const project = await createProject(projectInput);
+      respondJson(response, 201, { project });
+    } catch (error) {
+      const status = {
+        INVALID_PROJECT: 400,
+        INVALID_REPOSITORY: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITEA_REQUEST_CONFLICT: 409,
+        GITEA_BRANCH_NOT_FOUND: 409,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_BRANCHES: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      if (error?.code === "23505") {
+        respondJson(response, 409, { error: "Ya existe un proyecto con ese nombre o repositorio." });
+        return;
+      }
+      console.error("Could not create project:", error);
+      respondJson(response, 503, { error: "No se pudo registrar el proyecto." });
+    }
+    return;
+  }
+
+  const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+  if (projectMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        const project = await getProject(projectId);
+        respondJson(response, project ? 200 : 404, project
+          ? { project }
+          : { error: "No se encontró el proyecto." });
+      } catch (error) {
+        console.error("Could not retrieve project:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el proyecto." });
+      }
+      return;
+    }
+    if (request.method !== "PATCH" && request.method !== "DELETE") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, PATCH, DELETE" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    if (request.method === "DELETE") {
+      try {
+        const deleted = await deleteProject(projectId);
+        respondJson(response, deleted ? 200 : 404, deleted
+          ? { deleted: true }
+          : { error: "No se encontró el proyecto." });
+      } catch (error) {
+        console.error("Could not delete project:", error);
+        respondJson(response, 503, { error: "No se pudo eliminar el proyecto." });
+      }
+      return;
+    }
+    try {
+      const projectInput = validateProjectInput(await readJson(request));
+      const { client, token } = await getGiteaApiContext();
+      await validateProjectSource(client, token, projectInput);
+      const project = await updateProject(projectId, projectInput);
+      respondJson(response, project ? 200 : 404, project
+        ? { project }
+        : { error: "No se encontró el proyecto." });
+    } catch (error) {
+      const status = {
+        INVALID_PROJECT: 400,
+        INVALID_REPOSITORY: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITEA_REQUEST_CONFLICT: 409,
+        GITEA_BRANCH_NOT_FOUND: 409,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_BRANCHES: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      if (error?.code === "23505") {
+        respondJson(response, 409, { error: "Ya existe un proyecto con ese nombre o repositorio." });
+        return;
+      }
+      console.error("Could not update project:", error);
+      respondJson(response, 503, { error: "No se pudo actualizar el proyecto." });
+    }
     return;
   }
 
@@ -806,6 +1047,357 @@ const server = createServer(async (request, response) => {
       return;
     }
     respond(response, 405, "Method not allowed", { Allow: "GET, POST" });
+    return;
+  }
+
+  if (url.pathname === "/api/system/applications/gitea/token") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !Object.hasOwn(body, "token")
+        || typeof body.token !== "string" || !/^[A-Za-z0-9._-]{20,512}$/.test(body.token)) {
+        respondJson(response, 400, { error: "Proporciona un token de Gitea válido, de 20 a 512 caracteres." });
+        return;
+      }
+      const { application } = await getGiteaApplicationState();
+      if (!application.installed || !application.domain) {
+        respondJson(response, 409, { error: "Instala Gitea con un dominio público antes de conectarlo." });
+        return;
+      }
+      const client = createGiteaClient({ domain: application.domain });
+      try {
+        await client.verifyToken(body.token);
+      } catch (error) {
+        const status = {
+          GITEA_TOKEN_INVALID: 400,
+          GITEA_TOKEN_FORBIDDEN: 403,
+          GITEA_UNAVAILABLE: 502,
+        }[error?.code];
+        if (status) {
+          respondJson(response, status, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      const operation = await serviceOperationAgent.requestGiteaApiToken(body.token);
+      const audited = await recordAuditEventOrRespond(response, {
+        action: "application.gitea.token_configuration.requested",
+        resourceType: "application",
+        resourceId: "gitea",
+        details: { operationId: operation.id },
+      }, "La configuración del token de Gitea");
+      if (!audited) return;
+      respondJson(response, 202, {
+        operation: {
+          id: operation.id,
+          state: operation.state,
+          message: "Token validado. Se guardará como secreto Swarm y el panel se reiniciará para montarlo.",
+        },
+      });
+    } catch (error) {
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not configure Gitea API token:", error);
+      respondJson(response, 503, { error: "No se pudo configurar el token de Gitea." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/system/applications/gitea/repositories" && request.method === "GET") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const { client, token } = await getGiteaApiContext();
+      const repositories = await client.listRepositories(token);
+      respondJson(response, 200, { repositories });
+    } catch (error) {
+      const status = {
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not list Gitea repositories:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar los repositorios de Gitea." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/system/applications/gitea/repositories") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const repositoryInput = validateRepositoryInput(await readJson(request));
+      const { application } = await getGiteaApplicationState();
+      if (!application.installed || !application.domain) {
+        respondJson(response, 409, { error: "Gitea no está instalado con un dominio público." });
+        return;
+      }
+      if (!application.apiTokenConfigured) {
+        respondJson(response, 409, { error: "Conecta primero un token de Gitea con permiso para crear repositorios." });
+        return;
+      }
+      const token = await readFile(
+        process.env.GITEA_API_TOKEN_FILE ?? "/run/secrets/gitea_api_token",
+        "utf8",
+      );
+      const client = createGiteaClient({ domain: application.domain });
+      let repository;
+      try {
+        repository = await client.createRepository(token, repositoryInput);
+      } catch (error) {
+        const status = {
+          GITEA_TOKEN_INVALID: 401,
+          GITEA_TOKEN_FORBIDDEN: 403,
+          GITEA_REPOSITORY_EXISTS: 409,
+          GITEA_UNAVAILABLE: 502,
+        }[error?.code];
+        if (status) {
+          respondJson(response, status, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      const audited = await recordAuditEventOrRespond(response, {
+        action: "application.gitea.repository.created",
+        resourceType: "repository",
+        resourceId: repository.name,
+        details: { url: repository.url, visibility: "private" },
+      }, "La creación del repositorio");
+      if (!audited) return;
+      respondJson(response, 201, { repository });
+    } catch (error) {
+      if (error instanceof TypeError && error.code === "INVALID_REPOSITORY") {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not create Gitea repository:", error);
+      respondJson(response, 503, { error: "No se pudo crear el repositorio en Gitea." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/system/applications/gitea/branches") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const repositoryReference = validateRepositoryReference(url.searchParams.get("repository"));
+      const { client, token } = await getGiteaApiContext();
+      const repositories = await client.listRepositories(token);
+      const repository = repositories.find((item) => item.fullName === repositoryReference.fullName);
+      if (!repository) {
+        respondJson(response, 404, { error: "No se encontró el repositorio en la cuenta conectada." });
+        return;
+      }
+      const branches = await client.listBranches(token, repository.fullName);
+      respondJson(response, 200, { repository, branches });
+    } catch (error) {
+      const status = {
+        INVALID_REPOSITORY: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_BRANCHES: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not list Gitea repository branches:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar las ramas de Gitea." });
+    }
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname === "/api/system/applications/gitea/default-branch") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 2
+        || !Object.hasOwn(body, "repository") || !Object.hasOwn(body, "branch")) {
+        respondJson(response, 400, { error: "Indica el repositorio y la rama predeterminada." });
+        return;
+      }
+      const reference = validateRepositoryReference(body.repository);
+      if (typeof body.branch !== "string" || body.branch.length < 1 || body.branch.length > 255
+        || /[\u0000-\u001f\u007f]/.test(body.branch)) {
+        respondJson(response, 400, { error: "Selecciona una rama válida de Gitea." });
+        return;
+      }
+      const { client, token } = await getGiteaApiContext();
+      const repositories = await client.listRepositories(token);
+      const repository = repositories.find((item) => item.fullName === reference.fullName);
+      if (!repository) {
+        respondJson(response, 404, { error: "No se encontró el repositorio en la cuenta conectada." });
+        return;
+      }
+      if (!repository.canAdmin) {
+        respondJson(response, 403, { error: "El token no tiene permisos de administración para cambiar la rama predeterminada." });
+        return;
+      }
+      const result = await client.setDefaultBranch(token, repository.fullName, body.branch);
+      const audited = await recordAuditEventOrRespond(response, {
+        action: "application.gitea.default_branch.updated",
+        resourceType: "repository",
+        resourceId: repository.fullName,
+        details: { defaultBranch: result.defaultBranch },
+      }, "El cambio de rama predeterminada");
+      if (!audited) return;
+      respondJson(response, 200, { repository: result });
+    } catch (error) {
+      const status = {
+        INVALID_REPOSITORY: 400,
+        INVALID_BRANCH: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITEA_REQUEST_CONFLICT: 409,
+        GITEA_BRANCH_NOT_FOUND: 409,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_BRANCHES: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not change Gitea repository default branch:", error);
+      respondJson(response, 503, { error: "No se pudo cambiar la rama predeterminada de Gitea." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/system/applications/gitea/webhooks") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !Object.hasOwn(body, "repository")) {
+        respondJson(response, 400, { error: "Indica el repositorio para configurar el webhook." });
+        return;
+      }
+      const reference = validateRepositoryReference(body.repository);
+      const { client, token } = await getGiteaApiContext();
+      const repositories = await client.listRepositories(token);
+      const repository = repositories.find((item) => item.fullName === reference.fullName);
+      if (!repository) {
+        respondJson(response, 404, { error: "No se encontró el repositorio en la cuenta conectada." });
+        return;
+      }
+      if (!repository.canAdmin) {
+        respondJson(response, 403, { error: "El token no tiene permisos de administración para configurar webhooks." });
+        return;
+      }
+      if (testMode || !isPublicHostname(managerDomain)) {
+        respondJson(response, 409, { error: "Configura un dominio público para VPS Manager antes de crear webhooks." });
+        return;
+      }
+      const endpoint = `https://${managerDomain}/api/webhooks/gitea`;
+      const secret = deriveGiteaWebhookSecret(sessionKey, repository.fullName);
+      const webhook = await client.configurePushWebhook(token, repository.fullName, endpoint, secret);
+      const audited = await recordAuditEventOrRespond(response, {
+        action: "application.gitea.webhook.configured",
+        resourceType: "repository",
+        resourceId: repository.fullName,
+        details: { endpoint, events: webhook.events, updated: webhook.updated },
+      }, "La configuración del webhook");
+      if (!audited) return;
+      respondJson(response, 200, {
+        webhook: {
+          url: webhook.url,
+          active: webhook.active,
+          events: webhook.events,
+          updated: webhook.updated,
+        },
+      });
+    } catch (error) {
+      const status = {
+        INVALID_REPOSITORY: 400,
+        INVALID_WEBHOOK: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITEA_REQUEST_CONFLICT: 409,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_WEBHOOKS: 422,
+        GITEA_UNAVAILABLE: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not configure Gitea webhook:", error);
+      respondJson(response, 503, { error: "No se pudo configurar el webhook de Gitea." });
+    }
     return;
   }
 

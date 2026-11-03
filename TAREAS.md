@@ -76,15 +76,15 @@ Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migr
 
 ## Fase 4 — Gitea
 
-Estado: **instalador implementado; falta validar en un VPS con dominio público**
+Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; falta validar en un VPS con dominio público**
 
 - [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
 - [x] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
 - [x] Configurar SSH.
-- [ ] Crear repositorios.
-- [ ] Administrar ramas.
-- [ ] Configurar webhooks.
-- [ ] Integrar repositorios con proyectos.
+- [x] Crear repositorios privados desde el panel, con token almacenado como secreto Swarm versionado y conservado en actualizaciones del stack.
+- [x] Consultar ramas de repositorios Gitea y cambiar la rama predeterminada desde el panel, con permisos de administración y auditoría.
+- [x] Configurar webhooks de push autenticados e idempotentes; registrar eventos sin desplegar proyectos todavía.
+- [x] Integrar repositorios privados y ramas existentes con registros de proyectos; sin activar despliegues todavía.
 
 **Resultado:** servidor Git privado.
 

@@ -148,6 +148,47 @@ test("queues a Gitea install request without credentials and reveals generated c
   }
 });
 
+test("queues the Gitea API token only for the host agent and reports secret mount status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vps-service-operations-"));
+  const tokenPath = join(directory, "gitea-api-token");
+  const agent = createServiceOperationAgent({ directory, giteaApiTokenPath: tokenPath });
+  const token = "gta_0123456789abcdef0123456789abcdef01234567";
+  try {
+    const operation = await agent.requestGiteaApiToken(token);
+    const queued = JSON.parse(await readFile(join(directory, "request.json"), "utf8"));
+    assert.equal(queued.id, operation.id);
+    assert.equal(queued.operation, "configure-gitea-token");
+    assert.equal(queued.token, token);
+    assert.equal(Object.hasOwn(operation, "token"), false);
+    assert.equal(Object.hasOwn(await agent.getStatus(), "token"), false);
+    await rm(join(directory, "request.json"));
+    await writeFile(join(directory, "status.json"), JSON.stringify({
+      id: operation.id,
+      operation: "configure-gitea-token",
+      state: "succeeded",
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Token configurado.",
+    }));
+    assert.deepEqual(await agent.getStatus(), {
+      id: operation.id,
+      operation: "configure-gitea-token",
+      state: "succeeded",
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Token configurado.",
+    });
+    await assert.rejects(agent.requestGiteaApiToken("invalid"), /20 y 512 caracteres/);
+    assert.equal(await agent.hasGiteaApiToken(), false);
+    await writeFile(tokenPath, "NOT_CONFIGURED");
+    assert.equal(await agent.hasGiteaApiToken(), false);
+    await writeFile(tokenPath, token);
+    assert.equal(await agent.hasGiteaApiToken(), true);
+    await writeFile(tokenPath, "malformed-token");
+    await assert.rejects(agent.hasGiteaApiToken(), /invalid format/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects malformed service IDs before creating a request", async () => {
   const fixture = await createFixture();
   try {

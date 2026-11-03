@@ -182,6 +182,133 @@ export async function recordAuditEvent(event) {
   await insertAuditEvent(pool, event);
 }
 
+export async function recordGiteaWebhookDelivery({ deliveryId, event, repository, ref, commitSha }) {
+  const result = await pool.query(`
+    INSERT INTO gitea_webhook_deliveries (delivery_id, event, repository, ref, commit_sha)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (delivery_id) DO NOTHING
+    RETURNING delivery_id
+  `, [deliveryId, event, repository, ref, commitSha]);
+  return result.rowCount === 1;
+}
+
+function mapProject(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    repository: row.repository,
+    productionBranch: row.production_branch,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function getProjects() {
+  const result = await pool.query(`
+    SELECT id, name, description, repository, production_branch, created_at, updated_at
+    FROM projects
+    ORDER BY lower(name), id
+  `);
+  return result.rows.map(mapProject);
+}
+
+export async function getProject(id) {
+  const result = await pool.query(`
+    SELECT id, name, description, repository, production_branch, created_at, updated_at
+    FROM projects
+    WHERE id = $1
+  `, [id]);
+  return result.rows[0] ? mapProject(result.rows[0]) : null;
+}
+
+export async function createProject(project) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      INSERT INTO projects (name, description, repository, production_branch)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, description, repository, production_branch, created_at, updated_at
+    `, [project.name, project.description, project.repository, project.productionBranch]);
+    const created = mapProject(result.rows[0]);
+    await insertAuditEvent(client, {
+      action: "project.created",
+      resourceType: "project",
+      resourceId: created.id,
+      details: { name: created.name, repository: created.repository, productionBranch: created.productionBranch },
+    });
+    await client.query("COMMIT");
+    return created;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateProject(id, project) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      UPDATE projects
+      SET name = $2, description = $3, repository = $4, production_branch = $5, updated_at = now()
+      WHERE id = $1
+      RETURNING id, name, description, repository, production_branch, created_at, updated_at
+    `, [id, project.name, project.description, project.repository, project.productionBranch]);
+    if (result.rowCount === 0) {
+      await client.query("COMMIT");
+      return null;
+    }
+    const updated = mapProject(result.rows[0]);
+    await insertAuditEvent(client, {
+      action: "project.updated",
+      resourceType: "project",
+      resourceId: updated.id,
+      details: { name: updated.name, repository: updated.repository, productionBranch: updated.productionBranch },
+    });
+    await client.query("COMMIT");
+    return updated;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteProject(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      DELETE FROM projects
+      WHERE id = $1
+      RETURNING id, name, repository
+    `, [id]);
+    if (result.rowCount === 0) {
+      await client.query("COMMIT");
+      return false;
+    }
+    const deleted = result.rows[0];
+    await insertAuditEvent(client, {
+      action: "project.deleted",
+      resourceType: "project",
+      resourceId: deleted.id,
+      details: { name: deleted.name, repository: deleted.repository },
+    });
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function getRecentAuditEvents() {
   const result = await pool.query(`
     SELECT id, action, actor, resource_type, resource_id, details, created_at

@@ -222,6 +222,8 @@ El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de
 
 El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. Gitea es una aplicación opcional que puede instalarse desde Aplicaciones en instalaciones con dominio público y HTTPS. Requiere que `git.<dominio-del-panel>` apunte al VPS, que el puerto TCP `2222` esté libre y accesible, y al menos 768 MB disponibles para el servicio. Se utiliza SQLite con una sola réplica y un volumen persistente independiente. La contraseña aleatoria del administrador se puede consultar una sola vez durante los 30 minutos posteriores a la instalación.
 
+Después de instalar Gitea, crea en sus ajustes de usuario un token con permiso de lectura de cuenta y escritura de repositorios. En Aplicaciones, VPS Manager valida el token contra la API HTTPS y lo guarda como secreto Swarm versionado; no lo persiste en PostgreSQL ni lo muestra otra vez. El servicio del panel se reinicia para montar el secreto y su nombre se conserva en `/opt/vps-manager/install.env`, por lo que las siguientes actualizaciones del stack mantienen el token. Luego puedes crear repositorios privados inicializados con un README desde el panel; el formulario muestra las direcciones de clonación HTTPS y SSH. La sección Administrar ramas permite consultar las ramas de repositorios disponibles y cambiar la rama predeterminada cuando el token tiene permisos de administración. Estos cambios se registran en la auditoría; el panel no crea ni elimina ramas. Para rotarlo, envía uno nuevo desde el mismo formulario; para revocarlo, revócalo en Gitea.
+
 Para desarrollar el frontend desde `apps/manager`, ejecuta `npm ci` y `npm run dev`; `npm run build` genera `dist/` y `npm test` ejecuta las pruebas del backend. La imagen Docker construye el frontend en una etapa separada y publica únicamente los archivos generados junto al backend.
 
 La comprobación de actualizaciones consulta `GET /repos/{owner}/{repo}/releases/latest` de la API pública de GitHub. Solo considera tags estables `vMAJOR.MINOR.PATCH`; el panel compara esa versión con la versión instalada y muestra las notas y el enlace a la release. Cuando hay una actualización verificable, el administrador puede iniciarla desde el panel después de confirmar. La API requiere una sesión autenticada, comprueba el origen de la petición, vuelve a verificar que la release estable tenga digest SHA-256 y registra la solicitud en auditoría.
@@ -262,7 +264,7 @@ El script cambia la contraseña en `baco@192.168.100.158` por defecto; puedes el
 
 El archivo se transfiere por SCP dentro de un directorio temporal con acceso restringido, se elimina del VPS al terminar y no se borra del equipo local. Este modo evita el ingreso interactivo, pero el archivo local contiene la contraseña en texto plano: no lo subas al repositorio, no lo compartas y elimínalo después de la prueba. No uses este método para producción.
 
-La desinstalación conserva los secretos y los datos persistentes de Traefik y PostgreSQL. `--purge-secrets` elimina las credenciales de administrador y la clave de sesión; no borra la contraseña ni el volumen de PostgreSQL, para no dejar la base inaccesible.
+La desinstalación conserva los secretos y los datos persistentes de Traefik y PostgreSQL. `--purge-secrets` elimina las credenciales de administrador, la clave de sesión y los tokens Swarm de Gitea; no borra la contraseña ni el volumen de PostgreSQL, para no dejar la base inaccesible.
 
 #### Publicación para el comando `curl`
 
@@ -460,19 +462,37 @@ Características:
 - Consultar commits.
 - Consultar historial.
 - Utilizar SSH para operaciones Git.
-- Integrar webhooks.
+- Configurar webhooks autenticados de push desde el panel y evitar procesar entregas repetidas.
 - Administrar llaves SSH.
+
+El panel configura un webhook por repositorio que envía eventos `push` a
+`/api/webhooks/gitea`. El receptor valida la firma HMAC con una clave derivada
+del secreto persistente `session_key`, limita el cuerpo a 1 MiB y guarda cada
+identificador de entrega una sola vez en PostgreSQL. Actualmente registra los
+metadatos mínimos del push; todavía no crea tareas ni despliega proyectos.
 
 El usuario no necesitará GitHub ni GitLab.
 
 ## 5.2. Registro de proyectos
 
-Cada proyecto debe tener:
+El panel permite registrar y modificar la relación entre un proyecto y un
+repositorio de Gitea con una rama de producción existente; también permite
+eliminar el registro del proyecto sin borrar el repositorio ni sus webhooks.
+Por ahora cada repositorio se puede asociar a un solo proyecto. Los pushes se
+autentican y registran, pero no inician despliegues.
+
+El registro implementado cubre estos datos:
 
 - Nombre.
 - Descripción.
 - Repositorio.
 - Rama de despliegue.
+
+La configuración de construcción, dominio, variables, volúmenes, recursos,
+estado de despliegue e historial pertenece a fases posteriores.
+
+El modelo completo previsto incluye:
+
 - Tipo de proyecto.
 - Método de construcción.
 - Dockerfile o configuración de build.
@@ -1321,6 +1341,10 @@ POST   /api/projects/:id/rollback
 GET    /api/projects/:id/deployments
 ```
 
+`POST /api/projects` y `PATCH /api/projects/:id` aceptan `name`, `description`,
+`repository` y `productionBranch`. El backend verifica que el repositorio esté
+disponible para la cuenta conectada y que la rama exista antes de guardar.
+
 ## Git
 
 ```text
@@ -1329,6 +1353,10 @@ GET  /api/git/repositories/:id/branches
 POST /api/git/webhooks/:projectId
 POST /api/webhooks/gitea
 ```
+
+`POST /api/system/applications/gitea/webhooks` configura o actualiza el webhook
+de eventos `push` para un repositorio administrable por la cuenta conectada.
+Requiere sesión y dominio público configurado.
 
 ## Aplicaciones
 

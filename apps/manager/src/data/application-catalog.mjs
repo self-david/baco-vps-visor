@@ -8,6 +8,7 @@ export const applicationCatalog = [
       "Repositorios y ramas Git",
       "Acceso web mediante HTTPS en git.<dominio>",
       "Conexiones Git SSH por el puerto 2222",
+      "Creación de repositorios privados desde VPS Manager",
       "Integración futura con proyectos y webhooks",
     ],
     installation: {

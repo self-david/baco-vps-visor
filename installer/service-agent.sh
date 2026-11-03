@@ -57,6 +57,13 @@ elif request.get("operation") == "install-gitea":
         raise SystemExit("Invalid Gitea domain.")
     service_id = "-"
     replicas = "-"
+elif request.get("operation") == "configure-gitea-token":
+    if set(request) != {"id", "operation", "token"}:
+        raise SystemExit("Invalid Gitea token configuration request fields.")
+    if not isinstance(request["token"], str) or not re.fullmatch(r"[A-Za-z0-9._-]{20,512}", request["token"]):
+        raise SystemExit("Invalid Gitea API token.")
+    service_id = "-"
+    replicas = "-"
 else:
     raise SystemExit("Invalid service operation request fields.")
 if not re.fullmatch(
@@ -64,16 +71,18 @@ if not re.fullmatch(
     str(request["id"]),
 ):
     raise SystemExit("Invalid service operation request identifier.")
-if request["operation"] != "install-gitea" and not re.fullmatch(r"[a-fA-F0-9]{25,64}", str(request["serviceId"])):
+if request["operation"] in {"restart-service", "scale-service"} and not re.fullmatch(
+    r"[a-fA-F0-9]{25,64}", str(request["serviceId"])
+):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -83,6 +92,9 @@ write_status() {
   if [[ "${operation}" == "install-gitea" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","credentialsAvailable":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${gitea_domain}" "${gitea_credentials_available:-false}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "configure-gitea-token" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -96,6 +108,8 @@ write_status() {
 
 if [[ "${operation}" == "install-gitea" ]]; then
   write_status "running" "Preparando la instalación segura de Gitea."
+elif [[ "${operation}" == "configure-gitea-token" ]]; then
+  write_status "running" "Actualizando de forma segura el secreto del token de Gitea."
 elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
 else
@@ -107,6 +121,131 @@ if ! command -v docker >/dev/null 2>&1; then
   write_status "failed" "Docker no está disponible en el host."
   echo "Docker is not installed." >&2
   exit 1
+fi
+
+if [[ "${operation}" == "configure-gitea-token" ]]; then
+  readonly MANAGER_SERVICE="vps-manager_manager"
+  readonly INSTALL_ENV="/opt/vps-manager/install.env"
+  token_file=""
+  env_backup=""
+  new_secret="vps_manager_gitea_api_${request_id//-/}"
+  cleanup_gitea_token() {
+    if [[ -n "${token_file}" ]]; then rm -f -- "${token_file}"; fi
+    if [[ -n "${env_backup}" ]]; then rm -f -- "${env_backup}"; fi
+    if [[ "${gitea_api_token:-}" != "" ]]; then unset gitea_api_token; fi
+  }
+  trap cleanup_gitea_token EXIT
+
+  if [[ ! -f "${INSTALL_ENV}" || -L "${INSTALL_ENV}" ]]; then
+    write_status "failed" "No se encontró el archivo seguro de configuración de instalación."
+    exit 1
+  fi
+  if ! service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${MANAGER_SERVICE}" 2>/dev/null)"; then
+    write_status "failed" "No se encontró el servicio administrado de VPS Manager."
+    exit 1
+  fi
+  IFS=' ' read -r _ manager_managed manager_component <<< "${service_info}"
+  if [[ "${manager_managed}" != "true" || "${manager_component}" != "api" ]]; then
+    write_status "failed" "El servicio del panel no pertenece a VPS Manager."
+    exit 1
+  fi
+  if ! old_secret="$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{if eq .File.Name "gitea_api_token"}}{{.SecretName}}{{end}}{{end}}' "${MANAGER_SERVICE}" 2>/dev/null)"; then
+    write_status "failed" "No se pudo consultar la configuración de secretos del panel."
+    exit 1
+  fi
+  if [[ "${old_secret}" == *$'\n'* ]]; then
+    write_status "failed" "La configuración contiene referencias múltiples al token de Gitea."
+    exit 1
+  fi
+
+  umask 077
+  token_file="$(mktemp "${STATE_DIRECTORY}/gitea-api-token.XXXXXX")"
+  if ! printf '%s' "${gitea_api_token}" > "${token_file}"; then
+    write_status "failed" "No se pudo preparar el secreto temporal del token."
+    exit 1
+  fi
+  unset gitea_api_token
+  if ! docker secret create \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=gitea-api-token \
+    "${new_secret}" "${token_file}" >/dev/null; then
+    write_status "failed" "Docker no pudo crear el secreto del token de Gitea."
+    exit 1
+  fi
+  if ! env_backup="$(mktemp "${INSTALL_ENV}.backup.XXXXXX")" \
+    || ! cp -p -- "${INSTALL_ENV}" "${env_backup}" \
+    || ! python3 - "${INSTALL_ENV}" "${new_secret}" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+
+path, secret_name = sys.argv[1:]
+metadata = os.stat(path, follow_symlinks=False)
+with open(path, encoding="utf-8") as source:
+    lines = source.read().splitlines()
+key = "VPS_MANAGER_GITEA_API_SECRET="
+replacement = f"{key}{secret_name}"
+found = False
+updated = []
+for line in lines:
+    if line.startswith(key):
+        if not found:
+            updated.append(replacement)
+            found = True
+    else:
+        updated.append(line)
+if not found:
+    updated.append(replacement)
+directory = os.path.dirname(path)
+descriptor, temporary = tempfile.mkstemp(prefix=".install.env.", dir=directory)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as destination:
+        destination.write("\n".join(updated) + "\n")
+    os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+    os.chown(temporary, metadata.st_uid, metadata.st_gid)
+    os.replace(temporary, path)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+  then
+    docker secret rm "${new_secret}" >/dev/null 2>&1 || true
+    write_status "failed" "No se pudo guardar de forma segura la referencia al secreto de Gitea."
+    exit 1
+  fi
+  update_args=(--detach=false --secret-add "source=${new_secret},target=gitea_api_token")
+  if [[ -n "${old_secret}" ]]; then
+    update_args+=(--secret-rm "${old_secret}")
+  fi
+  if ! docker service update "${update_args[@]}" "${MANAGER_SERVICE}" >/dev/null; then
+    if ! cp -p -- "${env_backup}" "${INSTALL_ENV}"; then
+      env_backup=""
+      write_status "failed" "Falló la actualización del servicio y no se pudo restaurar la configuración anterior; el respaldo local requiere revisión."
+      exit 1
+    fi
+    rm -f -- "${env_backup}"
+    env_backup=""
+    docker secret rm "${new_secret}" >/dev/null 2>&1 || true
+    write_status "failed" "No se pudo actualizar el servicio del panel con el secreto de Gitea."
+    exit 1
+  fi
+  rm -f -- "${env_backup}"
+  env_backup=""
+  if [[ -n "${old_secret}" ]]; then
+    old_secret_labels="$(docker secret inspect --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${old_secret}" 2>/dev/null || true)"
+    if [[ "${old_secret_labels}" == "true gitea-api-token" ]]; then
+      docker secret rm "${old_secret}" >/dev/null || {
+        write_status "failed" "El token se actualizó, pero no se pudo retirar el secreto anterior."
+        exit 1
+      }
+    fi
+  fi
+  write_status "succeeded" "Token de Gitea configurado como secreto Swarm."
+  exit 0
 fi
 
 if [[ "${operation}" == "install-gitea" ]]; then

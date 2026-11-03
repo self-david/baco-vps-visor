@@ -71,6 +71,11 @@ if [[ "${1:-}" == "--purge-secrets" ]]; then
       docker secret rm "${secret}"
     fi
   done
+  while IFS= read -r secret; do
+    if [[ "${secret}" =~ ^vps_manager_gitea_api_(initial|[a-f0-9]{32})$ ]]; then
+      docker secret rm "${secret}"
+    fi
+  done < <(docker secret ls --filter label=vps-manager.component=gitea-api-token --format '{{.Name}}')
 fi
 
 if [[ "${1:-}" == "--purge-secrets" ]]; then

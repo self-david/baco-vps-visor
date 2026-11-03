@@ -59,7 +59,43 @@ const giteaSsh = document.querySelector("#gitea-ssh");
 const installGiteaButton = document.querySelector("#install-gitea");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
 const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
+const giteaTokenForm = document.querySelector("#gitea-token-form");
+const giteaApiTokenInput = document.querySelector("#gitea-api-token");
+const giteaApiTokenStatus = document.querySelector("#gitea-api-token-status");
+const giteaRepositoryForm = document.querySelector("#gitea-repository-form");
+const giteaRepositoryStatus = document.querySelector("#gitea-repository-status");
+const giteaRepositoryResult = document.querySelector("#gitea-repository-result");
+const giteaBranchManagement = document.querySelector("#gitea-branch-management");
+const giteaBranchRepository = document.querySelector("#gitea-branch-repository");
+const giteaBranchRefresh = document.querySelector("#gitea-branch-refresh");
+const giteaWebhookConfigure = document.querySelector("#gitea-webhook-configure");
+const giteaWebhookStatus = document.querySelector("#gitea-webhook-status");
+const giteaDefaultBranchForm = document.querySelector("#gitea-default-branch-form");
+const giteaDefaultBranchSelect = document.querySelector("#gitea-default-branch");
+const giteaDefaultBranchSubmit = document.querySelector("#gitea-default-branch-submit");
+const giteaBranchStatus = document.querySelector("#gitea-branch-status");
+const projectForm = document.querySelector("#project-form");
+const projectFormTitle = document.querySelector("#project-form-title");
+const projectFormStatus = document.querySelector("#project-form-status");
+const projectIdInput = document.querySelector("#project-id");
+const projectNameInput = document.querySelector("#project-name");
+const projectDescriptionInput = document.querySelector("#project-description");
+const projectRepositorySelect = document.querySelector("#project-repository");
+const projectProductionBranchSelect = document.querySelector("#project-production-branch");
+const projectSaveButton = document.querySelector("#project-save");
+const projectCancelEditButton = document.querySelector("#project-cancel-edit");
+const projectsStatus = document.querySelector("#projects-status");
+const projectsList = document.querySelector("#projects-list");
 let giteaStatusPollTimer;
+let giteaTokenConfigurationPending = false;
+let giteaRepositoriesLoaded = false;
+let giteaRepositoriesLoading = false;
+let giteaRepositories = new Map();
+let giteaCurrentDefaultBranch = "";
+let giteaBranchRequestId = 0;
+let projectBranchRequestId = 0;
+let projects = [];
+let giteaCanManageProjects = false;
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let metricsLoaded = false;
@@ -1005,6 +1041,24 @@ async function loadGiteaApplication() {
     installGiteaButton.classList.toggle("hidden", !application.available);
     installGiteaButton.disabled = application.installing;
     revealGiteaCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
+    giteaTokenForm.classList.toggle("hidden", !application.installed);
+    giteaApiTokenStatus.classList.toggle("hidden", !application.installed);
+    giteaRepositoryForm.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
+    giteaBranchManagement.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
+    projectForm.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
+    giteaCanManageProjects = application.installed && application.apiTokenConfigured;
+    renderProjects();
+    if (application.apiTokenConfigured && !giteaRepositoriesLoaded && !giteaRepositoriesLoading) {
+      void loadGiteaRepositories();
+    }
+    if (application.apiTokenConfigured) {
+      giteaApiTokenStatus.textContent = "Token de Gitea configurado como secreto Swarm.";
+      giteaTokenConfigurationPending = false;
+    } else {
+      giteaApiTokenStatus.textContent = application.tokenOperation?.message
+        ?? (giteaTokenConfigurationPending ? "Esperando que el agente del VPS actualice el secreto…" : "");
+      if (application.tokenOperation?.state === "failed") giteaTokenConfigurationPending = false;
+    }
     giteaStatus.textContent = application.latestTask?.message
       ?? (application.installed
         ? "Gitea está instalado."
@@ -1022,18 +1076,249 @@ async function loadGiteaApplication() {
       giteaUrl.classList.add("hidden");
       giteaSsh.classList.add("hidden");
     }
-    if (application.installing) scheduleGiteaStatusPoll();
+    if (application.installing
+      || (giteaTokenConfigurationPending && !application.apiTokenConfigured
+        && application.tokenOperation?.state !== "failed")) scheduleGiteaStatusPoll();
     else if (giteaStatusPollTimer !== undefined) {
       clearTimeout(giteaStatusPollTimer);
       giteaStatusPollTimer = undefined;
     }
   } catch (error) {
     giteaStatus.textContent = error.message;
-    if (giteaStatusPollTimer !== undefined) {
+    if (giteaTokenConfigurationPending) {
+      giteaApiTokenStatus.textContent = "El panel puede estar reiniciándose para montar el secreto. Se volverá a consultar automáticamente.";
+      scheduleGiteaStatusPoll();
+    } else if (giteaStatusPollTimer !== undefined) {
       clearTimeout(giteaStatusPollTimer);
       giteaStatusPollTimer = undefined;
     }
   }
+}
+
+function updateGiteaDefaultBranchAction() {
+  const repository = giteaRepositories.get(giteaBranchRepository.value);
+  giteaDefaultBranchSubmit.disabled = !repository?.canAdmin
+    || !giteaDefaultBranchSelect.value
+    || giteaDefaultBranchSelect.value === giteaCurrentDefaultBranch;
+  giteaWebhookConfigure.disabled = !repository?.canAdmin;
+  if (!repository?.canAdmin) {
+    giteaWebhookStatus.textContent = repository
+      ? "El token no puede administrar webhooks de este repositorio."
+      : "";
+  }
+}
+
+async function loadGiteaRepositories(force = false, preferredRepository = giteaBranchRepository.value) {
+  if ((!force && giteaRepositoriesLoaded) || giteaRepositoriesLoading) return;
+  giteaRepositoriesLoading = true;
+  giteaBranchRefresh.disabled = true;
+  giteaBranchStatus.textContent = "Consultando repositorios de Gitea…";
+  try {
+    const { repositories } = await request("/api/system/applications/gitea/repositories");
+    giteaRepositories = new Map(repositories.map((repository) => [repository.fullName, repository]));
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = repositories.length ? "Selecciona un repositorio" : "No hay repositorios disponibles";
+    giteaBranchRepository.replaceChildren(placeholder);
+    for (const repository of repositories) {
+      const option = document.createElement("option");
+      option.value = repository.fullName;
+      const defaultLabel = repository.defaultBranch || "sin rama predeterminada";
+      option.textContent = `${repository.fullName} · ${defaultLabel}${repository.canAdmin ? "" : " · solo lectura"}`;
+      giteaBranchRepository.append(option);
+    }
+    const projectRepository = projectRepositorySelect.value;
+    projectRepositorySelect.replaceChildren(new Option(
+      repositories.length ? "Selecciona un repositorio" : "No hay repositorios disponibles",
+      "",
+    ));
+    for (const repository of repositories) {
+      projectRepositorySelect.add(new Option(repository.fullName, repository.fullName));
+    }
+    projectRepositorySelect.value = giteaRepositories.has(projectRepository) ? projectRepository : "";
+    const selected = giteaRepositories.has(preferredRepository) ? preferredRepository : "";
+    giteaBranchRepository.value = selected;
+    giteaRepositoriesLoaded = true;
+    if (selected) await loadGiteaBranches();
+    else {
+      giteaDefaultBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
+      giteaDefaultBranchSelect.disabled = true;
+      giteaBranchStatus.textContent = repositories.length
+        ? "Selecciona un repositorio para consultar sus ramas."
+        : "La cuenta conectada todavía no tiene repositorios.";
+      updateGiteaDefaultBranchAction();
+    }
+  } catch (error) {
+    giteaBranchStatus.textContent = error.message;
+    giteaRepositoriesLoaded = false;
+  } finally {
+    giteaRepositoriesLoading = false;
+    giteaBranchRefresh.disabled = false;
+  }
+}
+
+async function loadGiteaBranches() {
+  const repository = giteaRepositories.get(giteaBranchRepository.value);
+  const requestId = ++giteaBranchRequestId;
+  giteaCurrentDefaultBranch = "";
+  giteaDefaultBranchSelect.replaceChildren(new Option("Consultando ramas…", ""));
+  giteaDefaultBranchSelect.disabled = true;
+  giteaDefaultBranchSubmit.disabled = true;
+  updateGiteaDefaultBranchAction();
+  giteaWebhookStatus.textContent = "";
+  if (!repository) {
+    giteaBranchStatus.textContent = "Selecciona un repositorio válido.";
+    return;
+  }
+  giteaBranchStatus.textContent = "Consultando ramas…";
+  try {
+    const query = new URLSearchParams({ repository: repository.fullName });
+    const result = await request(`/api/system/applications/gitea/branches?${query}`);
+    if (requestId !== giteaBranchRequestId || giteaBranchRepository.value !== repository.fullName) return;
+    giteaCurrentDefaultBranch = result.repository.defaultBranch;
+    giteaDefaultBranchSelect.replaceChildren();
+    for (const branch of result.branches) {
+      const option = document.createElement("option");
+      option.value = branch.name;
+      option.textContent = branch.name === giteaCurrentDefaultBranch
+        ? `${branch.name} · actual`
+        : branch.name;
+      giteaDefaultBranchSelect.append(option);
+    }
+    giteaDefaultBranchSelect.value = giteaCurrentDefaultBranch
+      && result.branches.some((branch) => branch.name === giteaCurrentDefaultBranch)
+      ? giteaCurrentDefaultBranch
+      : result.branches[0]?.name ?? "";
+    giteaDefaultBranchSelect.disabled = result.branches.length === 0;
+    giteaBranchStatus.textContent = result.branches.length
+      ? `Ramas: ${result.branches.length}. Predeterminada: ${giteaCurrentDefaultBranch || "sin establecer"}.${repository.canAdmin ? "" : " El token no puede cambiar la configuración de este repositorio."}`
+      : "El repositorio no tiene ramas para seleccionar.";
+    updateGiteaDefaultBranchAction();
+  } catch (error) {
+    if (requestId !== giteaBranchRequestId || giteaBranchRepository.value !== repository.fullName) return;
+    giteaDefaultBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
+    giteaBranchStatus.textContent = error.message;
+  }
+}
+
+function renderProjects() {
+  projectsList.replaceChildren();
+  if (projects.length === 0) {
+    projectsStatus.textContent = "Todavía no hay proyectos registrados.";
+    return;
+  }
+  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} registrado${projects.length === 1 ? "" : "s"}. Los pushes no despliegan aplicaciones.`;
+  for (const project of projects) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = project.name;
+    const details = document.createElement("div");
+    details.className = "resource-detail";
+    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""}`;
+    main.append(name, details);
+
+    const actions = document.createElement("div");
+    actions.className = "resource-actions";
+    const edit = document.createElement("button");
+    edit.className = "button secondary resource-action";
+    edit.type = "button";
+    edit.textContent = "Editar";
+    edit.disabled = !giteaCanManageProjects;
+    edit.addEventListener("click", async () => {
+      projectIdInput.value = project.id;
+      projectNameInput.value = project.name;
+      projectDescriptionInput.value = project.description;
+      projectRepositorySelect.value = project.repository;
+      projectFormTitle.textContent = "Editar proyecto";
+      projectSaveButton.textContent = "Guardar cambios";
+      projectCancelEditButton.classList.remove("hidden");
+      await loadProjectBranches(project.productionBranch);
+      projectForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "button secondary resource-action";
+    remove.type = "button";
+    remove.textContent = "Eliminar";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`¿Eliminar la configuración del proyecto ${project.name}? El repositorio y su webhook de Gitea no se eliminarán.`)) return;
+      remove.disabled = true;
+      try {
+        await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+        await loadProjects();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+        remove.disabled = false;
+      }
+    });
+    actions.append(edit, remove);
+    row.append(main, actions);
+    projectsList.append(row);
+  }
+}
+
+async function loadProjects() {
+  projectsStatus.textContent = "Consultando proyectos…";
+  try {
+    const result = await request("/api/projects");
+    projects = result.projects;
+    renderProjects();
+  } catch (error) {
+    projects = [];
+    projectsList.replaceChildren();
+    projectsStatus.textContent = error.message;
+  }
+}
+
+async function loadProjectBranches(preferredBranch = "") {
+  const repository = projectRepositorySelect.value;
+  const requestId = ++projectBranchRequestId;
+  projectProductionBranchSelect.replaceChildren(new Option("Consultando ramas…", ""));
+  projectProductionBranchSelect.disabled = true;
+  if (!repository) {
+    projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
+    projectFormStatus.textContent = "Selecciona un repositorio de Gitea.";
+    return;
+  }
+  projectFormStatus.textContent = "Consultando ramas…";
+  try {
+    const query = new URLSearchParams({ repository });
+    const result = await request(`/api/system/applications/gitea/branches?${query}`);
+    if (requestId !== projectBranchRequestId || repository !== projectRepositorySelect.value) return;
+    projectProductionBranchSelect.replaceChildren();
+    for (const branch of result.branches) {
+      projectProductionBranchSelect.add(new Option(branch.name, branch.name));
+    }
+    const preferredBranchExists = result.branches.some((branch) => branch.name === preferredBranch);
+    projectProductionBranchSelect.value = preferredBranchExists
+      ? preferredBranch
+      : preferredBranch ? "" : result.branches[0]?.name ?? "";
+    projectProductionBranchSelect.disabled = result.branches.length === 0;
+    projectFormStatus.textContent = preferredBranch && !preferredBranchExists
+      ? "La rama de producción guardada ya no existe; selecciona otra rama."
+      : result.branches.length
+        ? `${result.branches.length} ramas disponibles.`
+        : "El repositorio no tiene ramas para seleccionar.";
+  } catch (error) {
+    if (requestId !== projectBranchRequestId || repository !== projectRepositorySelect.value) return;
+    projectProductionBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
+    projectFormStatus.textContent = error.message;
+  }
+}
+
+function resetProjectForm() {
+  projectForm.reset();
+  projectIdInput.value = "";
+  projectFormTitle.textContent = "Registrar proyecto";
+  projectSaveButton.textContent = "Registrar proyecto";
+  projectCancelEditButton.classList.add("hidden");
+  projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
+  projectProductionBranchSelect.disabled = true;
+  projectFormStatus.textContent = "";
 }
 
 async function installGitea() {
@@ -1050,6 +1335,139 @@ async function installGitea() {
     installGiteaButton.disabled = false;
   }
 }
+
+giteaTokenForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = giteaTokenForm.querySelector("button");
+  submitButton.disabled = true;
+  giteaApiTokenStatus.textContent = "Validando el token con Gitea…";
+  try {
+    await request("/api/system/applications/gitea/token", {
+      method: "POST",
+      body: JSON.stringify({ token: giteaApiTokenInput.value }),
+    });
+    giteaApiTokenInput.value = "";
+    giteaTokenConfigurationPending = true;
+    giteaApiTokenStatus.textContent = "Token validado. Se guardará como secreto Swarm y el panel se reiniciará para montarlo.";
+    scheduleGiteaStatusPoll();
+  } catch (error) {
+    giteaApiTokenStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+
+giteaRepositoryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = giteaRepositoryForm.querySelector("button");
+  submitButton.disabled = true;
+  giteaRepositoryStatus.textContent = "Creando repositorio privado…";
+  giteaRepositoryResult.replaceChildren();
+  giteaRepositoryResult.classList.add("hidden");
+  try {
+    const formData = new FormData(giteaRepositoryForm);
+    const { repository } = await request("/api/system/applications/gitea/repositories", {
+      method: "POST",
+      body: JSON.stringify({
+        name: formData.get("name"),
+        description: formData.get("description"),
+      }),
+    });
+    const heading = document.createElement("h4");
+    heading.textContent = `Repositorio privado: ${repository.name}`;
+    const link = document.createElement("a");
+    link.href = repository.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = repository.url;
+    const httpsClone = document.createElement("p");
+    httpsClone.textContent = `HTTPS: ${repository.cloneUrl}`;
+    const sshClone = document.createElement("p");
+    sshClone.textContent = `SSH: ${repository.sshUrl}`;
+    giteaRepositoryResult.append(heading, link, httpsClone, sshClone);
+    giteaRepositoryResult.classList.remove("hidden");
+    giteaRepositoryStatus.textContent = "Repositorio creado correctamente.";
+    giteaRepositoryForm.reset();
+    await loadGiteaRepositories(true, repository.fullName);
+  } catch (error) {
+    giteaRepositoryStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+
+giteaBranchRepository.addEventListener("change", () => void loadGiteaBranches());
+projectRepositorySelect.addEventListener("change", () => void loadProjectBranches());
+projectCancelEditButton.addEventListener("click", resetProjectForm);
+projectForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!giteaCanManageProjects) return;
+  const id = projectIdInput.value;
+  const input = {
+    name: projectNameInput.value,
+    description: projectDescriptionInput.value,
+    repository: projectRepositorySelect.value,
+    productionBranch: projectProductionBranchSelect.value,
+  };
+  projectSaveButton.disabled = true;
+  projectFormStatus.textContent = id ? "Actualizando proyecto…" : "Registrando proyecto…";
+  try {
+    await request(id ? `/api/projects/${encodeURIComponent(id)}` : "/api/projects", {
+      method: id ? "PATCH" : "POST",
+      body: JSON.stringify(input),
+    });
+    resetProjectForm();
+    await loadProjects();
+  } catch (error) {
+    projectFormStatus.textContent = error.message;
+  } finally {
+    projectSaveButton.disabled = false;
+  }
+});
+giteaBranchRefresh.addEventListener("click", () => {
+  if (giteaBranchRepository.value) void loadGiteaBranches();
+  else void loadGiteaRepositories(true);
+});
+giteaWebhookConfigure.addEventListener("click", async () => {
+  const repository = giteaRepositories.get(giteaBranchRepository.value);
+  if (!repository?.canAdmin) return;
+  giteaWebhookConfigure.disabled = true;
+  giteaWebhookStatus.textContent = "Configurando webhook de push…";
+  try {
+    const { webhook } = await request("/api/system/applications/gitea/webhooks", {
+      method: "POST",
+      body: JSON.stringify({ repository: repository.fullName }),
+    });
+    giteaWebhookStatus.textContent = `Webhook activo para eventos push en ${webhook.url}. Los eventos se validan y registran; aún no inician despliegues.`;
+  } catch (error) {
+    giteaWebhookStatus.textContent = error.message;
+  } finally {
+    updateGiteaDefaultBranchAction();
+  }
+});
+giteaDefaultBranchSelect.addEventListener("change", updateGiteaDefaultBranchAction);
+giteaDefaultBranchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const repository = giteaRepositories.get(giteaBranchRepository.value);
+  const branch = giteaDefaultBranchSelect.value;
+  if (!repository?.canAdmin || !branch) return;
+  if (!confirm(`¿Cambiar la rama predeterminada de ${repository.fullName} a ${branch}?`)) return;
+  giteaDefaultBranchSubmit.disabled = true;
+  giteaBranchStatus.textContent = "Actualizando rama predeterminada…";
+  try {
+    const result = await request("/api/system/applications/gitea/default-branch", {
+      method: "PATCH",
+      body: JSON.stringify({ repository: repository.fullName, branch }),
+    });
+    giteaCurrentDefaultBranch = result.repository.defaultBranch;
+    giteaBranchStatus.textContent = `La rama predeterminada de ${repository.fullName} ahora es ${giteaCurrentDefaultBranch}.`;
+    await loadGiteaRepositories(true, repository.fullName);
+  } catch (error) {
+    giteaBranchStatus.textContent = error.message;
+  } finally {
+    updateGiteaDefaultBranchAction();
+  }
+});
 
 async function revealGiteaCredentials() {
   revealGiteaCredentialsButton.disabled = true;
@@ -1107,6 +1525,7 @@ async function loadResources() {
       loadServiceOperationStatus(),
       loadTaskHistory(),
       loadGiteaApplication(),
+      loadProjects(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
