@@ -146,6 +146,9 @@ services:
       - type: bind
         source: /var/lib/vps-manager/web-update
         target: /var/lib/vps-manager/web-update
+      - type: bind
+        source: /var/lib/vps-manager/service-operations
+        target: /var/lib/vps-manager/service-operations
     networks:
       - proxy
       - internal

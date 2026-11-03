@@ -46,10 +46,11 @@ Estado: **parcial**
 - [x] Crear API (mínima, Node.js).
 - [x] Crear autenticación (un administrador, cookie de sesión).
 - [x] Crear base de datos (PostgreSQL).
-- [ ] Crear agente de operaciones (hoy hay `docker-socket-proxy` de solo lectura).
+- [x] Crear agente host aislado para reiniciar servicios Swarm etiquetados `vps-manager.managed=true`; el proxy Docker conserva solo lectura.
 - [x] Implementar consulta de Docker.
-- [ ] Implementar operaciones permitidas de escritura.
-- [ ] Crear sistema de tareas persistentes.
+- [x] Implementar reinicio autenticado y auditado de servicios administrados con confirmación y estado de resultado.
+- [ ] Implementar otras operaciones permitidas de escritura mediante una lista explícita.
+- [ ] Crear sistema general de tareas persistentes; el reinicio actual conserva solo el estado de su última operación.
 
 **Resultado:** backend capaz de administrar Docker.
 
@@ -57,7 +58,7 @@ Estado: **parcial**
 
 ## Fase 3 — Dashboard
 
-Estado: **parcial** (MVP de solo lectura; no es Astro + React + Tailwind)
+Estado: **parcial** (MVP mayormente de lectura con reinicio controlado de servicios propios; no es Astro + React + Tailwind)
 
 - [ ] Diseñar interfaz (Astro + React + Tailwind).
 - [x] Separar el dashboard en pestañas accesibles por categoría e incluir placeholders explícitos para módulos pendientes.

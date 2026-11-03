@@ -1,0 +1,20 @@
+[Unit]
+Description=Run the fixed VPS Manager Swarm service restart operation
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/vps-manager-service-agent
+TimeoutStartSec=15min
+UMask=0077
+Environment=HOME=/tmp
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/vps-manager/service-operations

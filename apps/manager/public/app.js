@@ -52,6 +52,7 @@ const webUpdateStatus = document.querySelector("#web-update-status");
 const diagnosticsStatus = document.querySelector("#diagnostics-status");
 const diagnosticsList = document.querySelector("#diagnostics-list");
 const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
+const serviceOperationStatus = document.querySelector("#service-operation-status");
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let metricsLoaded = false;
@@ -61,6 +62,8 @@ let selectedBackupId;
 let webUpdatePollTimer;
 let webUpdatePending = false;
 let lastWebUpdateState;
+let serviceOperationPollTimer;
+let serviceOperationPending = false;
 
 function activateDashboardTab(tabId, { focus = false, updateHash = true } = {}) {
   const selectedTab = dashboardTabs.find((tab) => tab.id === `tab-button-${tabId}`);
@@ -135,10 +138,13 @@ function showAuthenticated(authenticated) {
     webUpdatePollTimer = undefined;
     webUpdatePending = false;
     lastWebUpdateState = undefined;
+    if (serviceOperationPollTimer !== undefined) clearTimeout(serviceOperationPollTimer);
+    serviceOperationPollTimer = undefined;
+    serviceOperationPending = false;
   }
 }
 
-function renderResources(target, resources, getDetail, getState, onAction, emptyMessage) {
+function renderResources(target, resources, getDetail, getState, onAction, emptyMessage, getSecondaryAction) {
   target.replaceChildren();
   if (resources.length === 0) {
     const empty = document.createElement("p");
@@ -164,13 +170,29 @@ function renderResources(target, resources, getDetail, getState, onAction, empty
     state.textContent = getState(resource);
     main.append(name, detail);
     row.append(main, state);
-    if (onAction) {
-      const action = document.createElement("button");
-      action.className = "button secondary resource-action";
-      action.type = "button";
-      action.textContent = "Ver logs";
-      action.addEventListener("click", () => onAction(resource));
-      row.append(action);
+    if (onAction || getSecondaryAction) {
+      const actions = document.createElement("div");
+      actions.className = "resource-actions";
+      if (onAction) {
+        const action = document.createElement("button");
+        action.className = "button secondary resource-action";
+        action.type = "button";
+        action.textContent = "Ver logs";
+        action.addEventListener("click", () => onAction(resource));
+        actions.append(action);
+      }
+      const secondaryAction = getSecondaryAction?.(resource);
+      if (secondaryAction) {
+        const action = document.createElement("button");
+        action.className = "button resource-action";
+        action.type = "button";
+        action.textContent = secondaryAction.label;
+        action.setAttribute("aria-label", `${secondaryAction.label} ${resource.name}`);
+        action.disabled = serviceOperationPending;
+        action.addEventListener("click", () => secondaryAction.onClick(resource));
+        actions.append(action);
+      }
+      row.append(actions);
     }
     target.append(row);
   }
@@ -358,6 +380,9 @@ function renderFilteredResources() {
     (item) => item.replicas,
     (service) => showResourceLogs(service, "services"),
     services.length === 0 && serviceHasFilters ? "No hay servicios que coincidan con los filtros." : "No hay servicios Swarm.",
+    (service) => service.managed
+      ? { label: "Reiniciar", onClick: requestServiceRestart }
+      : undefined,
   );
   updateResourceCount("#service-count", services.length, resourceData.services.length);
 
@@ -372,6 +397,64 @@ function renderFilteredResources() {
   const stackHasFilters = Boolean(stackQuery) || stackFilter !== "all";
   renderStacks(stacks, stacks.length === 0 && stackHasFilters ? "No hay stacks que coincidan con los filtros." : "No hay stacks desplegados.");
   updateResourceCount("#stack-count", stacks.length, resourceData.stacks.length);
+}
+
+function scheduleServiceOperationPoll() {
+  if (serviceOperationPollTimer !== undefined
+    || !serviceOperationPending
+    || dashboardView.classList.contains("hidden")) return;
+  serviceOperationPollTimer = setTimeout(() => {
+    serviceOperationPollTimer = undefined;
+    void loadServiceOperationStatus();
+  }, 3000);
+}
+
+async function loadServiceOperationStatus() {
+  try {
+    const { operation } = await request("/api/system/service-operations");
+    const previousPending = serviceOperationPending;
+    serviceOperationPending = operation?.state === "queued" || operation?.state === "running";
+    if (operation) {
+      serviceOperationStatus.textContent = operation.message;
+    } else {
+      serviceOperationStatus.textContent = "Solo se pueden reiniciar servicios administrados por VPS Manager.";
+    }
+    if (serviceOperationPending) {
+      scheduleServiceOperationPoll();
+    } else if (serviceOperationPollTimer !== undefined) {
+      clearTimeout(serviceOperationPollTimer);
+      serviceOperationPollTimer = undefined;
+    }
+    if (previousPending && !serviceOperationPending) {
+      const result = await request("/api/docker/services");
+      resourceData.services = result.services;
+      renderFilteredResources();
+    }
+  } catch (error) {
+    serviceOperationStatus.textContent = error.message;
+    if (serviceOperationPending) scheduleServiceOperationPoll();
+  }
+}
+
+async function requestServiceRestart(service) {
+  if (!window.confirm(`¿Reiniciar el servicio ${service.name}? Se interrumpirán brevemente sus tareas activas. Solo se permiten servicios administrados por VPS Manager.`)) {
+    return;
+  }
+  serviceOperationPending = true;
+  serviceOperationStatus.textContent = `Solicitando el reinicio de ${service.name}…`;
+  renderFilteredResources();
+  try {
+    const result = await request(`/api/docker/services/${encodeURIComponent(service.id)}/restart`, {
+      method: "POST",
+    });
+    serviceOperationStatus.textContent = `${result.serviceName}: reinicio en cola.`;
+    scheduleServiceOperationPoll();
+  } catch (error) {
+    serviceOperationPending = false;
+    serviceOperationStatus.textContent = error.message;
+    renderFilteredResources();
+    await loadServiceOperationStatus();
+  }
 }
 
 function formatBytes(bytes) {
@@ -868,6 +951,7 @@ async function loadResources() {
       loadBackups(),
       loadAuditLog(),
       loadDiagnostics(),
+      loadServiceOperationStatus(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;

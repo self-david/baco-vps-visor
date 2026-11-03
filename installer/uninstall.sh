@@ -32,13 +32,28 @@ if systemctl is-active --quiet vps-manager-web-update.service; then
   echo "No se puede desinstalar mientras una actualización web está en curso." >&2
   exit 1
 fi
+if systemctl is-active --quiet vps-manager-service-agent.service; then
+  echo "No se puede desinstalar mientras una operación de servicio está en curso." >&2
+  exit 1
+fi
 
 if [[ -f /etc/systemd/system/vps-manager-web-update.path ]]; then
   systemctl disable --now vps-manager-web-update.path
+fi
+if [[ -f /etc/systemd/system/vps-manager-service-agent.path ]]; then
+  systemctl disable --now vps-manager-service-agent.path
+fi
+if [[ -f /etc/systemd/system/vps-manager-web-update.path \
+  || -f /etc/systemd/system/vps-manager-service-agent.path \
+  || -f /etc/systemd/system/vps-manager-web-update.service \
+  || -f /etc/systemd/system/vps-manager-service-agent.service ]]; then
   rm -f -- \
     /etc/systemd/system/vps-manager-web-update.path \
     /etc/systemd/system/vps-manager-web-update.service \
-    /usr/local/libexec/vps-manager-web-update
+    /usr/local/libexec/vps-manager-web-update \
+    /etc/systemd/system/vps-manager-service-agent.path \
+    /etc/systemd/system/vps-manager-service-agent.service \
+    /usr/local/libexec/vps-manager-service-agent
   systemctl daemon-reload
 fi
 

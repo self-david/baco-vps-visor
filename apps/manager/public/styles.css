@@ -68,6 +68,8 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .resource-detail { max-width: 100%; overflow: hidden; margin-top: 4px; color: #8f9db3; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
 .resource-state { flex: 0 0 auto; color: #9fe2b5; font-size: .82rem; }
 .resource-action { flex: 0 0 auto; padding: 6px 9px; font-size: .78rem; }
+.resource-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
+.operation-status { min-height: 1.2em; margin: 10px 0 0; font-size: .8rem; }
 .container-heading-actions { display: flex; align-items: center; gap: 8px; }
 .metrics-status { min-height: 1.2em; margin: 8px 0 0; font-size: .78rem; }
 .metrics-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 10px; }

@@ -9,6 +9,7 @@ import { createBackupScheduler } from "./backup-scheduler.mjs";
 import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
 import { createWebUpdater } from "./web-updater.mjs";
+import { createServiceOperationAgent, findManagedService } from "./service-operations.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
@@ -52,6 +53,7 @@ const updateChecker = createUpdateChecker({
   currentVersion,
 });
 const webUpdater = createWebUpdater();
+const serviceOperationAgent = createServiceOperationAgent();
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -437,6 +439,7 @@ async function getServicesWithStacks() {
       image: service.Spec?.TaskTemplate?.ContainerSpec?.Image ?? "unknown",
       mode,
       replicas: replicated ? `${running}/${replicated.Replicas ?? 1}` : `${running} activos`,
+      managed: service.Spec?.Labels?.["vps-manager.managed"] === "true",
     };
   });
 }
@@ -645,6 +648,20 @@ const server = createServer(async (request, response) => {
       }
       console.error("Web update request failed:", error);
       respondJson(response, 503, { error: "No se pudo iniciar la actualización desde el panel." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/system/service-operations") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      respondJson(response, 200, { operation: await serviceOperationAgent.getStatus() });
+    } catch (error) {
+      console.error("Service operation status request failed:", error);
+      respondJson(response, 503, { error: "No se pudo consultar el estado de la operación." });
     }
     return;
   }
@@ -970,6 +987,42 @@ const server = createServer(async (request, response) => {
         respondJson(response, 200, { services: await getServices() });
         return;
       }
+      const restartServiceMatch = request.method === "POST"
+        && url.pathname.match(/^\/api\/docker\/services\/([a-f0-9]{12,64})\/restart$/i);
+      if (restartServiceMatch) {
+        if (!hasSameOrigin(request)) {
+          respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+          return;
+        }
+        let service;
+        try {
+          service = findManagedService(await dockerGet("/services"), restartServiceMatch[1]);
+        } catch (error) {
+          const status = {
+            SERVICE_NOT_FOUND: 404,
+            SERVICE_ID_AMBIGUOUS: 409,
+            SERVICE_NOT_MANAGED: 403,
+          }[error?.code];
+          if (status) {
+            respondJson(response, status, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        const operation = await serviceOperationAgent.requestRestart(service.ID);
+        const audited = await recordAuditEventOrRespond(response, {
+          action: "service.restart.requested",
+          resourceType: "service",
+          resourceId: service.ID,
+          details: { serviceName: service.Spec?.Name ?? "unknown", operationId: operation.id },
+        }, "La solicitud de reinicio");
+        if (!audited) return;
+        respondJson(response, 202, {
+          operation,
+          serviceName: service.Spec?.Name ?? "unknown",
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/docker/info") {
         respondJson(response, 200, { server: await getDockerInfo() });
         return;
@@ -993,6 +1046,10 @@ const server = createServer(async (request, response) => {
       console.error("Docker read operation failed:", error);
       const isLogsRequest = request.method === "GET"
         && /^\/api\/docker\/(containers|services)\/[a-f0-9]{12,64}\/logs$/i.test(url.pathname);
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
       respondJson(response, 502, {
         error: isLogsRequest
           ? "No se pudieron consultar los logs del contenedor. Revisa el estado del proxy Docker."

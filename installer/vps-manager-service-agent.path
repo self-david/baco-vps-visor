@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for authorized VPS Manager service operation requests
+
+[Path]
+PathExists=/var/lib/vps-manager/service-operations/request.json
+Unit=vps-manager-service-agent.service
+
+[Install]
+WantedBy=multi-user.target

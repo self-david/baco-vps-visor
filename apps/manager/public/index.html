@@ -121,12 +121,13 @@
                     <option value="global">Global</option>
                   </select>
                 </div>
+                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Solo se pueden reiniciar servicios administrados por VPS Manager.</p>
                 <div id="services" class="resource-list"></div>
               </section>
               <section class="card roadmap-card">
                 <div class="card-heading"><h3>Otros recursos Docker</h3><span class="badge roadmap-badge">Próximamente</span></div>
                 <p class="muted">Estas vistas se habilitarán en siguientes fases del roadmap.</p>
-                <ul class="roadmap-list"><li>Redes Docker</li><li>Volúmenes</li><li>Imágenes</li><li>Operaciones controladas sobre contenedores y servicios</li></ul>
+                <ul class="roadmap-list"><li>Redes Docker</li><li>Volúmenes</li><li>Imágenes</li><li>Más operaciones controladas sobre contenedores y servicios</li></ul>
               </section>
             </div>
           </section>
@@ -232,9 +233,9 @@
           <section id="tab-tasks" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-tasks" tabindex="0" hidden>
             <div class="grid">
               <section class="card roadmap-card">
-                <div class="card-heading"><h3>Tareas y operaciones</h3><span class="badge roadmap-badge">Próximamente</span></div>
-                <p class="muted">Cola persistente para operaciones iniciadas desde el panel, con progreso y resultado consultables.</p>
-                <ul class="roadmap-list"><li>Estados: pendiente, en curso, completada o fallida</li><li>Historial de despliegues y operaciones</li><li>Cancelación y recuperación segura de tareas</li></ul>
+                <div class="card-heading"><h3>Tareas y operaciones</h3><span class="badge roadmap-badge">En desarrollo</span></div>
+                <p class="muted">El reinicio limitado de servicios Swarm ya muestra su estado en la pestaña Docker. Aquí se incorporará la cola e historial general de tareas persistentes.</p>
+                <ul class="roadmap-list"><li>Persistir tareas y resultados históricos en PostgreSQL</li><li>Progreso, reintentos y recuperación tras reiniciar</li><li>Cancelación segura para operaciones compatibles</li></ul>
               </section>
             </div>
           </section>

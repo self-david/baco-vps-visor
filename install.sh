@@ -244,6 +244,7 @@ umask 077
 install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/web-update
+install -d -o root -g 1000 -m 0730 /var/lib/vps-manager/service-operations
 install -d -m 0755 /usr/local/libexec
 {
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"
@@ -260,8 +261,12 @@ install -m 0755 "${SOURCE_DIR}/installer/reset-password.sh" /usr/local/bin/vps-m
 install -m 0755 "${SOURCE_DIR}/installer/web-update-worker.sh" /usr/local/libexec/vps-manager-web-update
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.path" /etc/systemd/system/vps-manager-web-update.path
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.service" /etc/systemd/system/vps-manager-web-update.service
+install -m 0755 "${SOURCE_DIR}/installer/service-agent.sh" /usr/local/libexec/vps-manager-service-agent
+install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.path" /etc/systemd/system/vps-manager-service-agent.path
+install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.service" /etc/systemd/system/vps-manager-service-agent.service
 systemctl daemon-reload
 systemctl enable --now vps-manager-web-update.path
+systemctl enable --now vps-manager-service-agent.path
 
 export VPS_MANAGER_VERSION VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
 if [[ "${TEST_MODE}" == "true" ]]; then
