@@ -225,6 +225,14 @@ export async function createServiceScaleTask(task) {
   });
 }
 
+export async function createGiteaInstallTask(task) {
+  return createTask({
+    id: task.id,
+    type: "application.gitea.install",
+    payload: { domain: task.domain },
+  });
+}
+
 export async function claimNextTask(workerId, leaseSeconds) {
   return taskStore.claimNextTask(workerId, leaseSeconds);
 }
@@ -243,6 +251,14 @@ export async function failTask(id, workerId, message, retryable) {
 
 export async function getRecentTasks(limit = 50) {
   return taskStore.listRecentTasks(limit);
+}
+
+export async function getTaskById(id) {
+  return taskStore.getTaskById(id);
+}
+
+export async function getLatestTaskByType(type) {
+  return taskStore.getLatestTaskByType(type);
 }
 
 export async function getBackupIntervalHours() {

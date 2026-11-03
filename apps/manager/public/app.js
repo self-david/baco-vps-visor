@@ -53,6 +53,13 @@ const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
 const serviceOperationStatus = document.querySelector("#service-operation-status");
 const tasksList = document.querySelector("#tasks-list");
 const tasksStatus = document.querySelector("#tasks-status");
+const giteaStatus = document.querySelector("#gitea-status");
+const giteaUrl = document.querySelector("#gitea-url");
+const giteaSsh = document.querySelector("#gitea-ssh");
+const installGiteaButton = document.querySelector("#install-gitea");
+const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
+const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
+let giteaStatusPollTimer;
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let metricsLoaded = false;
@@ -340,7 +347,7 @@ function renderFilteredResources() {
     (service) => service.managed
       ? [
         { label: "Reiniciar", onClick: requestServiceRestart },
-        ...(service.mode === "replicado"
+        ...(service.mode === "replicado" && service.component !== "api" && service.component !== "gitea"
           ? [{ label: "Escalar", onClick: requestServiceScale }]
           : []),
       ]
@@ -419,7 +426,9 @@ async function loadTaskHistory() {
       main.className = "resource-main";
       const title = document.createElement("div");
       title.className = "resource-name";
-      title.textContent = task.type === "service.restart"
+      title.textContent = task.type === "application.gitea.install"
+        ? "Instalación de Gitea"
+        : task.type === "service.restart"
         ? `Reinicio de ${task.serviceName}`
         : task.type === "service.scale"
           ? `Escalado de ${task.serviceName}`
@@ -982,6 +991,91 @@ async function loadDiagnostics() {
   }
 }
 
+function scheduleGiteaStatusPoll() {
+  if (giteaStatusPollTimer !== undefined || dashboardView.classList.contains("hidden")) return;
+  giteaStatusPollTimer = setTimeout(() => {
+    giteaStatusPollTimer = undefined;
+    void loadGiteaApplication();
+  }, 3000);
+}
+
+async function loadGiteaApplication() {
+  try {
+    const { application } = await request("/api/system/applications/gitea");
+    installGiteaButton.classList.toggle("hidden", !application.available);
+    installGiteaButton.disabled = application.installing;
+    revealGiteaCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
+    giteaStatus.textContent = application.latestTask?.message
+      ?? (application.installed
+        ? "Gitea está instalado."
+        : application.nameConflict
+          ? "El nombre del servicio de Gitea está ocupado por un servicio ajeno a VPS Manager."
+          : application.domain
+            ? `Listo para instalar en ${application.domain}. Confirma que el DNS apunte al VPS y que TCP 80/443 estén disponibles.`
+            : "Requiere VPS Manager con HTTPS y un dominio público; no está disponible en modo de prueba ni con una dirección IP.");
+    if (application.domain && application.installed) {
+      giteaUrl.href = application.url;
+      giteaUrl.classList.remove("hidden");
+      giteaSsh.textContent = `Git SSH: puerto ${application.sshPort}`;
+      giteaSsh.classList.remove("hidden");
+    } else {
+      giteaUrl.classList.add("hidden");
+      giteaSsh.classList.add("hidden");
+    }
+    if (application.installing) scheduleGiteaStatusPoll();
+    else if (giteaStatusPollTimer !== undefined) {
+      clearTimeout(giteaStatusPollTimer);
+      giteaStatusPollTimer = undefined;
+    }
+  } catch (error) {
+    giteaStatus.textContent = error.message;
+    if (giteaStatusPollTimer !== undefined) {
+      clearTimeout(giteaStatusPollTimer);
+      giteaStatusPollTimer = undefined;
+    }
+  }
+}
+
+async function installGitea() {
+  if (!confirm("Gitea se instalará con almacenamiento persistente, HTTPS en git.<dominio> y Git SSH en el puerto TCP 2222. Asegúrate de que el DNS apunte a este VPS y que el puerto 2222 esté libre. ¿Continuar?")) {
+    return;
+  }
+  installGiteaButton.disabled = true;
+  giteaStatus.textContent = "Solicitando la instalación segura de Gitea…";
+  try {
+    await request("/api/system/applications/gitea", { method: "POST" });
+    await Promise.all([loadGiteaApplication(), loadTaskHistory()]);
+  } catch (error) {
+    giteaStatus.textContent = error.message;
+    installGiteaButton.disabled = false;
+  }
+}
+
+async function revealGiteaCredentials() {
+  revealGiteaCredentialsButton.disabled = true;
+  try {
+    const { application } = await request("/api/system/applications/gitea");
+    if (!application.credentialsAvailable || !application.latestTask?.id) {
+      throw new Error("No hay credenciales de Gitea disponibles para mostrar.");
+    }
+    const result = await request(`/api/system/applications/gitea/credentials/${encodeURIComponent(application.latestTask.id)}`);
+    const { credentials } = result;
+    const url = document.querySelector("#gitea-credential-url");
+    url.href = credentials.url;
+    url.textContent = credentials.url;
+    document.querySelector("#gitea-credential-username").textContent = credentials.username;
+    document.querySelector("#gitea-credential-password").textContent = credentials.password;
+    document.querySelector("#gitea-credential-ssh").textContent = credentials.sshCommand;
+    giteaCredentialsDialog.showModal();
+    await loadGiteaApplication();
+  } catch (error) {
+    giteaStatus.textContent = error.message;
+    revealGiteaCredentialsButton.classList.add("hidden");
+  } finally {
+    revealGiteaCredentialsButton.disabled = false;
+  }
+}
+
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
@@ -1012,6 +1106,7 @@ async function loadResources() {
       loadDiagnostics(),
       loadServiceOperationStatus(),
       loadTaskHistory(),
+      loadGiteaApplication(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
@@ -1055,6 +1150,21 @@ document.querySelector("#refresh-backups").addEventListener("click", loadBackups
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
+installGiteaButton.addEventListener("click", installGitea);
+revealGiteaCredentialsButton.addEventListener("click", revealGiteaCredentials);
+document.querySelector("#close-gitea-credentials").addEventListener("click", () => giteaCredentialsDialog.close());
+document.querySelector("#copy-gitea-credentials").addEventListener("click", async () => {
+  const username = document.querySelector("#gitea-credential-username").textContent;
+  const password = document.querySelector("#gitea-credential-password").textContent;
+  const url = document.querySelector("#gitea-credential-url").textContent;
+  const sshCommand = document.querySelector("#gitea-credential-ssh").textContent;
+  try {
+    await navigator.clipboard.writeText(`URL: ${url}\nUsuario: ${username}\nContraseña: ${password}\nGit SSH: ${sshCommand}`);
+    document.querySelector("#gitea-status").textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
+  } catch (error) {
+    document.querySelector("#gitea-status").textContent = `No se pudieron copiar las credenciales: ${error.message}`;
+  }
+});
 webUpdateButton.addEventListener("click", startWebUpdate);
 document.querySelector("#copy-update-command").addEventListener("click", async () => {
   try {

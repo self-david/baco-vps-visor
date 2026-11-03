@@ -12,9 +12,11 @@ import { createWebUpdater } from "./web-updater.mjs";
 import {
   createServiceOperationAgent,
   findManagedService,
+  isPublicHostname,
   validateServiceScale,
 } from "./service-operations.mjs";
 import {
+  createGiteaInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createTaskQueueWorker,
@@ -27,6 +29,8 @@ import {
   getContainerMetricAlerts,
   getRecentAuditEvents,
   getRecentTasks,
+  getTaskById,
+  getLatestTaskByType,
   getBackupIntervalHours,
   getOperationalAlerts,
   getDatabaseStatus,
@@ -40,6 +44,7 @@ import {
   saveContainerRestartSamples,
   saveContainerMetrics,
   recordAuditEvent,
+  createGiteaInstallTask,
   createServiceRestartTask,
   createServiceScaleTask,
   updateMetricAlertThresholds,
@@ -55,6 +60,8 @@ const cookieName = "vps_manager_session";
 const secureCookies = process.env.COOKIE_SECURE !== "false";
 const loginAttempts = new Map();
 const dockerApi = process.env.DOCKER_API_URL ?? "http://docker-proxy:2375";
+const managerDomain = process.env.VPS_MANAGER_DOMAIN ?? "";
+const testMode = process.env.VPS_MANAGER_TEST_MODE === "true";
 const metricsRetentionDays = 7;
 const backupRetentionDays = 7;
 const backupManager = createBackupManager();
@@ -75,6 +82,7 @@ const taskQueueWorker = createTaskQueueWorker({
   handlers: {
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
+    "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
 });
@@ -469,6 +477,7 @@ async function getServicesWithStacks() {
       replicas: replicated ? `${running}/${replicated.Replicas ?? 1}` : `${running} activos`,
       desiredReplicas: replicated ? replicated.Replicas ?? 1 : null,
       managed: service.Spec?.Labels?.["vps-manager.managed"] === "true",
+      component: service.Spec?.Labels?.["vps-manager.component"] ?? null,
     };
   });
 }
@@ -476,6 +485,43 @@ async function getServicesWithStacks() {
 async function getServices() {
   const services = await getServicesWithStacks();
   return services.map(({ stack, ...service }) => service);
+}
+
+async function getGiteaApplicationState() {
+  const services = await dockerGet("/services");
+  const service = services.find((item) => item.Spec?.Name === "vps-manager-gitea");
+  const installed = service?.Spec?.Labels?.["vps-manager.component"] === "gitea"
+    && service.Spec.Labels["vps-manager.managed"] === "true";
+  const nameConflict = Boolean(service && !installed);
+  const domain = !testMode && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
+  const latestTask = await getLatestTaskByType("application.gitea.install");
+  const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
+  const credentialsAvailable = latestTask?.status === "completed"
+    && latestTask.result?.credentialsAvailable === true
+    && await serviceOperationAgent.hasGiteaCredentials(latestTask.id);
+
+  return {
+    application: {
+      id: "gitea",
+      domain,
+      url: domain ? `https://${domain}/` : null,
+      sshPort: 2222,
+      available: Boolean(domain) && !installed && !nameConflict && !installing,
+      installed,
+      installing,
+      nameConflict,
+      credentialsAvailable,
+      latestTask: latestTask ? {
+        id: latestTask.id,
+        status: latestTask.status,
+        message: latestTask.status === "completed"
+          ? latestTask.result?.message ?? "Gitea está instalado."
+          : latestTask.status === "failed"
+            ? latestTask.error ?? "La instalación de Gitea falló."
+            : "Instalación de Gitea en curso.",
+      } : null,
+    },
+  };
 }
 
 async function getStacks() {
@@ -690,6 +736,113 @@ const server = createServer(async (request, response) => {
       }
       console.error("Web update request failed:", error);
       respondJson(response, 503, { error: "No se pudo iniciar la actualización desde el panel." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/system/applications/gitea") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        respondJson(response, 200, await getGiteaApplicationState());
+      } catch (error) {
+        console.error("Gitea application status request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el estado de Gitea." });
+      }
+      return;
+    }
+    if (request.method === "POST") {
+      if (!hasSameOrigin(request)) {
+        respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+        return;
+      }
+      try {
+        const { application } = await getGiteaApplicationState();
+        if (!application.domain) {
+          respondJson(response, 409, {
+            error: "Gitea requiere que VPS Manager esté instalado con un dominio público y HTTPS; no está disponible en modo de prueba ni con una dirección IP.",
+          });
+          return;
+        }
+        if (application.installed || application.nameConflict) {
+          respondJson(response, 409, {
+            error: application.nameConflict
+              ? "Ya existe un servicio con el nombre reservado para Gitea que no pertenece a VPS Manager."
+              : "Gitea ya está instalado.",
+          });
+          return;
+        }
+        if (application.installing) {
+          respondJson(response, 409, { error: "Ya hay una instalación de Gitea en curso." });
+          return;
+        }
+
+        const taskId = randomUUID();
+        try {
+          await createGiteaInstallTask({ id: taskId, domain: application.domain });
+        } catch (error) {
+          if (error?.code === "APPLICATION_TASK_IN_PROGRESS") {
+            respondJson(response, 409, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        respondJson(response, 202, {
+          task: {
+            id: taskId,
+            type: "application.gitea.install",
+            status: "pending",
+            domain: application.domain,
+            message: `Instalación de Gitea solicitada para https://${application.domain}/.`,
+          },
+        });
+      } catch (error) {
+        console.error("Could not request Gitea installation:", error);
+        respondJson(response, 503, { error: "No se pudo iniciar la instalación de Gitea." });
+      }
+      return;
+    }
+    respond(response, 405, "Method not allowed", { Allow: "GET, POST" });
+    return;
+  }
+
+  const giteaCredentialsMatch = request.method === "GET"
+    && url.pathname.match(/^\/api\/system\/applications\/gitea\/credentials\/([a-f0-9-]{36})$/i);
+  if (giteaCredentialsMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const task = await getTaskById(giteaCredentialsMatch[1]);
+      if (task?.type !== "application.gitea.install"
+        || task.status !== "completed"
+        || task.result?.credentialsAvailable !== true) {
+        respondJson(response, 409, { error: "Las credenciales solo están disponibles tras completar la instalación de Gitea." });
+        return;
+      }
+      const credentials = await serviceOperationAgent.consumeGiteaCredentials(giteaCredentialsMatch[1]);
+      try {
+        await recordAuditEvent({
+          action: "application.gitea.credentials.revealed",
+          resourceType: "application",
+          resourceId: "gitea",
+          details: { taskId: giteaCredentialsMatch[1] },
+        });
+      } catch (error) {
+        console.error("Gitea credentials were revealed, but the audit event could not be saved:", error);
+      }
+      respondJson(response, 200, { credentials });
+    } catch (error) {
+      if (error?.code === "CREDENTIALS_UNAVAILABLE") {
+        respondJson(response, 410, { error: error.message });
+        return;
+      }
+      console.error("Could not retrieve one-time Gitea credentials:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar las credenciales de un solo uso." });
     }
     return;
   }
@@ -1150,6 +1303,7 @@ const server = createServer(async (request, response) => {
             INVALID_REPLICA_COUNT: 400,
             SERVICE_NOT_REPLICATED: 409,
             PANEL_REPLICA_COUNT: 400,
+            APPLICATION_REPLICA_COUNT: 400,
           }[error?.code];
           if (status) {
             respondJson(response, status, { error: error.message });

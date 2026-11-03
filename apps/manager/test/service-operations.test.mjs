@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   createServiceOperationAgent,
   findManagedService,
+  isPublicHostname,
   validateServiceScale,
 } from "../service-operations.mjs";
 
@@ -49,6 +50,20 @@ test("validates scale targets for replicated services without allowing panel dow
     ...service,
     Spec: { ...service.Spec, Labels: { "vps-manager.component": "api" } },
   }, 1), 3);
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: {
+      ...service.Spec,
+      Labels: { "vps-manager.managed": "true", "vps-manager.component": "gitea" },
+    },
+  }, 2), { code: "APPLICATION_REPLICA_COUNT" });
+});
+
+test("accepts only public DNS hostnames for application subdomains", () => {
+  assert.equal(isPublicHostname("git.example.com"), true);
+  assert.equal(isPublicHostname("192.168.100.156"), false);
+  assert.equal(isPublicHostname("git.example.com;id"), false);
+  assert.equal(isPublicHostname("git.local"), false);
 });
 
 async function createFixture(createId = () => requestId) {
@@ -94,6 +109,40 @@ test("queues a validated scale request through the fixed service-operation chann
     assert.equal((await fixture.agent.requestScale(serviceId, 4)).replicas, 4);
     await assert.rejects(fixture.agent.requestScale(serviceId, 5), /different service operation/);
     await assert.rejects(fixture.agent.requestScale(serviceId, 0), /between 1 and 100/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("queues a Gitea install request without credentials and reveals generated credentials only once", async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await fixture.agent.requestGiteaInstall("git.example.com");
+    assert.equal(result.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "install-gitea",
+      domain: "git.example.com",
+    });
+    assert.equal((await fixture.agent.getStatus()).domain, "git.example.com");
+    await assert.rejects(fixture.agent.requestGiteaInstall("git.example.com;id"), /hostname público válido/);
+
+    const credentialsPath = join(fixture.directory, `gitea-credentials-${requestId}.json`);
+    await writeFile(credentialsPath, JSON.stringify({
+      taskId: requestId,
+      username: "vpsadmin",
+      password: "a".repeat(64),
+      domain: "git.example.com",
+    }), { mode: 0o640 });
+    assert.equal(await fixture.agent.hasGiteaCredentials(requestId), true);
+    assert.deepEqual(await fixture.agent.consumeGiteaCredentials(requestId), {
+      username: "vpsadmin",
+      password: "a".repeat(64),
+      url: "https://git.example.com/",
+      sshCommand: "ssh -p 2222 git@git.example.com",
+    });
+    assert.equal(await fixture.agent.hasGiteaCredentials(requestId), false);
+    await assert.rejects(fixture.agent.consumeGiteaCredentials(requestId), { code: "CREDENTIALS_UNAVAILABLE" });
   } finally {
     await fixture.cleanup();
   }

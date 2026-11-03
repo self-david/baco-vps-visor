@@ -27,6 +27,12 @@ function createFakePool() {
             auditEvents.length = auditSize ?? auditEvents.length;
             return { rowCount: 0 };
           }
+          if (sql.includes("pg_advisory_xact_lock")) return { rowCount: 1 };
+          if (sql.includes("SELECT id FROM tasks") && sql.includes("status IN")) {
+            const active = [...tasks.values()].find((task) =>
+              task.type === values[0] && ["pending", "in_progress"].includes(task.status));
+            return { rowCount: active ? 1 : 0, rows: active ? [{ id: active.id }] : [] };
+          }
           if (sql.includes("INSERT INTO tasks")) {
             const [id, type, payload, maxAttempts] = values;
             tasks.set(id, {
@@ -128,6 +134,16 @@ function createFakePool() {
         return { rowCount: 1 };
       }
       if (sql.includes("SELECT id, type, status, payload")) {
+        if (sql.includes("WHERE id = $1")) {
+          const task = tasks.get(values[0]);
+          return { rows: task ? [task] : [] };
+        }
+        if (sql.includes("WHERE type = $1")) {
+          const task = [...tasks.values()]
+            .filter((candidate) => candidate.type === values[0])
+            .sort((left, right) => right.created_at - left.created_at || right.id.localeCompare(left.id))[0];
+          return { rows: task ? [task] : [] };
+        }
         return {
           rows: [...tasks.values()]
             .sort((left, right) => right.created_at - left.created_at)
@@ -204,6 +220,21 @@ test("persists original and desired replica counts for service scale tasks", asy
       desiredReplicas: 101,
     },
   }), /fields are invalid/);
+});
+
+test("looks up Gitea tasks independently of the truncated task-history list", async () => {
+  const { store } = createFakePool();
+  const giteaTask = {
+    id: taskId,
+    type: "application.gitea.install",
+    payload: { domain: "git.example.com" },
+  };
+  await store.createTask(giteaTask);
+
+  assert.equal((await store.getTaskById(taskId)).domain, "git.example.com");
+  assert.equal((await store.getLatestTaskByType("application.gitea.install")).id, taskId);
+  assert.equal(await store.getTaskById("f3a5e0bb-4911-4d38-8846-04bd9c917134"), null);
+  await assert.rejects(store.getTaskById("invalid"), /identifier is invalid/);
 });
 
 test("claims tasks with a lease, records attempts and recovers expired work", async () => {

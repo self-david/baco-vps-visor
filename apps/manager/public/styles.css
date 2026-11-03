@@ -56,6 +56,12 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .application-card .eyebrow { margin-bottom: 6px; }
 .application-card > p { margin: 14px 0 0; font-size: .86rem; }
 .application-status { padding-top: 12px; border-top: 1px solid #263247; color: #ffcb75; }
+.application-domain { margin: 10px 0 0; font-size: .82rem; }
+.application-actions { flex-wrap: wrap; margin-top: 14px; }
+.gitea-credentials { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 12px; margin: 20px 0; }
+.gitea-credentials dt { color: #9ba8bc; font-size: .85rem; }
+.gitea-credentials dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.gitea-credentials code { color: #e1e9f5; user-select: all; }
 .application-notice { display: flex; grid-column: 1 / -1; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid #6b4c37; border-radius: 10px; background: #211a16; color: #f2c99e; }
 .application-notice strong { font-size: .88rem; }
 .application-notice p { margin: 6px 0 0; color: #d3b99f; font-size: .82rem; line-height: 1.5; }

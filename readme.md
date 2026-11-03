@@ -220,7 +220,7 @@ sudo vps-manager-uninstall
 
 El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de Docker Engine, Swarm, réplicas de los servicios del stack, redes, conexión PostgreSQL y disponibilidad de archivos de respaldo cifrados. Esa comprobación no realiza cambios. Los detalles del host que requieren acceso al sistema operativo (Ubuntu, memoria, espacio de disco y puertos) siguen disponibles con `sudo vps-manager-diagnostics` por SSH. El panel no monta el socket Docker: la operación de reinicio pasa por un canal de solicitud dedicado y restringido del agente host.
 
-El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. El catálogo describe aplicaciones opcionales; Gitea aparece como integración planeada para proyectos, con HTTPS bajo `git.<dominio>` y SSH en el puerto `2222`. La instalación y la detección de estado desde el panel aún no están habilitadas.
+El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. Gitea es una aplicación opcional que puede instalarse desde Aplicaciones en instalaciones con dominio público y HTTPS. Requiere que `git.<dominio-del-panel>` apunte al VPS, que el puerto TCP `2222` esté libre y accesible, y al menos 768 MB disponibles para el servicio. Se utiliza SQLite con una sola réplica y un volumen persistente independiente. La contraseña aleatoria del administrador se puede consultar una sola vez durante los 30 minutos posteriores a la instalación.
 
 Para desarrollar el frontend desde `apps/manager`, ejecuta `npm ci` y `npm run dev`; `npm run build` genera `dist/` y `npm test` ejecuta las pruebas del backend. La imagen Docker construye el frontend en una etapa separada y publica únicamente los archivos generados junto al backend.
 
@@ -332,7 +332,7 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 - Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-Gitea, Prometheus, cAdvisor, Node Exporter, PostgreSQL de catálogo y las capacidades de despliegue de proyectos se implementarán en fases posteriores. El PostgreSQL interno del panel ya forma parte de esta entrega.
+Gitea ya se puede instalar opcionalmente desde el catálogo de Aplicaciones; su integración con proyectos, Prometheus, cAdvisor, Node Exporter, PostgreSQL de catálogo y las capacidades de despliegue de proyectos siguen pendientes. El PostgreSQL interno del panel ya forma parte de esta entrega.
 
 ### Etapa 6: finalización
 

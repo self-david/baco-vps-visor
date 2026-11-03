@@ -363,6 +363,25 @@ import "../styles/tailwind.css";
         </div>
       </form>
     </dialog>
+    <dialog id="gitea-credentials-dialog" class="logs-dialog" aria-labelledby="gitea-credentials-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">CREDENCIALES DE UN SOLO USO</p>
+          <h2 id="gitea-credentials-title">Administrador de Gitea</h2>
+        </div>
+        <button id="close-gitea-credentials" class="button secondary" type="button">Cerrar</button>
+      </div>
+      <p class="muted">Guarda estas credenciales en un gestor seguro ahora. La contraseña no se volverá a mostrar y caduca si no se consulta durante 30 minutos.</p>
+      <dl class="gitea-credentials">
+        <dt>URL</dt><dd><a id="gitea-credential-url" class="update-release-link"></a></dd>
+        <dt>Usuario</dt><dd><code id="gitea-credential-username"></code></dd>
+        <dt>Contraseña</dt><dd><code id="gitea-credential-password"></code></dd>
+        <dt>Git SSH</dt><dd><code id="gitea-credential-ssh"></code></dd>
+      </dl>
+      <div class="dialog-actions">
+        <button id="copy-gitea-credentials" class="button secondary" type="button">Copiar credenciales</button>
+      </div>
+    </dialog>
     <script is:inline src="/app.js"></script>
     <script>
       import "../scripts/hydrate-dashboard-tabs.js";

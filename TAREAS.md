@@ -76,11 +76,11 @@ Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migr
 
 ## Fase 4 — Gitea
 
-Estado: **pendiente**
+Estado: **instalador implementado; falta validar en un VPS con dominio público**
 
 - [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
-- [ ] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
-- [ ] Configurar SSH.
+- [x] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
+- [x] Configurar SSH.
 - [ ] Crear repositorios.
 - [ ] Administrar ramas.
 - [ ] Configurar webhooks.

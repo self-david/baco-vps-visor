@@ -47,6 +47,16 @@ elif request.get("operation") == "scale-service":
     if not 1 <= request["replicas"] <= 100:
         raise SystemExit("Desired replica count must be between 1 and 100.")
     replicas = request["replicas"]
+elif request.get("operation") == "install-gitea":
+    if set(request) != {"id", "operation", "domain"}:
+        raise SystemExit("Invalid Gitea installation request fields.")
+    if not isinstance(request["domain"], str) or not re.fullmatch(
+        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+        request["domain"],
+    ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"]):
+        raise SystemExit("Invalid Gitea domain.")
+    service_id = "-"
+    replicas = "-"
 else:
     raise SystemExit("Invalid service operation request fields.")
 if not re.fullmatch(
@@ -54,23 +64,26 @@ if not re.fullmatch(
     str(request["id"]),
 ):
     raise SystemExit("Invalid service operation request identifier.")
-if not re.fullmatch(r"[a-fA-F0-9]{25,64}", str(request["serviceId"])):
+if request["operation"] != "install-gitea" and not re.fullmatch(r"[a-fA-F0-9]{25,64}", str(request["serviceId"])):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request["serviceId"]}\t{replicas}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain <<< "${request_data}"
 
 write_status() {
   local state="$1"
   local message="$2"
   local temporary_file
   temporary_file="$(mktemp "${STATE_DIRECTORY}/status.XXXXXX")"
-  if [[ "${operation}" == "scale-service" ]]; then
+  if [[ "${operation}" == "install-gitea" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","credentialsAvailable":%s,"updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${gitea_domain}" "${gitea_credentials_available:-false}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   else
@@ -81,7 +94,9 @@ write_status() {
   mv -f -- "${temporary_file}" "${STATUS_FILE}"
 }
 
-if [[ "${operation}" == "scale-service" ]]; then
+if [[ "${operation}" == "install-gitea" ]]; then
+  write_status "running" "Preparando la instalación segura de Gitea."
+elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
 else
   write_status "running" "Reinicio de servicio en curso."
@@ -92,6 +107,172 @@ if ! command -v docker >/dev/null 2>&1; then
   write_status "failed" "Docker no está disponible en el host."
   echo "Docker is not installed." >&2
   exit 1
+fi
+
+if [[ "${operation}" == "install-gitea" ]]; then
+  readonly INSTALL_ENV="/opt/vps-manager/install.env"
+  readonly GITEA_SERVICE="vps-manager-gitea"
+  readonly GITEA_IMAGE="gitea/gitea:1.25.3"
+  readonly CREDENTIALS_FILE="${STATE_DIRECTORY}/gitea-credentials-${request_id}.json"
+  base_domain="$(sed -n 's/^VPS_MANAGER_DOMAIN=//p' "${INSTALL_ENV}" | head -n 1)"
+  test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' "${INSTALL_ENV}" | head -n 1)"
+  if [[ "${test_mode}" == "true" || ! "${base_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ \
+    || "${gitea_domain,,}" != "git.${base_domain,,}" ]]; then
+    gitea_credentials_available=false
+    write_status "failed" "Gitea requiere una instalación HTTPS con un dominio público; el modo de prueba no es compatible."
+    exit 1
+  fi
+  if ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
+    gitea_credentials_available=false
+    write_status "failed" "No se encontró la red HTTPS de Traefik."
+    exit 1
+  fi
+
+  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${GITEA_SERVICE}" 2>/dev/null)"; then
+    IFS=' ' read -r _ managed_label component_label <<< "${service_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "gitea" ]]; then
+      gitea_credentials_available=false
+      write_status "failed" "Ya existe un servicio con el nombre reservado para Gitea y no pertenece a VPS Manager."
+      exit 1
+    fi
+    gitea_credentials_available=false
+    write_status "succeeded" "Gitea ya estaba instalado. No se generaron credenciales nuevas."
+    exit 0
+  fi
+
+  if [[ ! -e "${CREDENTIALS_FILE}" ]]; then
+    if ! gitea_password="$(python3 - "${CREDENTIALS_FILE}" "${request_id}" "${gitea_domain}" <<'PY'
+import json
+import os
+import secrets
+import sys
+
+path, task_id, domain = sys.argv[1:]
+password = secrets.token_hex(32)
+temporary = f"{path}.tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+with os.fdopen(descriptor, "w", encoding="utf-8") as credential_file:
+    json.dump({
+        "taskId": task_id,
+        "domain": domain,
+        "username": "vpsadmin",
+        "password": password,
+    }, credential_file)
+    credential_file.write("\n")
+os.chown(temporary, 0, 1000)
+os.replace(temporary, path)
+print(password)
+PY
+    )"; then
+      gitea_credentials_available=false
+      write_status "failed" "No se pudieron generar las credenciales iniciales de Gitea."
+      exit 1
+    fi
+  else
+    gitea_password="$(python3 - "${CREDENTIALS_FILE}" "${request_id}" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as credential_file:
+    credentials = json.load(credential_file)
+if credentials.get("taskId") != sys.argv[2] or not re.fullmatch(r"[a-f0-9]{64}", credentials.get("password", "")):
+    raise SystemExit("Invalid pending Gitea credentials.")
+print(credentials["password"])
+PY
+    )" || {
+      gitea_credentials_available=false
+      write_status "failed" "No se pudieron validar las credenciales temporales de Gitea."
+      exit 1
+    }
+  fi
+
+  if ! systemd-run --quiet --on-active=30m \
+    --unit="vps-manager-gitea-credentials-expire-${request_id}" \
+    /usr/bin/find "${STATE_DIRECTORY}" -maxdepth 1 -type f \
+      -name "gitea-credentials-${request_id}.json*" -delete; then
+    rm -f -- "${CREDENTIALS_FILE}"
+    gitea_credentials_available=false
+    write_status "failed" "No se pudo programar la caducidad de las credenciales iniciales."
+    exit 1
+  fi
+
+  if ! docker pull "${GITEA_IMAGE}"; then
+    gitea_credentials_available=true
+    write_status "failed" "No se pudo descargar la imagen fijada de Gitea."
+    exit 1
+  fi
+
+  if ! docker service create \
+    --name "${GITEA_SERVICE}" \
+    --replicas 1 \
+    --constraint 'node.role==manager' \
+    --network vps-manager-proxy \
+    --mount type=volume,source=vps-manager-gitea-data,target=/data \
+    --publish published=2222,target=22,protocol=tcp,mode=host \
+    --env USER_UID=1000 \
+    --env USER_GID=1000 \
+    --env GITEA__database__DB_TYPE=sqlite3 \
+    --env GITEA__server__DOMAIN="${gitea_domain}" \
+    --env GITEA__server__ROOT_URL="https://${gitea_domain}/" \
+    --env GITEA__server__SSH_DOMAIN="${gitea_domain}" \
+    --env GITEA__server__SSH_PORT=2222 \
+    --env GITEA__server__SSH_LISTEN_PORT=22 \
+    --env GITEA__server__START_SSH_SERVER=true \
+    --env GITEA__security__INSTALL_LOCK=true \
+    --env GITEA__service__DISABLE_REGISTRATION=true \
+    --env GITEA__service__REQUIRE_SIGNIN_VIEW=true \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=gitea \
+    --label traefik.enable=true \
+    --label traefik.swarm.network=vps-manager-proxy \
+    --label "traefik.http.routers.vps-manager-gitea.rule=Host(\`${gitea_domain}\`)" \
+    --label traefik.http.routers.vps-manager-gitea.entrypoints=websecure \
+    --label traefik.http.routers.vps-manager-gitea.tls=true \
+    --label traefik.http.routers.vps-manager-gitea.tls.certresolver=vpsmanager \
+    --label traefik.http.services.vps-manager-gitea.loadbalancer.server.port=3000 \
+    --limit-cpu 1 \
+    --limit-memory 768M \
+    --restart-condition on-failure \
+    "${GITEA_IMAGE}" >/dev/null; then
+    gitea_credentials_available=true
+    write_status "failed" "Swarm no pudo crear el servicio Gitea. Verifica si el puerto TCP 2222 está disponible."
+    exit 1
+  fi
+
+  container_id=""
+  admin_list=""
+  for attempt in $(seq 1 90); do
+    container_id="$(docker ps \
+      --filter "label=com.docker.swarm.service.name=${GITEA_SERVICE}" \
+      --filter status=running \
+      --format '{{.ID}}' | head -n 1)"
+    if [[ -n "${container_id}" ]] \
+      && admin_list="$(docker exec "${container_id}" gitea admin user list --admin 2>/dev/null)"; then
+      break
+    fi
+    sleep 2
+  done
+  if [[ -z "${container_id}" ]]; then
+    gitea_credentials_available=true
+    write_status "failed" "Gitea no inició a tiempo. El volumen persistente se conservó; revisa los logs del servicio."
+    exit 1
+  fi
+
+  if ! awk '{ for (i = 1; i <= NF; i++) if ($i == "vpsadmin") found = 1 } END { exit !found }' <<< "${admin_list}"; then
+    if ! docker exec "${container_id}" gitea admin user create \
+      --username vpsadmin \
+      --password "${gitea_password}" \
+      --email "vpsadmin@${base_domain}" \
+      --admin; then
+      gitea_credentials_available=true
+      write_status "failed" "No se pudo crear el administrador inicial de Gitea; los datos persistentes se conservaron."
+      exit 1
+    fi
+  fi
+  gitea_credentials_available=true
+  write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
+  exit 0
 fi
 
 if ! service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${service_id}")"; then
@@ -109,6 +290,11 @@ if [[ "${operation}" == "scale-service" ]]; then
   if [[ "${component_label}" == "api" && "${replicas}" != "1" ]]; then
     write_status "failed" "El servicio del panel debe conservar exactamente una réplica."
     echo "Rejected scaling the VPS Manager API away from one replica." >&2
+    exit 1
+  fi
+  if [[ "${component_label}" == "gitea" && "${replicas}" != "1" ]]; then
+    write_status "failed" "Gitea usa SQLite y debe conservar exactamente una réplica."
+    echo "Rejected scaling the Gitea application away from one replica." >&2
     exit 1
   fi
   if docker service update --replicas "${replicas}" --detach=true "${service_id}"; then

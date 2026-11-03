@@ -16,9 +16,21 @@ export default function ApplicationCatalog() {
           <ul className="roadmap-list">
             {application.features.map((feature) => <li key={feature}>{feature}</li>)}
           </ul>
-          <p className="application-status" role="status">
-            La instalación automática y la detección de estado aún no están disponibles.
+          <p id="gitea-status" className="application-status" role="status" aria-live="polite">
+            Consultando disponibilidad…
           </p>
+          <p className="application-domain">
+            <a id="gitea-url" href="#" className="update-release-link hidden">Abrir Gitea</a>
+            <span id="gitea-ssh" className="muted hidden"></span>
+          </p>
+          <div className="container-heading-actions application-actions">
+            <button id="install-gitea" className="button resource-action hidden" type="button" disabled={!application.installation.enabled}>
+              Instalar Gitea
+            </button>
+            <button id="reveal-gitea-credentials" className="button secondary resource-action hidden" type="button">
+              Mostrar credenciales una vez
+            </button>
+          </div>
         </section>
       ))}
     </div>

@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { lstat, link, readFile, unlink, writeFile } from "node:fs/promises";
+import { lstat, link, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
-const allowedOperations = new Set(["restart-service", "scale-service"]);
+const allowedOperations = new Set(["restart-service", "scale-service", "install-gitea"]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
+const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+
+export function isPublicHostname(hostname) {
+  return typeof hostname === "string" && hostnamePattern.test(hostname)
+    && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
+    && !/\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$/i.test(hostname);
+}
 
 export function findManagedService(services, requestedId) {
   if (typeof requestedId !== "string" || !/^[a-f0-9]{12,64}$/i.test(requestedId)) {
@@ -50,6 +57,11 @@ export function validateServiceScale(service, replicas) {
     error.code = "PANEL_REPLICA_COUNT";
     throw error;
   }
+  if (service.Spec.Labels?.["vps-manager.component"] === "gitea" && replicas !== 1) {
+    const error = new Error("Gitea usa SQLite y debe conservar exactamente una réplica.");
+    error.code = "APPLICATION_REPLICA_COUNT";
+    throw error;
+  }
   return Number.isInteger(replicatedMode.Replicas) ? replicatedMode.Replicas : 1;
 }
 
@@ -60,11 +72,13 @@ function isMissing(error) {
 function validateStatus(status) {
   if (!status || typeof status !== "object"
     || !requestIdPattern.test(status.id ?? "")
-    || !serviceIdPattern.test(status.serviceId ?? "")
     || !statusStates.has(status.state)
     || typeof status.updatedAt !== "string"
     || typeof status.message !== "string"
     || (status.operation !== undefined && !allowedOperations.has(status.operation))
+    || (status.operation === "install-gitea"
+      ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
+      : !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))) {
     throw new Error("The service operation status file has an invalid format.");
@@ -78,6 +92,7 @@ export function createServiceOperationAgent({
 } = {}) {
   const requestPath = join(directory, "request.json");
   const statusPath = join(directory, "status.json");
+  const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
 
   async function readOptional(path) {
     try {
@@ -111,13 +126,17 @@ export function createServiceOperationAgent({
         && !Array.isArray(queuedRequest)
         && requestIdPattern.test(queuedRequest.id ?? "")
         && allowedOperations.has(queuedRequest.operation)
-        && serviceIdPattern.test(queuedRequest.serviceId ?? ""));
+        && (queuedRequest.operation === "install-gitea"
+          ? isPublicHostname(queuedRequest.domain)
+          : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
       if (!validCommonFields) {
         throw new Error("The service operation request file has an invalid format.");
       }
       const validScaleRequest = queuedRequest.operation !== "scale-service"
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
-      const expectedFields = queuedRequest.operation === "scale-service"
+      const expectedFields = queuedRequest.operation === "install-gitea"
+        ? ["id", "operation", "domain"]
+        : queuedRequest.operation === "scale-service"
         ? ["id", "operation", "serviceId", "replicas"]
         : ["id", "operation", "serviceId"];
       if (!validScaleRequest
@@ -128,10 +147,14 @@ export function createServiceOperationAgent({
         return {
           id: queuedRequest.id,
           state: "queued",
-          serviceId: queuedRequest.serviceId,
           operation: queuedRequest.operation,
+          ...(queuedRequest.operation === "install-gitea"
+            ? { domain: queuedRequest.domain }
+            : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
-          message: queuedRequest.operation === "scale-service"
+          message: queuedRequest.operation === "install-gitea"
+            ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
+            : queuedRequest.operation === "scale-service"
             ? "Solicitud aceptada; esperando que el agente del VPS escale el servicio."
             : "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
         };
@@ -205,11 +228,126 @@ export function createServiceOperationAgent({
     };
   }
 
+  async function requestGiteaInstall(domain, requestId = createId()) {
+    if (!isPublicHostname(domain)) {
+      throw new TypeError("El dominio de Gitea debe ser un hostname público válido.");
+    }
+    if (!requestIdPattern.test(requestId)) {
+      throw new Error("The service operation request identifier is invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "install-gitea" || currentStatus.domain !== domain) {
+        throw new Error("The task identifier already belongs to a different application operation.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify({
+        id: requestId,
+        operation: "install-gitea",
+        domain,
+      })}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+
+    return {
+      id: requestId,
+      state: "queued",
+      operation: "install-gitea",
+      domain,
+      message: `Instalación de Gitea aceptada para ${domain}; el agente del VPS iniciará el servicio.`,
+    };
+  }
+
+  async function hasGiteaCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) return false;
+    const path = credentialsPath(requestId);
+    try {
+      const metadata = await lstat(path);
+      if (!metadata.isFile()) throw new Error("The Gitea credential state path must be a regular file.");
+      if (Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        await unlink(path);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
+  async function consumeGiteaCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("A valid Gitea installation task identifier is required.");
+    }
+    const path = credentialsPath(requestId);
+    const claimedPath = `${path}.claimed-${createId()}`;
+    try {
+      await rename(path, claimedPath);
+    } catch (error) {
+      if (isMissing(error)) {
+        const expired = new Error("Las credenciales de un solo uso ya fueron consultadas o expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      throw error;
+    }
+
+    try {
+      const metadata = await lstat(claimedPath);
+      if (!metadata.isFile() || Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        const expired = new Error("Las credenciales de un solo uso expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      const credentials = JSON.parse(await readFile(claimedPath, "utf8"));
+      if (credentials?.taskId !== requestId
+        || credentials.username !== "vpsadmin"
+        || typeof credentials.password !== "string"
+        || !/^[a-f0-9]{64}$/.test(credentials.password)
+        || !isPublicHostname(credentials.domain)) {
+        throw new Error("The Gitea credential file has an invalid format.");
+      }
+      return {
+        username: credentials.username,
+        password: credentials.password,
+        url: `https://${credentials.domain}/`,
+        sshCommand: `ssh -p 2222 git@${credentials.domain}`,
+      };
+    } finally {
+      await unlink(claimedPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+  }
+
   return {
     getStatus,
+    hasGiteaCredentials,
+    consumeGiteaCredentials,
     requestRestart: (serviceId, requestId = createId()) =>
       requestOperation("restart-service", serviceId, requestId),
     requestScale: (serviceId, replicas, requestId = createId()) =>
       requestOperation("scale-service", serviceId, requestId, replicas),
+    requestGiteaInstall,
   };
 }

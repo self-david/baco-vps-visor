@@ -133,6 +133,8 @@ services:
       DATABASE_USER: vps_manager
       BACKUP_DIRECTORY: /var/backups/vps-manager
       WEB_UPDATE_DIRECTORY: /var/lib/vps-manager/web-update
+      VPS_MANAGER_DOMAIN: ${VPS_MANAGER_DOMAIN}
+      VPS_MANAGER_TEST_MODE: "false"
       VPS_MANAGER_GITHUB_REPOSITORY: ${VPS_MANAGER_GITHUB_REPOSITORY:-}
     secrets:
       - admin_credentials

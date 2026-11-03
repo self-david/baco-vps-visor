@@ -161,3 +161,47 @@ export function createServiceRestartHandler(agent, options) {
 export function createServiceScaleHandler(agent, options) {
   return createServiceOperationHandler(agent, "scale-service", options);
 }
+
+export function createGiteaInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
+  if (!agent || typeof agent.requestGiteaInstall !== "function" || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+    throw new TypeError("The Gitea installation task handler configuration is invalid.");
+  }
+
+  return async (task, signal) => {
+    const domain = task.payload?.domain;
+    if (task.type !== "application.gitea.install"
+      || typeof domain !== "string"
+      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)) {
+      throw new TaskExecutionError("La tarea contiene un dominio de Gitea inválido.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+    await agent.requestGiteaInstall(domain, task.id);
+
+    while (!signal.aborted) {
+      const operation = await agent.getStatus();
+      if (operation?.id === task.id) {
+        if (operation.state === "succeeded") {
+          if (!operation.credentialsAvailable) {
+            return {
+              message: operation.message,
+              url: `https://${domain}/`,
+              credentialsAvailable: false,
+            };
+          }
+          return {
+            message: `Gitea está disponible en https://${domain}/. Las credenciales de administrador están disponibles una sola vez.`,
+            url: `https://${domain}/`,
+            credentialsAvailable: true,
+          };
+        }
+        if (operation.state === "failed") {
+          throw new TaskExecutionError(operation.message, { retryable: false });
+        }
+      }
+      await waitForRetry(signal, pollIntervalMs);
+    }
+    throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+  };
+}

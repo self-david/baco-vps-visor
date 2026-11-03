@@ -11,9 +11,9 @@ export const applicationCatalog = [
       "Integración futura con proyectos y webhooks",
     ],
     installation: {
-      status: "planned",
-      enabled: false,
-      statusLabel: "Instalador en desarrollo",
+      status: "optional",
+      enabled: true,
+      statusLabel: "Aplicación opcional",
     },
   },
 ];

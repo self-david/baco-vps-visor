@@ -20,7 +20,18 @@ function mapTask(row, { includePayload = false } = {}) {
         originalReplicas: row.payload.originalReplicas,
       }
       : {}),
-    result: typeof row.result?.message === "string" ? { message: row.result.message } : null,
+    ...(row.type === "application.gitea.install" ? { domain: row.payload.domain } : {}),
+    result: typeof row.result?.message === "string"
+      ? {
+        message: row.result.message,
+        ...(row.type === "application.gitea.install" && row.result.credentialsAvailable === true
+          ? {
+            url: row.result.url,
+            credentialsAvailable: true,
+          }
+          : {}),
+      }
+      : null,
     error: row.error,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
@@ -51,6 +62,13 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || !Number.isInteger(payload.originalReplicas) || payload.originalReplicas < 0 || payload.originalReplicas > 10000)) {
     throw new TypeError("Service scale task fields are invalid.");
   }
+  if (type === "application.gitea.install"
+    && (Object.keys(payload).length !== 1
+      || typeof payload.domain !== "string"
+      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
+    throw new TypeError("Gitea application installation task fields are invalid.");
+  }
 }
 
 export function createTaskStore({ pool, insertAuditEvent }) {
@@ -64,6 +82,20 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      if (type === "application.gitea.install") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["application.gitea.install"]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type = $1 AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [type],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay una instalación de Gitea en curso.");
+          error.code = "APPLICATION_TASK_IN_PROGRESS";
+          throw error;
+        }
+      }
       await client.query(
         `INSERT INTO tasks (id, type, status, payload, max_attempts)
          VALUES ($1, $2, 'pending', $3::jsonb, $4)`,
@@ -262,5 +294,40 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     return result.rows.map((row) => mapTask(row));
   }
 
-  return { createTask, claimNextTask, renewTaskLease, completeTask, failTask, listRecentTasks };
+  async function getTaskById(id) {
+    if (typeof id !== "string" || !uuidPattern.test(id)) {
+      throw new TypeError("The task identifier is invalid.");
+    }
+    const result = await pool.query(
+      `SELECT id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
+         created_at, updated_at, started_at, completed_at
+       FROM tasks WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapTask(result.rows[0]) : null;
+  }
+
+  async function getLatestTaskByType(type) {
+    if (typeof type !== "string" || !taskTypePattern.test(type)) {
+      throw new TypeError("The task type is invalid.");
+    }
+    const result = await pool.query(
+      `SELECT id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
+         created_at, updated_at, started_at, completed_at
+       FROM tasks WHERE type = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [type],
+    );
+    return result.rows[0] ? mapTask(result.rows[0]) : null;
+  }
+
+  return {
+    createTask,
+    claimNextTask,
+    renewTaskLease,
+    completeTask,
+    failTask,
+    listRecentTasks,
+    getTaskById,
+    getLatestTaskByType,
+  };
 }

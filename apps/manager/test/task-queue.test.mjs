@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createGiteaInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createTaskQueueWorker,
@@ -137,6 +138,37 @@ test("dispatches scale tasks through the scale-only agent method", async () => {
     replicas: 5,
     requestId: scaleTask.id,
   }]);
+});
+
+test("installs Gitea through the fixed agent operation and stores no credentials in task results", async () => {
+  const giteaTask = {
+    id: task.id,
+    type: "application.gitea.install",
+    payload: { domain: "git.example.com" },
+  };
+  const requests = [];
+  const handler = createGiteaInstallHandler({
+    async requestGiteaInstall(domain, requestId) {
+      requests.push({ domain, requestId });
+    },
+    async getStatus() {
+      return {
+        id: giteaTask.id,
+        operation: "install-gitea",
+        state: "succeeded",
+        domain: "git.example.com",
+        credentialsAvailable: true,
+        message: "Gitea instalado.",
+      };
+    },
+  });
+
+  assert.deepEqual(await handler(giteaTask, new AbortController().signal), {
+    message: "Gitea está disponible en https://git.example.com/. Las credenciales de administrador están disponibles una sola vez.",
+    url: "https://git.example.com/",
+    credentialsAvailable: true,
+  });
+  assert.deepEqual(requests, [{ domain: "git.example.com", requestId: giteaTask.id }]);
 });
 
 test("does not automatically retry a host-reported operation failure", async () => {
