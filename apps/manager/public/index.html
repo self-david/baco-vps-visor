@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>VPS Manager</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">INFRAESTRUCTURA</p>
+          <h1>VPS Manager</h1>
+        </div>
+        <button id="logout" class="button secondary hidden" type="button">Cerrar sesión</button>
+      </header>
+
+      <section id="login-view" class="card login-card">
+        <p class="eyebrow">ACCESO ADMINISTRATIVO</p>
+        <h2>Inicia sesión</h2>
+        <p class="muted">Usa la contraseña de administrador configurada durante la instalación.</p>
+        <form id="login-form">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button class="button" type="submit">Entrar</button>
+          <p id="login-error" class="error" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="dashboard-view" class="hidden">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">ESTADO DEL SERVIDOR</p>
+            <h2>Recursos Docker</h2>
+          </div>
+          <button id="refresh" class="button secondary" type="button">Actualizar</button>
+        </div>
+        <p id="status-message" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card server-card">
+            <div class="card-heading">
+              <h3>Servidor</h3>
+              <span id="swarm-state" class="badge">—</span>
+            </div>
+            <div id="server-info" class="server-details"></div>
+          </section>
+          <section class="card">
+            <div class="card-heading">
+              <h3>Stacks</h3>
+              <span id="stack-count" class="badge" aria-label="0 visibles de 0">0</span>
+            </div>
+            <div class="resource-filters">
+              <label class="visually-hidden" for="stack-search">Buscar stacks</label>
+              <input id="stack-search" class="resource-search" type="search" placeholder="Buscar stacks o servicios…" autocomplete="off">
+              <label class="visually-hidden" for="stack-filter">Filtrar stacks por cantidad de servicios</label>
+              <select id="stack-filter" class="resource-filter">
+                <option value="all">Todos los tamaños</option>
+                <option value="single">Un servicio</option>
+                <option value="multiple">Varios servicios</option>
+              </select>
+            </div>
+            <div id="stacks" class="resource-list"></div>
+          </section>
+          <section class="card">
+            <div class="card-heading">
+              <h3>Contenedores</h3>
+              <span id="container-count" class="badge" aria-label="0 visibles de 0">0</span>
+            </div>
+            <div class="resource-filters">
+              <label class="visually-hidden" for="container-search">Buscar contenedores</label>
+              <input id="container-search" class="resource-search" type="search" placeholder="Buscar nombre, imagen o ID…" autocomplete="off">
+              <label class="visually-hidden" for="container-filter">Filtrar contenedores por estado</label>
+              <select id="container-filter" class="resource-filter">
+                <option value="all">Todos los estados</option>
+                <option value="running">En ejecución</option>
+                <option value="inactive">No activos</option>
+              </select>
+            </div>
+            <div id="containers" class="resource-list"></div>
+          </section>
+          <section class="card">
+            <div class="card-heading">
+              <h3>Servicios Swarm</h3>
+              <span id="service-count" class="badge" aria-label="0 visibles de 0">0</span>
+            </div>
+            <div class="resource-filters">
+              <label class="visually-hidden" for="service-search">Buscar servicios Swarm</label>
+              <input id="service-search" class="resource-search" type="search" placeholder="Buscar nombre o imagen…" autocomplete="off">
+              <label class="visually-hidden" for="service-filter">Filtrar servicios por modo</label>
+              <select id="service-filter" class="resource-filter">
+                <option value="all">Todos los modos</option>
+                <option value="replicado">Replicado</option>
+                <option value="global">Global</option>
+              </select>
+            </div>
+            <div id="services" class="resource-list"></div>
+          </section>
+        </div>
+        <p class="footnote">Vista inicial de solo lectura. Las operaciones de control se habilitarán en fases posteriores.</p>
+      </section>
+    </main>
+    <dialog id="logs-dialog" class="logs-dialog" aria-labelledby="logs-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">CONSULTA · SOLO LECTURA</p>
+          <h2 id="logs-title">Logs del contenedor</h2>
+        </div>
+        <button id="close-logs" class="button secondary" type="button">Cerrar</button>
+      </div>
+      <p id="logs-status" class="muted" aria-live="polite"></p>
+      <pre id="logs-content" class="logs-content"></pre>
+    </dialog>
+  </body>
+</html>
