@@ -1,2 +1,4 @@
 node_modules/
+apps/manager/.astro/
+apps/manager/dist/
 password-test.txt

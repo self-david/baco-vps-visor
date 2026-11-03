@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile, statfs } from "node:fs/promises";
-import { dirname, extname, join, normalize } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectContainerMetrics } from "./container-metrics.mjs";
 import { createBackupManager } from "./backup-manager.mjs";
@@ -48,7 +48,7 @@ import {
 } from "./db.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const publicDir = join(root, "public");
+const publicDir = join(root, "dist");
 const port = Number(process.env.PORT ?? 3000);
 const sessionTtlSeconds = 8 * 60 * 60;
 const cookieName = "vps_manager_session";
@@ -82,6 +82,10 @@ const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
 class RequestError extends Error {
@@ -522,18 +526,31 @@ async function getDockerInfo() {
 }
 
 async function serveStatic(pathname, response) {
-  const fileName = pathname === "/" ? "index.html" : pathname.slice(1);
-  if (!["index.html", "app.js", "styles.css"].includes(fileName)) {
+  let fileName;
+  try {
+    fileName = pathname === "/" ? "index.html" : decodeURIComponent(pathname).slice(1);
+  } catch {
+    respond(response, 400, "Invalid asset path");
+    return;
+  }
+
+  const filePath = resolve(publicDir, fileName);
+  const relativePath = relative(publicDir, filePath);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
     respond(response, 404, "Not found");
     return;
   }
 
   try {
-    const body = await readFile(join(publicDir, normalize(fileName)));
+    const body = await readFile(filePath);
     respond(response, 200, body, {
-      "Content-Type": contentTypes[extname(fileName)],
+      "Content-Type": contentTypes[extname(filePath)] ?? "application/octet-stream",
     });
   } catch (error) {
+    if (error.code === "ENOENT" || error.code === "EISDIR") {
+      respond(response, 404, "Not found");
+      return;
+    }
     console.error("Unable to read frontend asset:", error);
     respond(response, 500, "Internal server error");
   }

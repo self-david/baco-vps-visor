@@ -220,7 +220,9 @@ sudo vps-manager-uninstall
 
 El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de Docker Engine, Swarm, réplicas de los servicios del stack, redes, conexión PostgreSQL y disponibilidad de archivos de respaldo cifrados. Esa comprobación no realiza cambios. Los detalles del host que requieren acceso al sistema operativo (Ubuntu, memoria, espacio de disco y puertos) siguen disponibles con `sudo vps-manager-diagnostics` por SSH. El panel no monta el socket Docker: la operación de reinicio pasa por un canal de solicitud dedicado y restringido del agente host.
 
-El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos.
+El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. El catálogo describe aplicaciones opcionales; Gitea aparece como integración planeada para proyectos, con HTTPS bajo `git.<dominio>` y SSH en el puerto `2222`. La instalación y la detección de estado desde el panel aún no están habilitadas.
+
+Para desarrollar el frontend desde `apps/manager`, ejecuta `npm ci` y `npm run dev`; `npm run build` genera `dist/` y `npm test` ejecuta las pruebas del backend. La imagen Docker construye el frontend en una etapa separada y publica únicamente los archivos generados junto al backend.
 
 La comprobación de actualizaciones consulta `GET /repos/{owner}/{repo}/releases/latest` de la API pública de GitHub. Solo considera tags estables `vMAJOR.MINOR.PATCH`; el panel compara esa versión con la versión instalada y muestra las notas y el enlace a la release. Cuando hay una actualización verificable, el administrador puede iniciarla desde el panel después de confirmar. La API requiere una sesión autenticada, comprueba el origen de la petición, vuelve a verificar que la release estable tenga digest SHA-256 y registra la solicitud en auditoría.
 
@@ -1633,7 +1635,7 @@ El desarrollo debe ser incremental.
 
 - Crear repositorio principal.
 - Definir estructura.
-- Mantener JavaScript nativo y el frontend sin compilación.
+- Mantener la API en Node.js nativo y generar una interfaz estática para servirla con un runtime mínimo.
 - Configurar convenciones.
 - Preparar entorno local.
 - Preparar VPS de pruebas.
@@ -1666,7 +1668,7 @@ El desarrollo debe ser incremental.
 
 ## Fase 3 — Dashboard
 
-- Diseñar interfaz.
+- Diseñar interfaz con Astro, React y Tailwind.
 - Dashboard general.
 - Contenedores.
 - Servicios.

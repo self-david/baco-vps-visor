@@ -14,7 +14,7 @@ Estado: **parcial**
 
 - [x] Crear repositorio principal.
 - [x] Definir estructura (`installer/`, `apps/manager/`).
-- [x] Mantener Node `.mjs` y HTML/JS estático, sin paso de compilación.
+- [x] Mantener la API en Node `.mjs` y generar la interfaz estática con Astro.
 - [x] Configurar convenciones.
 - [x] Preparar entorno local.
 - [x] Preparar VPS de pruebas (`VPS_MANAGER_TEST_MODE`).
@@ -51,7 +51,7 @@ Estado: **parcial**
 - [x] Implementar reinicio y escalado autenticados y auditados de servicios administrados con confirmación y estado de resultado.
 - [x] Limitar el escalado a 1–100 réplicas para servicios Swarm administrados en modo replicado; el agente aplica solo una allowlist fija y mantiene el servicio API de VPS Manager en una réplica.
 - [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
-- [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; el reinicio de servicios es el único handler habilitado actualmente.
+- [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; reinicios y escalados de servicios son los handlers habilitados.
 
 **Resultado:** backend capaz de administrar Docker.
 
@@ -59,9 +59,9 @@ Estado: **parcial**
 
 ## Fase 3 — Dashboard
 
-Estado: **parcial** (MVP mayormente de lectura con reinicio controlado de servicios propios; no es Astro + React + Tailwind)
+Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migración progresiva a Astro + React + Tailwind)
 
-- [ ] Diseñar interfaz (Astro + React + Tailwind).
+- [x] Diseñar interfaz con Astro, React y Tailwind; mantener las operaciones existentes durante la migración progresiva de la interfaz.
 - [x] Separar el dashboard en pestañas accesibles por categoría e incluir placeholders explícitos para módulos pendientes.
 - [x] Dashboard general.
 - [x] Contenedores.
@@ -78,7 +78,8 @@ Estado: **parcial** (MVP mayormente de lectura con reinicio controlado de servic
 
 Estado: **pendiente**
 
-- [ ] Desplegar Gitea.
+- [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
+- [ ] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
 - [ ] Configurar SSH.
 - [ ] Crear repositorios.
 - [ ] Administrar ramas.
