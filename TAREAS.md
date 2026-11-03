@@ -92,9 +92,9 @@ Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; f
 
 ## Fase 5 — Deploy automático
 
-Estado: **pendiente**
+Estado: **parcial** (BuildKit construye la imagen de VPS Manager; falta construir y desplegar proyectos)
 
-- [ ] Integrar BuildKit.
+- [x] Integrar BuildKit mediante Docker Buildx para construir la imagen del panel durante la instalación.
 - [ ] Construir imágenes.
 - [ ] Configurar registro privado.
 - [ ] Implementar despliegue Swarm.

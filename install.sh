@@ -160,6 +160,7 @@ EOF
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
+docker buildx version >/dev/null 2>&1 || fail "Docker Buildx (BuildKit) no está disponible después de instalar Docker."
 
 if [[ -z "${SCRIPT_DIR}" ]]; then
   SOURCE_DIR="${INSTALL_DIR}/source"
@@ -269,7 +270,7 @@ if ! docker secret inspect vps_manager_backup_key >/dev/null 2>&1; then
   rm -f "${BACKUP_KEY_FILE}"
 fi
 
-docker build --pull -t "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
+docker buildx build --pull --load --tag "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
 umask 077
 install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups

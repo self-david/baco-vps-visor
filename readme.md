@@ -101,7 +101,7 @@ flowchart TD
 | Git privado | Gitea | Repositorios |
 | Contenedores | Docker Engine | Ejecución |
 | Orquestación | Docker Swarm | Administración de servicios |
-| Build | Docker BuildKit | Construcción de imágenes |
+| Build | Docker Buildx / BuildKit | Construcción de imágenes |
 | Monitoreo | Prometheus | Almacenamiento de métricas |
 | Métricas de contenedores | cAdvisor | CPU, RAM y red |
 | Métricas del servidor | Node Exporter | Recursos generales |
@@ -162,6 +162,10 @@ En producción, el instalador debe utilizar una versión publicada y verificada 
 ### Estado actual del instalador
 
 El repositorio incluye `install.sh`, `installer/stack.yml`, `installer/diagnostics.sh` e `installer/uninstall.sh`, además del panel inicial en `apps/manager/`.
+
+El instalador usa Docker Buildx con BuildKit para construir la imagen local del
+panel y cargarla en el Docker Engine antes de desplegar el stack. La construcción
+de imágenes de proyectos registrados todavía no está habilitada.
 
 El instalador:
 
@@ -1453,7 +1457,7 @@ No debe depender de ejecutar directamente archivos Compose arbitrarios.
 
 Docker Swarm no construye imágenes a partir de la propiedad `build` de Compose mediante `docker stack deploy`.
 
-Por ello, el flujo será:
+Por ello, el flujo futuro será:
 
 1. Descargar código.
 2. Construir imagen mediante BuildKit.
@@ -1464,6 +1468,10 @@ Por ello, el flujo será:
 7. Comprobar el resultado.
 
 Como primera implementación, se puede utilizar un registro privado alojado en el mismo VPS, siempre con autenticación y almacenamiento persistente.
+
+Actualmente BuildKit solo se utiliza para construir la imagen de VPS Manager
+durante la instalación. La descarga de código de proyectos, construcción,
+publicación en registro y despliegue Swarm siguen pendientes.
 
 ## 17.2. Configuración declarativa
 
