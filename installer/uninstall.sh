@@ -11,8 +11,17 @@ if [[ "${1:-}" != "" && "${1:-}" != "--purge-secrets" ]]; then
   exit 2
 fi
 
+if [[ "${1:-}" == "--purge-secrets" ]]; then
+  echo "ADVERTENCIA: eliminar el secreto de cifrado hará irrecuperables los respaldos existentes."
+  read -r -p "Escribe ELIMINAR SECRETOS para continuar: " secret_confirmation
+  if [[ "${secret_confirmation}" != "ELIMINAR SECRETOS" ]]; then
+    echo "Cancelado."
+    exit 0
+  fi
+fi
+
 echo "Esto eliminará el stack de VPS Manager."
-echo "Se conservarán volúmenes persistentes, imágenes y secretos por defecto."
+echo "Se conservarán volúmenes persistentes, respaldos cifrados, imágenes y secretos por defecto."
 read -r -p "Escribe ELIMINAR para continuar: " confirmation
 if [[ "${confirmation}" != "ELIMINAR" ]]; then
   echo "Cancelado."
@@ -28,11 +37,15 @@ for _ in $(seq 1 60); do
 done
 
 if [[ "${1:-}" == "--purge-secrets" ]]; then
-  for secret in vps_manager_admin_credentials vps_manager_session_key; do
+  for secret in vps_manager_admin_credentials vps_manager_session_key vps_manager_backup_key; do
     if docker secret inspect "${secret}" >/dev/null 2>&1; then
       docker secret rm "${secret}"
     fi
   done
 fi
 
-echo "Stack eliminado. Los datos persistentes se conservaron."
+if [[ "${1:-}" == "--purge-secrets" ]]; then
+  echo "Stack eliminado. PostgreSQL y los respaldos se conservaron, pero se eliminaron secretos seleccionados."
+else
+  echo "Stack eliminado. PostgreSQL, los respaldos y su clave de cifrado se conservaron."
+fi

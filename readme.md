@@ -7,7 +7,7 @@
 **Arquitectura:** Docker Swarm de un solo nodo  
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de solo lectura de datos del servidor, contenedores, servicios y stacks Docker, y despliegue Swarm con Traefik. El panel usa una interfaz web estática y una API Node.js mínima; las demás funciones de esta especificación (proyectos Git, catálogo, métricas históricas, backups, roles, etc.) siguen pendientes y no se consideran instaladas.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de solo lectura de datos del servidor, contenedores, servicios y stacks Docker, métricas históricas de CPU/RAM con retención de siete días en PostgreSQL, alertas operativas, un registro interno de auditoría para cambios de configuración y respaldos cifrados de la base de datos PostgreSQL del panel. Los respaldos admiten creación manual, programación configurable y restauración confirmada; no incluyen volúmenes de aplicaciones ni otros componentes del VPS. Las demás funciones de esta especificación (agente de escritura, tareas persistentes, proyectos Git, catálogo, roles, etc.) siguen pendientes y no se consideran instaladas.
 
 ---
 
@@ -58,8 +58,8 @@ La plataforma no debe convertirse en una implementación propia de Docker. Debe 
 flowchart TD
     U[Usuario / Navegador]
     G[Traefik]
-    F[Frontend Astro + React]
-    A[API Node.js + TypeScript]
+    F[Frontend HTML + CSS + JavaScript]
+    A[API Node.js + JavaScript]
     DB[(PostgreSQL)]
     AG[Agente de administración]
     D[Docker Engine]
@@ -95,9 +95,8 @@ flowchart TD
 | Sistema operativo | Ubuntu 24.04 LTS | Sistema base |
 | Instalador | Bash | Preparación automatizada del VPS |
 | Proxy inverso | Traefik | Dominios y HTTPS |
-| Frontend | Astro + React | Dashboard |
-| Estilos | Tailwind CSS | Interfaz |
-| Backend | Node.js + TypeScript | API y lógica de negocio |
+| Frontend | HTML, CSS y JavaScript nativo | Dashboard sin proceso de compilación |
+| Backend | Node.js con módulos JavaScript (`.mjs`) | API y lógica de negocio |
 | Base de datos | PostgreSQL | Persistencia de información |
 | Git privado | Gitea | Repositorios |
 | Contenedores | Docker Engine | Ejecución |
@@ -107,7 +106,7 @@ flowchart TD
 | Métricas de contenedores | cAdvisor | CPU, RAM y red |
 | Métricas del servidor | Node Exporter | Recursos generales |
 | Logs | Docker Engine y sistema propio | Consulta e historial |
-| Backups | Restic o equivalente | Respaldo y restauración |
+| Backups | `pg_dump`/`pg_restore` y AES-256-GCM | Respaldo cifrado y restauración de PostgreSQL del panel |
 
 ## 2.3. Separación de responsabilidades
 
@@ -175,9 +174,9 @@ El instalador:
 - Usa Traefik 3.7.17, cuyo cliente Docker actualizado negocia una API compatible con versiones actuales de Docker Engine.
 - Pide una contraseña administrativa de al menos 16 caracteres; la guarda como secreto Swarm con hash scrypt, no como texto plano.
 - No configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor.
-- Conserva los secretos y los volúmenes durante la desinstalación normal.
+- Conserva los secretos y los volúmenes (Traefik y PostgreSQL) durante la desinstalación normal.
 
-El panel inicial solo consulta contenedores, servicios y stacks; permite buscar por nombre, imagen o ID y filtrar por estado, modo o cantidad de servicios, además de consultar logs recientes. No ofrece acciones de escritura sobre Docker. El socket se accede mediante `docker-socket-proxy` con operaciones de escritura desactivadas. Traefik y el panel requieren las consultas de lectura autorizadas para servicios, tareas y nodos de Swarm. Solo el proxy monta el socket; la API del panel no lo monta y el proxy no publica puertos al host.
+El panel inicial solo consulta contenedores, servicios y stacks; permite buscar por nombre, imagen o ID y filtrar por estado, modo o cantidad de servicios, además de consultar logs recientes y métricas actuales e históricas de CPU/RAM por contenedor, agrupadas por stack/proyecto. El muestreo es configurable y los datos se conservan siete días. No ofrece acciones de escritura sobre Docker. El socket se accede mediante `docker-socket-proxy` con operaciones de escritura desactivadas. Traefik y el panel requieren las consultas de lectura autorizadas para servicios, tareas y nodos de Swarm. Solo el proxy monta el socket; la API del panel no lo monta y el proxy no publica puertos al host. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
 
 #### Prueba en una red privada
 
@@ -197,7 +196,7 @@ Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proye
 .\deploy-test.ps1
 ```
 
-El script copia el proyecto por SCP, normaliza los finales de línea de los scripts Bash en el VPS y ejecuta la instalación por SSH con terminal interactiva. Solicitará la contraseña SSH y `sudo` según corresponda, además de la contraseña administrativa del panel. No guardes contraseñas en el script.
+El script prepara una copia temporal del proyecto, excluye `.git`, `node_modules` y `password-test.txt`, la sube por SCP a un directorio único y elimina los temporales al terminar. Después normaliza los finales de línea de los scripts Bash y ejecuta la instalación por SSH con terminal interactiva. Solicitará la contraseña SSH y `sudo` según corresponda, además de la contraseña administrativa del panel. No guardes contraseñas en el script.
 
 #### Instalación con dominio y HTTPS
 
@@ -225,7 +224,15 @@ Desde Windows, puedes copiar e instalar el comando de recuperación y cambiar la
 .\reset-test-password.ps1
 ```
 
-La desinstalación conserva los secretos y los datos de Traefik. Para eliminar también los secretos, usa `sudo vps-manager-uninstall --purge-secrets`.
+Para pruebas, también puedes guardar la nueva contraseña en un archivo de texto de una sola línea (mínimo 16 caracteres) y pasar su ruta:
+
+```powershell
+.\reset-test-password.ps1 -PasswordFile .\password-test.txt
+```
+
+El archivo se transfiere por SCP dentro de un directorio temporal con acceso restringido, se elimina del VPS al terminar y no se borra del equipo local. Este modo evita el ingreso interactivo, pero el archivo local contiene la contraseña en texto plano: no lo subas al repositorio, no lo compartas y elimínalo después de la prueba. No uses este método para producción.
+
+La desinstalación conserva los secretos y los datos persistentes de Traefik y PostgreSQL. `--purge-secrets` elimina las credenciales de administrador y la clave de sesión; no borra la contraseña ni el volumen de PostgreSQL, para no dejar la base inaccesible.
 
 #### Publicación para el comando `curl`
 
@@ -293,9 +300,10 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 ### Etapa 5: plataforma incluida en esta primera entrega
 
 - Desplegar el panel mínimo con su API de solo lectura.
+- Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-PostgreSQL, Gitea, Prometheus, cAdvisor, Node Exporter y las capacidades de despliegue de proyectos se implementarán en fases posteriores.
+Gitea, Prometheus, cAdvisor, Node Exporter, PostgreSQL de catálogo y las capacidades de despliegue de proyectos se implementarán en fases posteriores. El PostgreSQL interno del panel ya forma parte de esta entrega.
 
 ### Etapa 6: finalización
 
@@ -587,7 +595,7 @@ Cada aplicación tendrá una plantilla de instalación.
 - Supabase.
 - PostgreSQL.
 - Redis.
-- MinIO.
+- MinIO (opcional; almacenamiento de objetos compatible con S3).
 
 ### Monitoreo
 - Grafana.
@@ -910,6 +918,8 @@ Permitir configurar alertas por:
 - Error de despliegue.
 - Certificado próximo a expirar.
 
+El panel implementa alertas internas para CPU/RAM, espacio libre en el filesystem visible al contenedor del panel, réplicas de servicios Swarm por debajo de lo deseado y reinicios repetidos. También comprueba las rutas `Host(...)` definidas en las etiquetas Traefik de los servicios Swarm: realiza un `GET /`, considera sanas las respuestas 2xx/3xx y alerta ante otros estados, error de conexión o timeout. Para rutas HTTPS inspecciona el certificado presentado y alerta cuando vence dentro de los días configurados; un certificado no disponible también genera alerta TLS. Las alertas de despliegue reportan servicios Swarm con actualización pausada o rollback, y tareas recientes fallidas/rechazadas en una ventana de 15 minutos. El detalle de error se limita a 240 caracteres. Los valores iniciales son CPU 90%, RAM 90%, disco libre 10%, 3 reinicios en 60 minutos, timeout HTTP 5 segundos y aviso TLS 14 días antes. Son configurables desde el dashboard. CPU/RAM requieren superar el umbral en dos muestras consecutivas. La detección de reinicios compara los contadores de Docker entre muestras periódicas y se activa después de registrar al menos dos muestras del contenedor. El disco se mide desde `statfs("/")` dentro del contenedor del panel, no por cada filesystem del host. Estas alertas no envían email ni webhooks.
+
 ---
 
 # 11. Persistencia y recuperación
@@ -972,6 +982,20 @@ Respaldar:
 Los backups deben permitir restaurar el servidor en otro VPS.
 
 No considerar un backup completo una simple copia de archivos mientras los servicios están escribiendo datos. Utilizar procedimientos consistentes con cada base de datos y aplicación.
+
+### Implementación disponible
+
+La versión actual respalda únicamente la base PostgreSQL de VPS Manager mediante `pg_dump` en formato custom. El stream se cifra con AES-256-GCM antes de guardarse en `/var/lib/vps-manager/backups`; un archivo se publica solo después de completar el dump. El panel permite iniciar respaldos manuales, programa el primero 24 horas después de arrancar el servicio y permite ajustar el intervalo entre 1 y 168 horas. La retención fija es de siete días.
+
+La instalación crea una clave aleatoria de 256 bits como secreto Swarm y la muestra una sola vez. Debe guardarse fuera del VPS en un gestor de secretos o almacenamiento seguro: no se incluye en el directorio de respaldos. Sin esa clave no es posible verificar ni restaurar los archivos. La desinstalación normal conserva el secreto y los respaldos; `--purge-secrets` exige una confirmación adicional y elimina la clave, por lo que vuelve irrecuperables los respaldos existentes.
+
+La restauración requiere escribir `RESTAURAR`, valida la autenticidad AES-GCM antes de invocar `pg_restore` y reemplaza dentro de una transacción los objetos incluidos en el respaldo. Los objetos que no existían al crear el respaldo no forman parte del archivo. Esta función no es un backup completo del VPS: no incluye volúmenes de aplicaciones, secretos adicionales, configuración de stacks, certificados Traefik ni recuperación a otro servidor.
+
+## 11.5. Auditoría operativa
+
+El panel muestra al administrador los últimos 100 eventos de cambios en ajustes de métricas y respaldos: creación manual o programada, cambio de intervalo y restauración. Las actualizaciones de configuración y su evento de auditoría se guardan en la misma transacción de PostgreSQL. Las operaciones de archivos (crear/restaurar respaldo) se registran al finalizar, por lo que un fallo al guardar el evento se informa por separado y no implica que la operación ya realizada se haya revertido. No se registran contraseñas ni claves.
+
+El registro es historial operativo interno, no un almacenamiento inmutable o resistente a un administrador con acceso a PostgreSQL; tampoco incluye todavía inicios de sesión, accesos fallidos ni cambios de infraestructura Docker.
 
 ---
 
@@ -1139,8 +1163,7 @@ vps-manager/
 │
 ├── packages/
 │   ├── shared/
-│   ├── schemas/
-│   └── types/
+│   └── schemas/
 │
 ├── catalog/
 │   ├── applications/
@@ -1179,7 +1202,7 @@ vps-manager/
     └── development.md
 ```
 
-Esta estructura es una propuesta inicial. Se puede organizar como monorepo con TypeScript y un gestor de paquetes compartido.
+Esta estructura es una propuesta inicial. El proyecto prioriza JavaScript nativo y evita un paso de compilación mientras no aporte un beneficio concreto.
 
 ---
 
@@ -1297,6 +1320,7 @@ GET  /api/docker/containers
 GET  /api/docker/services
 GET  /api/docker/info
 GET  /api/docker/stacks
+GET  /api/docker/container-metrics
 GET  /api/docker/containers/:id/logs
 GET  /api/docker/services/:id/logs
 GET  /api/docker/networks
@@ -1306,6 +1330,19 @@ POST /api/docker/containers/:id/restart
 POST /api/docker/containers/:id/stop
 POST /api/docker/containers/:id/start
 ```
+
+## Métricas e histórico
+
+```text
+GET   /api/system/metrics-settings
+PATCH /api/system/metrics-settings
+GET   /api/system/metrics-history
+GET   /api/system/metric-alerts
+```
+
+La frecuencia de muestreo se configura en minutos (1–1440) y se guarda en PostgreSQL; el valor inicial es 15. Las muestras se recogen automáticamente y también al solicitar CPU/RAM. El panel muestra las últimas 24 horas y elimina datos con más de 7 días. Los umbrales de CPU por contenedor (1–10000%), RAM respecto al límite del contenedor (1–100%), disco libre (1–99%), y reinicios (1–100 en una ventana de 5–1440 minutos) se editan en el panel. CPU/RAM se activan al superar el umbral en dos muestras consecutivas; disco alerta al llegar o bajar del umbral, los servicios cuando hay menos tareas activas que las deseadas y reinicios al alcanzar el conteo dentro de la ventana. Las alertas son internas al panel y se actualizan automáticamente cada minuto mientras está abierto. El espacio en disco se obtiene con `statfs("/")` desde el contenedor del panel; no representa por separado otros puntos de montaje del VPS.
+
+Las rutas web se descubren de las reglas `Host(...)` en las etiquetas de routers Traefik de los servicios Swarm; no se aceptan URLs arbitrarias desde el navegador. Cada comprobación solicita la raíz `/`, no sigue redirecciones y considera sanos los estados 200–399. El timeout por ruta se configura entre 1 y 30 segundos. La fecha de vencimiento de certificados TLS se comprueba con un handshake TLS y el aviso se configura entre 1 y 90 días. Los valores iniciales son 5 segundos y 14 días. Los probes se ejecutan al actualizar el dashboard y durante su refresco periódico de alertas.
 
 ## Monitoreo
 
@@ -1336,7 +1373,7 @@ GET /api/tasks/:id/logs
 
 Las rutas son contratos iniciales, no una obligación de implementar todo simultáneamente.
 
-El panel inicial expone consultas Docker de solo lectura y muestra detalles de imagen, estado, puertos publicados, modo de servicio y réplicas. Permite buscar por nombre, imagen o ID y filtrar contenedores por estado, servicios por modo y stacks por cantidad de servicios. También permite consultar las últimas 100 líneas de logs por contenedor o servicio, con un límite de respuesta de 1 MiB. La disponibilidad de logs de servicios depende del driver de logging de Docker. Las operaciones de escritura siguen pendientes.
+El panel inicial expone consultas Docker de solo lectura y muestra detalles de imagen, estado, puertos publicados, modo de servicio y réplicas. Permite buscar por nombre, imagen o ID y filtrar contenedores por estado, servicios por modo y stacks por cantidad de servicios. Consulta CPU y RAM por contenedor en ejecución cada 15 minutos por defecto; el intervalo (1–1440 minutos) puede cambiarse desde el panel y se guarda en PostgreSQL. Las muestras también se guardan al solicitar CPU/RAM, se agrupan por stack/proyecto usando las etiquetas Docker y se muestran como gráficos de las últimas 24 horas; los contenedores sin etiquetas compatibles se agrupan como "Sin grupo". Se eliminan muestras con más de 7 días y se limitan a cuatro las consultas Docker simultáneas. Esto no añade Prometheus, cAdvisor ni dependencias de aplicación adicionales. También permite consultar las últimas 100 líneas de logs por contenedor o servicio, con un límite de respuesta de 1 MiB. La disponibilidad de logs de servicios depende del driver de logging de Docker. Las operaciones de escritura siguen pendientes.
 
 ---
 
@@ -1560,7 +1597,7 @@ El desarrollo debe ser incremental.
 
 - Crear repositorio principal.
 - Definir estructura.
-- Configurar TypeScript.
+- Mantener JavaScript nativo y el frontend sin compilación.
 - Configurar convenciones.
 - Preparar entorno local.
 - Preparar VPS de pruebas.
@@ -1632,7 +1669,7 @@ El desarrollo debe ser incremental.
 - Instalar n8n.
 - Instalar PostgreSQL.
 - Instalar Redis.
-- Instalar MinIO.
+- Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.
 - Implementar Supabase.
 - Implementar actualizaciones.
 
@@ -1643,10 +1680,12 @@ El desarrollo debe ser incremental.
 - Desplegar Prometheus.
 - Desplegar cAdvisor.
 - Desplegar Node Exporter.
-- Consultar métricas.
-- Agrupar consumo.
-- Mostrar históricos.
-- Crear alertas.
+- Consultar CPU y RAM actuales por contenedor bajo demanda.
+- Agrupar la muestra de consumo por stack/proyecto.
+- Guardar históricos por siete días y permitir configurar el intervalo.
+- Crear alertas internas por CPU/RAM, disco, servicios Swarm y reinicios, con umbrales configurables.
+- Comprobar disponibilidad HTTP y expiración de certificados de rutas Traefik.
+- Alertar sobre despliegues Swarm pausados, en rollback o con tareas fallidas/rechazadas recientes.
 
 **Resultado:** monitoreo integral.
 

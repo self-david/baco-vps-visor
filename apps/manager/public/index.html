@@ -47,6 +47,48 @@
             </div>
             <div id="server-info" class="server-details"></div>
           </section>
+          <section class="card backups-card" aria-labelledby="backups-title">
+            <div class="card-heading">
+              <h3 id="backups-title">Respaldos de PostgreSQL</h3>
+              <div class="container-heading-actions">
+                <button id="refresh-backups" class="button secondary resource-action" type="button">Actualizar</button>
+                <button id="create-backup" class="button resource-action" type="button">Crear respaldo</button>
+              </div>
+            </div>
+            <p class="muted backup-note">Archivos cifrados en este VPS. La clave de cifrado se mostró una sola vez durante la instalación; consérvala fuera del servidor.</p>
+            <form id="backup-settings-form" class="backup-settings">
+              <label for="backup-interval">Respaldo automático cada (horas)</label>
+              <div class="metrics-settings-controls">
+                <input id="backup-interval" name="intervalHours" type="number" min="1" max="168" step="1" required>
+                <button class="button secondary resource-action" type="submit">Guardar</button>
+              </div>
+              <p id="backup-settings-status" class="muted" aria-live="polite">Retención: 7 días.</p>
+            </form>
+            <p id="backups-status" class="muted" aria-live="polite"></p>
+            <div id="backups-list" class="resource-list"></div>
+          </section>
+          <section class="card backups-card" aria-labelledby="audit-title">
+            <div class="card-heading">
+              <h3 id="audit-title">Auditoría reciente</h3>
+              <button id="refresh-audit" class="button secondary resource-action" type="button">Actualizar</button>
+            </div>
+            <p class="muted backup-note">Últimas 100 operaciones relevantes. No incluye credenciales ni claves.</p>
+            <p id="audit-status" class="muted" aria-live="polite"></p>
+            <div id="audit-list" class="resource-list"></div>
+          </section>
+          <section class="card backups-card" aria-labelledby="updates-title">
+            <div class="card-heading">
+              <h3 id="updates-title">Actualizaciones de VPS Manager</h3>
+              <button id="check-updates" class="button secondary resource-action" type="button">Buscar actualización</button>
+            </div>
+            <p id="updates-status" class="muted" aria-live="polite">Versión instalada: —</p>
+            <p id="updates-release-notes" class="muted update-release-notes"></p>
+            <div id="updates-action" class="update-action hidden">
+              <code id="update-command">sudo vps-manager-update</code>
+              <button id="copy-update-command" class="button resource-action" type="button">Copiar comando</button>
+            </div>
+            <p class="muted update-note">El panel solo consulta releases públicas. La actualización se ejecuta manualmente en el VPS para mantener Docker fuera del alcance de escritura de la API.</p>
+          </section>
           <section class="card">
             <div class="card-heading">
               <h3>Stacks</h3>
@@ -67,8 +109,60 @@
           <section class="card">
             <div class="card-heading">
               <h3>Contenedores</h3>
-              <span id="container-count" class="badge" aria-label="0 visibles de 0">0</span>
+              <div class="container-heading-actions">
+                <span id="container-count" class="badge" aria-label="0 visibles de 0">0</span>
+                <button id="refresh-metrics" class="button secondary resource-action" type="button">CPU/RAM</button>
+              </div>
             </div>
+            <p id="metrics-status" class="muted metrics-status" aria-live="polite"></p>
+            <div id="metrics-groups" class="metrics-groups hidden" aria-live="polite"></div>
+            <section class="metrics-history" aria-labelledby="metrics-history-title">
+              <div class="history-heading">
+                <h4 id="metrics-history-title">Histórico · últimas 24 horas</h4>
+                <button id="refresh-history" class="button secondary resource-action" type="button">Actualizar</button>
+              </div>
+              <form id="metrics-settings-form" class="metrics-settings">
+                <label for="metrics-interval">Muestreo automático (minutos)</label>
+                <div class="metrics-settings-controls">
+                  <input id="metrics-interval" name="intervalMinutes" type="number" min="1" max="1440" step="1" required>
+                  <button class="button secondary resource-action" type="submit">Guardar</button>
+                </div>
+                <label for="metrics-cpu-threshold">Alerta CPU por contenedor (%)</label>
+                <input id="metrics-cpu-threshold" name="cpuPercent" type="number" min="1" max="10000" step="1" required>
+                <label for="metrics-memory-threshold">Alerta RAM del límite (%)</label>
+                <input id="metrics-memory-threshold" name="memoryPercent" type="number" min="1" max="100" step="1" required>
+                <label for="metrics-disk-threshold">Alerta de disco libre (%)</label>
+                <input id="metrics-disk-threshold" name="diskFreePercent" type="number" min="1" max="99" step="1" required>
+                <label for="metrics-restart-count">Reinicios en la ventana</label>
+                <input id="metrics-restart-count" name="restartCount" type="number" min="1" max="100" step="1" required>
+                <label for="metrics-restart-window">Ventana de reinicios (minutos)</label>
+                <input id="metrics-restart-window" name="restartWindowMinutes" type="number" min="5" max="1440" step="1" required>
+                <label for="metrics-http-timeout">Timeout HTTP (segundos)</label>
+                <input id="metrics-http-timeout" name="httpTimeoutSeconds" type="number" min="1" max="30" step="1" required>
+                <label for="metrics-certificate-days">Avisar antes de vencer (días)</label>
+                <input id="metrics-certificate-days" name="certificateWarningDays" type="number" min="1" max="90" step="1" required>
+                <p id="metrics-settings-status" class="muted" aria-live="polite">Retención: 7 días.</p>
+              </form>
+              <p id="history-status" class="muted" aria-live="polite"></p>
+              <p id="history-empty" class="muted hidden">Aún no hay muestras históricas.</p>
+              <div id="history-legend" class="history-legend"></div>
+              <div id="history-charts" class="history-charts hidden">
+                <div>
+                  <h5>CPU (%)</h5>
+                  <svg id="cpu-history-chart" class="history-chart" viewBox="0 0 640 190" role="img" aria-label="Histórico de uso de CPU por grupo"></svg>
+                </div>
+                <div>
+                  <h5>Memoria (GiB)</h5>
+                  <svg id="memory-history-chart" class="history-chart" viewBox="0 0 640 190" role="img" aria-label="Histórico de memoria por grupo"></svg>
+                </div>
+              </div>
+              <section class="metric-alerts" aria-labelledby="metric-alerts-title">
+                <h4 id="metric-alerts-title">Alertas activas</h4>
+                <p class="muted metric-alert-note">Se comprueban las rutas Host de Traefik con GET /. HTTP considera sanas respuestas 2xx/3xx; timeout predeterminado 5 s. Los certificados TLS avisan 14 días antes. El disco corresponde al filesystem visible para el panel. Sin email ni webhooks.</p>
+                <p id="metric-alerts-status" class="muted" aria-live="polite"></p>
+                <ul id="metric-alerts" class="metric-alert-list" aria-live="polite"></ul>
+              </section>
+            </section>
             <div class="resource-filters">
               <label class="visually-hidden" for="container-search">Buscar contenedores</label>
               <input id="container-search" class="resource-search" type="search" placeholder="Buscar nombre, imagen o ID…" autocomplete="off">
@@ -112,6 +206,25 @@
       </div>
       <p id="logs-status" class="muted" aria-live="polite"></p>
       <pre id="logs-content" class="logs-content"></pre>
+    </dialog>
+    <dialog id="restore-dialog" class="logs-dialog restore-dialog" aria-labelledby="restore-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">OPERACIÓN DESTRUCTIVA</p>
+          <h2 id="restore-title">Restaurar base de datos</h2>
+        </div>
+        <button id="close-restore" class="button secondary" type="button">Cancelar</button>
+      </div>
+      <p class="muted">Esta acción reemplaza datos de la base de datos actual. Solo continúa si el respaldo y la clave de cifrado son correctos.</p>
+      <form id="restore-form">
+        <label for="restore-confirmation">Escribe RESTAURAR para confirmar</label>
+        <input id="restore-confirmation" name="confirmation" type="text" autocomplete="off" required>
+        <p id="restore-status" class="error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="cancel-restore" class="button secondary" type="button">Cancelar</button>
+          <button id="confirm-restore" class="button danger" type="submit">Restaurar base de datos</button>
+        </div>
+      </form>
     </dialog>
   </body>
 </html>

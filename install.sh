@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 readonly INSTALL_DIR="/opt/vps-manager"
 readonly STACK_NAME="vps-manager"
-readonly IMAGE_NAME="vps-manager:0.1.0"
 readonly DEFAULT_REPOSITORY_URL="__CONFIGURE_GIT_REPOSITORY_URL_BEFORE_PUBLISHING__"
 readonly RELEASE_REF="v0.1.0"
 
@@ -163,6 +162,10 @@ else
 fi
 
 [[ -f "${SOURCE_DIR}/apps/manager/server.mjs" && -f "${SOURCE_DIR}/installer/stack.yml" ]] || fail "El repositorio no contiene la versión esperada de VPS Manager."
+VPS_MANAGER_VERSION="$(tr -d '\r\n' < "${SOURCE_DIR}/apps/manager/VERSION")"
+[[ "${VPS_MANAGER_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+  || fail "La versión del panel debe tener formato semver estable (por ejemplo 1.2.3)."
+readonly IMAGE_NAME="vps-manager:${VPS_MANAGER_VERSION}"
 if [[ "${TEST_MODE}" == "true" ]]; then
   [[ -f "${SOURCE_DIR}/installer/stack.test.yml" ]] || fail "No se encontró la configuración del modo de prueba."
 fi
@@ -180,6 +183,11 @@ if ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
   docker network create --driver overlay --attachable vps-manager-proxy >/dev/null
 fi
 [[ "$(docker network inspect vps-manager-proxy --format '{{.Driver}}')" == "overlay" ]] || fail "La red vps-manager-proxy ya existe, pero no es overlay."
+
+if ! docker network inspect vps-manager-internal >/dev/null 2>&1; then
+  docker network create --driver overlay --opt encrypted=true vps-manager-internal >/dev/null
+fi
+[[ "$(docker network inspect vps-manager-internal --format '{{.Driver}}')" == "overlay" ]] || fail "La red vps-manager-internal ya existe, pero no es overlay."
 
 if ! docker secret inspect vps_manager_admin_credentials >/dev/null 2>&1; then
   ADMIN_PASSWORD="${ADMIN_PASSWORD_INPUT}"
@@ -207,20 +215,50 @@ if ! docker secret inspect vps_manager_session_key >/dev/null 2>&1; then
   rm -f "${SESSION_KEY_FILE}"
 fi
 
+if ! docker secret inspect vps_manager_postgres_password >/dev/null 2>&1; then
+  POSTGRES_PASSWORD_FILE="$(mktemp)"
+  TEMP_FILES+=("${POSTGRES_PASSWORD_FILE}")
+  chmod 0600 "${POSTGRES_PASSWORD_FILE}"
+  printf '%s' "$(openssl rand -hex 32)" > "${POSTGRES_PASSWORD_FILE}"
+  docker secret create vps_manager_postgres_password "${POSTGRES_PASSWORD_FILE}" >/dev/null
+  rm -f "${POSTGRES_PASSWORD_FILE}"
+fi
+
+if ! docker secret inspect vps_manager_backup_key >/dev/null 2>&1; then
+  BACKUP_KEY_FILE="$(mktemp)"
+  TEMP_FILES+=("${BACKUP_KEY_FILE}")
+  chmod 0600 "${BACKUP_KEY_FILE}"
+  openssl rand -hex 32 > "${BACKUP_KEY_FILE}"
+  docker secret create vps_manager_backup_key "${BACKUP_KEY_FILE}" >/dev/null
+  printf '\nIMPORTANTE: guarda ahora esta clave fuera del VPS; solo se mostrará una vez.\n'
+  printf 'Clave de cifrado de respaldos: '
+  cat "${BACKUP_KEY_FILE}"
+  printf 'Sin esta clave no será posible restaurar los respaldos cifrados.\n\n'
+  rm -f "${BACKUP_KEY_FILE}"
+fi
+
 docker build --pull -t "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
 umask 077
 install -d -m 0700 "${INSTALL_DIR}"
+install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
+GITHUB_REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-}"
+if [[ -n "${GITHUB_REPOSITORY}" && ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  fail "VPS_MANAGER_GITHUB_REPOSITORY debe tener el formato owner/repo."
+fi
 {
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"
   printf 'VPS_MANAGER_TEST_MODE=%s\n' "${TEST_MODE}"
+  printf 'VPS_MANAGER_GITHUB_REPOSITORY=%s\n' "${GITHUB_REPOSITORY}"
   if [[ "${TEST_MODE}" != "true" ]]; then
     printf 'VPS_MANAGER_EMAIL=%s\n' "${EMAIL}"
   fi
 } > "${INSTALL_DIR}/install.env"
+install -m 0755 "${SOURCE_DIR}/installer/update.sh" /usr/local/bin/vps-manager-update
 install -m 0755 "${SOURCE_DIR}/installer/diagnostics.sh" /usr/local/bin/vps-manager-diagnostics
 install -m 0755 "${SOURCE_DIR}/installer/uninstall.sh" /usr/local/bin/vps-manager-uninstall
 install -m 0755 "${SOURCE_DIR}/installer/reset-password.sh" /usr/local/bin/vps-manager-reset-password
 
+export VPS_MANAGER_VERSION VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
 if [[ "${TEST_MODE}" == "true" ]]; then
   STACK_FILE="${SOURCE_DIR}/installer/stack.test.yml"
   PANEL_SCHEME="http"
@@ -234,23 +272,27 @@ docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
 docker service update --force --detach=false "${STACK_NAME}_manager"
 
 log "Esperando que los servicios de Swarm inicien."
-for attempt in $(seq 1 60); do
+service_total=0
+service_count=0
+for attempt in $(seq 1 90); do
+  service_total="$(docker stack services "${STACK_NAME}" --format '{{.Name}}' 2>/dev/null | wc -l)"
+  service_total="${service_total//[[:space:]]/}"
   service_count="$(docker stack services "${STACK_NAME}" --format '{{.Replicas}}' 2>/dev/null | grep -c '^1/1$' || true)"
-  if [[ "${service_count}" == "3" ]]; then
+  if [[ "${service_total}" -ge 4 && "${service_count}" == "${service_total}" ]]; then
     break
   fi
   sleep 2
 done
 
 docker stack services "${STACK_NAME}"
-if [[ "${service_count}" != "3" ]]; then
+if [[ "${service_total}" -lt 4 || "${service_count}" != "${service_total}" ]]; then
   docker stack ps "${STACK_NAME}" --no-trunc || true
   fail "No todos los servicios llegaron a 1/1. Ejecuta: sudo vps-manager-diagnostics"
 fi
 
 log "Esperando que el panel responda por ${PANEL_SCHEME^^}."
 panel_ready=false
-for attempt in $(seq 1 24); do
+for attempt in $(seq 1 36); do
   if health_response="$(curl -fsS --connect-timeout 5 --max-time 10 "${PANEL_SCHEME}://${DOMAIN}/api/health" 2>/dev/null)" && [[ "${health_response}" == *'"status":"ok"'* ]]; then
     panel_ready=true
     break
@@ -266,6 +308,8 @@ if [[ "${panel_ready}" != "true" ]]; then
   fail "No se pudo validar https://${DOMAIN}/api/health. Revisa DNS, firewall TCP 80/443 y los logs mostrados."
 fi
 
+printf '%s\n' "${VPS_MANAGER_VERSION}" > "${INSTALL_DIR}/version"
+chmod 0600 "${INSTALL_DIR}/version"
 log "Instalación completada."
 printf 'Panel: %s://%s\n' "${PANEL_SCHEME}" "${DOMAIN}"
 printf 'Diagnóstico: sudo vps-manager-diagnostics\n'

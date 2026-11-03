@@ -11,22 +11,51 @@ fi
 
 command -v docker >/dev/null 2>&1 || { echo "Docker no está instalado." >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "Python 3 no está instalado." >&2; exit 1; }
-[[ -r /dev/tty ]] || { echo "Se requiere un terminal interactivo para introducir la contraseña." >&2; exit 1; }
 docker service inspect "${SERVICE_NAME}" >/dev/null
 docker secret inspect "${ADMIN_SECRET}" >/dev/null
 
-read -r -s -p "Nueva contraseña de administrador (mínimo 16 caracteres): " ADMIN_PASSWORD </dev/tty
-printf '\n' >/dev/tty
-read -r -s -p "Confirma la nueva contraseña: " ADMIN_PASSWORD_CONFIRM </dev/tty
-printf '\n' >/dev/tty
+if [[ "${1:-}" == "--password-file" && "$#" -eq 2 ]]; then
+  [[ -f "$2" && -r "$2" ]] || { echo "El archivo de contraseña no existe o no se puede leer." >&2; exit 1; }
+  ADMIN_PASSWORD="$(python3 - "$2" <<'PY'
+from pathlib import Path
+import sys
 
-if [[ "${ADMIN_PASSWORD}" != "${ADMIN_PASSWORD_CONFIRM}" ]]; then
-  echo "Las contraseñas no coinciden." >&2
-  exit 1
-fi
-if (( ${#ADMIN_PASSWORD} < 16 )); then
-  echo "La contraseña de administrador debe tener al menos 16 caracteres." >&2
-  exit 1
+content = Path(sys.argv[1]).read_bytes()
+if content.endswith(b"\r\n"):
+    content = content[:-2]
+elif content.endswith(b"\n"):
+    content = content[:-1]
+if not content or any(character in content for character in (b"\n", b"\r", b"\0")):
+    raise SystemExit("El archivo debe contener una contraseña en una sola línea.")
+try:
+    password = content.decode("utf-8-sig")
+except UnicodeDecodeError as error:
+    raise SystemExit("El archivo de contraseña debe estar codificado en UTF-8.") from error
+if len(password) < 16 or len(password.encode("utf-16-le")) // 2 > 1024:
+    raise SystemExit("La contraseña debe tener entre 16 y 1024 caracteres.")
+sys.stdout.write(password)
+PY
+)"
+  [[ -n "${ADMIN_PASSWORD}" ]] || { echo "El archivo de contraseña está vacío." >&2; exit 1; }
+  unset ADMIN_PASSWORD_CONFIRM
+elif [[ "$#" -eq 0 ]]; then
+  [[ -r /dev/tty ]] || { echo "Se requiere un terminal interactivo para introducir la contraseña." >&2; exit 1; }
+  read -r -s -p "Nueva contraseña de administrador (mínimo 16 caracteres): " ADMIN_PASSWORD </dev/tty
+  printf '\n' >/dev/tty
+  read -r -s -p "Confirma la nueva contraseña: " ADMIN_PASSWORD_CONFIRM </dev/tty
+  printf '\n' >/dev/tty
+
+  if [[ "${ADMIN_PASSWORD}" != "${ADMIN_PASSWORD_CONFIRM}" ]]; then
+    echo "Las contraseñas no coinciden." >&2
+    exit 1
+  fi
+  if (( ${#ADMIN_PASSWORD} < 16 || ${#ADMIN_PASSWORD} > 1024 )); then
+    echo "La contraseña debe tener entre 16 y 1024 caracteres." >&2
+    exit 1
+  fi
+else
+  echo "Uso: vps-manager-reset-password [--password-file ARCHIVO]" >&2
+  exit 2
 fi
 
 CREDENTIAL_FILE="$(mktemp)"

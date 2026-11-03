@@ -4,12 +4,53 @@ const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
 const logoutButton = document.querySelector("#logout");
 const refreshButton = document.querySelector("#refresh");
+const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
+const metricsStatus = document.querySelector("#metrics-status");
+const metricsGroups = document.querySelector("#metrics-groups");
+const metricsSettingsForm = document.querySelector("#metrics-settings-form");
+const metricsIntervalInput = document.querySelector("#metrics-interval");
+const metricsCpuThresholdInput = document.querySelector("#metrics-cpu-threshold");
+const metricsMemoryThresholdInput = document.querySelector("#metrics-memory-threshold");
+const metricsDiskThresholdInput = document.querySelector("#metrics-disk-threshold");
+const metricsRestartCountInput = document.querySelector("#metrics-restart-count");
+const metricsRestartWindowInput = document.querySelector("#metrics-restart-window");
+const metricsHttpTimeoutInput = document.querySelector("#metrics-http-timeout");
+const metricsCertificateDaysInput = document.querySelector("#metrics-certificate-days");
+const metricsSettingsStatus = document.querySelector("#metrics-settings-status");
+const historyStatus = document.querySelector("#history-status");
+const historyEmpty = document.querySelector("#history-empty");
+const historyLegend = document.querySelector("#history-legend");
+const historyCharts = document.querySelector("#history-charts");
+const metricAlertsStatus = document.querySelector("#metric-alerts-status");
+const metricAlertsList = document.querySelector("#metric-alerts");
+const historyColors = ["#8eafff", "#9fe2b5", "#ffcb75", "#f28bba", "#b8a0ff", "#72d3d8", "#ff927e", "#c4cede"];
 const logsDialog = document.querySelector("#logs-dialog");
 const logsTitle = document.querySelector("#logs-title");
 const logsStatus = document.querySelector("#logs-status");
 const logsContent = document.querySelector("#logs-content");
+const backupsList = document.querySelector("#backups-list");
+const backupsStatus = document.querySelector("#backups-status");
+const backupSettingsForm = document.querySelector("#backup-settings-form");
+const backupIntervalInput = document.querySelector("#backup-interval");
+const backupSettingsStatus = document.querySelector("#backup-settings-status");
+const createBackupButton = document.querySelector("#create-backup");
+const restoreDialog = document.querySelector("#restore-dialog");
+const restoreForm = document.querySelector("#restore-form");
+const restoreConfirmationInput = document.querySelector("#restore-confirmation");
+const restoreStatus = document.querySelector("#restore-status");
+const auditList = document.querySelector("#audit-list");
+const auditStatus = document.querySelector("#audit-status");
+const updatesStatus = document.querySelector("#updates-status");
+const updatesReleaseNotes = document.querySelector("#updates-release-notes");
+const updatesAction = document.querySelector("#updates-action");
+const updateCommand = document.querySelector("#update-command");
 const resourceData = { containers: [], services: [], stacks: [] };
+const containerMetrics = new Map();
+let metricsLoaded = false;
+let metricAlertsRefreshTimer;
+let metricAlertsSignature = "";
+let selectedBackupId;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -28,6 +69,12 @@ function showAuthenticated(authenticated) {
   loginView.classList.toggle("hidden", authenticated);
   dashboardView.classList.toggle("hidden", !authenticated);
   logoutButton.classList.toggle("hidden", !authenticated);
+  if (authenticated && metricAlertsRefreshTimer === undefined) {
+    metricAlertsRefreshTimer = setInterval(() => void loadMetricAlerts(), 60_000);
+  } else if (!authenticated && metricAlertsRefreshTimer !== undefined) {
+    clearInterval(metricAlertsRefreshTimer);
+    metricAlertsRefreshTimer = undefined;
+  }
 }
 
 function renderResources(target, resources, getDetail, getState, onAction, emptyMessage) {
@@ -94,7 +141,7 @@ async function showResourceLogs(resource, resourceType) {
   }
 }
 
-function renderServerInfo(server) {
+function renderServerInfo(server, database) {
   const details = [
     ["Nombre", server.name],
     ["Sistema operativo", `${server.operatingSystem} · ${server.architecture}`],
@@ -102,6 +149,7 @@ function renderServerInfo(server) {
     ["CPU", `${server.cpuCount} núcleos`],
     ["Memoria", `${(server.memoryBytes / 1024 ** 3).toFixed(1)} GiB`],
     ["Contenedores", `${server.containers.running} activos · ${server.containers.stopped} detenidos · ${server.containers.total} total`],
+    ["PostgreSQL", database?.connected ? `${database.name} · conectada` : "desconectada"],
   ];
   const target = document.querySelector("#server-info");
   target.replaceChildren();
@@ -175,6 +223,32 @@ function updateResourceCount(selector, visible, total) {
   badge.setAttribute("aria-label", `${visible} visibles de ${total}`);
 }
 
+function renderMetricsGroups() {
+  const groups = new Map();
+  for (const metrics of containerMetrics.values()) {
+    const group = groups.get(metrics.group) ?? { cpuPercent: 0, memoryUsageBytes: 0, containerCount: 0 };
+    group.cpuPercent += metrics.cpuPercent;
+    group.memoryUsageBytes += metrics.memoryUsageBytes;
+    group.containerCount += 1;
+    groups.set(metrics.group, group);
+  }
+
+  metricsGroups.replaceChildren();
+  metricsGroups.classList.toggle("hidden", groups.size === 0);
+  for (const [name, group] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const item = document.createElement("div");
+    item.className = "metrics-group";
+    const title = document.createElement("span");
+    title.className = "metrics-group-name";
+    title.textContent = name;
+    const value = document.createElement("span");
+    value.className = "metrics-group-value";
+    value.textContent = `${group.cpuPercent.toFixed(1)}% CPU · ${formatBytes(group.memoryUsageBytes)} RAM · ${group.containerCount} contenedor(es)`;
+    item.append(title, value);
+    metricsGroups.append(item);
+  }
+}
+
 function renderFilteredResources() {
   const containerQuery = document.querySelector("#container-search").value.trim().toLocaleLowerCase("es-MX");
   const containerFilter = document.querySelector("#container-filter").value;
@@ -192,7 +266,16 @@ function renderFilteredResources() {
       const ports = item.ports.map((port) => port.public
         ? `${port.public} → ${port.private}/${port.type}`
         : `${port.private}/${port.type}`);
-      return [item.image, item.id, item.status, ...ports].filter(Boolean).join(" · ");
+      const details = [item.image, item.id, item.status, ...ports].filter(Boolean);
+      if (metricsLoaded) {
+        const metrics = containerMetrics.get(item.id);
+        if (metrics) {
+          details.push(`${metrics.cpuPercent.toFixed(1)}% CPU · ${formatBytes(metrics.memoryUsageBytes)} / ${formatBytes(metrics.memoryLimitBytes)} RAM`);
+        } else {
+          details.push(item.state === "running" ? "CPU/RAM no disponibles" : "Detenido");
+        }
+      }
+      return details.join(" · ");
     },
     (item) => item.state,
     (container) => showResourceLogs(container, "containers"),
@@ -230,21 +313,399 @@ function renderFilteredResources() {
   updateResourceCount("#stack-count", stacks.length, resourceData.stacks.length);
 }
 
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+  return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
+}
+
+function addSvgElement(svg, name, attributes, text) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+  if (text !== undefined) element.textContent = text;
+  svg.append(element);
+  return element;
+}
+
+function renderHistoryChart(svg, samples, metric, maximum) {
+  const width = 640;
+  const left = 44;
+  const right = 628;
+  const top = 12;
+  const bottom = 158;
+  const plotWidth = right - left;
+  const plotHeight = bottom - top;
+  const timestamps = samples.map((sample) => Date.parse(sample.sampledAt));
+  const minTime = Math.min(...timestamps);
+  const maxTime = Math.max(...timestamps);
+  const groups = new Map();
+  for (const sample of samples) {
+    const points = groups.get(sample.group) ?? [];
+    points.push(sample);
+    groups.set(sample.group, points);
+  }
+
+  svg.replaceChildren();
+  for (let index = 0; index <= 4; index += 1) {
+    const ratio = index / 4;
+    const y = top + ratio * plotHeight;
+    addSvgElement(svg, "line", {
+      x1: left, y1: y, x2: right, y2: y, class: "history-grid-line",
+    });
+    const value = maximum * (1 - ratio);
+    addSvgElement(svg, "text", {
+      x: left - 6, y: y + 3, "text-anchor": "end", class: "history-axis-label",
+    }, metric === "cpuPercent" ? `${value.toFixed(0)}%` : `${value.toFixed(2)}`);
+  }
+
+  const formatTime = (time) => new Date(time).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  addSvgElement(svg, "text", {
+    x: left, y: 180, "text-anchor": "start", class: "history-axis-label",
+  }, formatTime(minTime));
+  addSvgElement(svg, "text", {
+    x: right, y: 180, "text-anchor": "end", class: "history-axis-label",
+  }, formatTime(maxTime));
+
+  [...groups.entries()].sort(([leftGroup], [rightGroup]) => leftGroup.localeCompare(rightGroup))
+    .forEach(([group, points], groupIndex) => {
+      const color = historyColors[groupIndex % historyColors.length];
+      const coordinates = points.map((point) => {
+        const time = Date.parse(point.sampledAt);
+        const x = maxTime === minTime ? left + plotWidth / 2 : left + ((time - minTime) / (maxTime - minTime)) * plotWidth;
+        const value = metric === "memoryUsageBytes" ? point[metric] / 1024 ** 3 : point[metric];
+        const y = bottom - (Math.min(value, maximum) / maximum) * plotHeight;
+        return { x, y };
+      });
+      if (coordinates.length === 1) {
+        addSvgElement(svg, "circle", {
+          cx: coordinates[0].x,
+          cy: coordinates[0].y,
+          r: 4,
+          fill: color,
+          class: "history-point",
+        });
+      } else {
+        const series = addSvgElement(svg, "polyline", {
+          points: coordinates.map(({ x, y }) => `${x},${y}`).join(" "),
+          stroke: color,
+          class: "history-series",
+        });
+        const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        title.textContent = group;
+        series.append(title);
+      }
+    });
+}
+
+function renderMetricsHistory(samples) {
+  historyLegend.replaceChildren();
+  if (samples.length === 0) {
+    historyCharts.classList.add("hidden");
+    historyEmpty.classList.remove("hidden");
+    return;
+  }
+
+  historyEmpty.classList.add("hidden");
+  historyCharts.classList.remove("hidden");
+  const groups = [...new Set(samples.map((sample) => sample.group))].sort((left, right) => left.localeCompare(right));
+  groups.forEach((group, index) => {
+    const item = document.createElement("span");
+    item.className = "history-legend-item";
+    const swatch = document.createElement("span");
+    swatch.className = "history-legend-swatch";
+    swatch.style.backgroundColor = historyColors[index % historyColors.length];
+    const label = document.createElement("span");
+    label.textContent = group;
+    item.append(swatch, label);
+    historyLegend.append(item);
+  });
+
+  const cpuMaximum = Math.max(100, Math.ceil(Math.max(...samples.map((sample) => sample.cpuPercent)) / 100) * 100);
+  const maxMemoryGiB = Math.max(...samples.map((sample) => sample.memoryUsageBytes / 1024 ** 3));
+  const memoryMaximum = Math.max(0.25, Math.ceil(maxMemoryGiB * 4) / 4);
+  renderHistoryChart(document.querySelector("#cpu-history-chart"), samples, "cpuPercent", cpuMaximum);
+  renderHistoryChart(document.querySelector("#memory-history-chart"), samples, "memoryUsageBytes", memoryMaximum);
+}
+
+async function loadMetricsSettings() {
+  try {
+    const settings = await request("/api/system/metrics-settings");
+    metricsIntervalInput.value = String(settings.intervalMinutes);
+    metricsCpuThresholdInput.value = String(settings.cpuPercent);
+    metricsMemoryThresholdInput.value = String(settings.memoryPercent);
+    metricsDiskThresholdInput.value = String(settings.diskFreePercent);
+    metricsRestartCountInput.value = String(settings.restartCount);
+    metricsRestartWindowInput.value = String(settings.restartWindowMinutes);
+    metricsHttpTimeoutInput.value = String(settings.httpTimeoutSeconds);
+    metricsCertificateDaysInput.value = String(settings.certificateWarningDays);
+    metricsSettingsStatus.textContent = `Retención: ${settings.retentionDays} días. CPU/RAM: ${settings.consecutiveSamples} muestras consecutivas.`;
+  } catch (error) {
+    metricsSettingsStatus.textContent = error.message;
+  }
+}
+
+function renderBackups(backups) {
+  backupsList.replaceChildren();
+  if (backups.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Aún no hay respaldos.";
+    backupsList.append(empty);
+    return;
+  }
+  for (const backup of backups) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = new Date(backup.createdAt).toLocaleString("es-MX");
+    const detail = document.createElement("div");
+    detail.className = "resource-detail";
+    detail.textContent = `${backup.id} · ${formatBytes(backup.sizeBytes)} · cifrado`;
+    main.append(name, detail);
+    const restoreButton = document.createElement("button");
+    restoreButton.className = "button secondary resource-action";
+    restoreButton.type = "button";
+    restoreButton.textContent = "Restaurar";
+    restoreButton.addEventListener("click", () => {
+      selectedBackupId = backup.id;
+      restoreConfirmationInput.value = "";
+      restoreStatus.textContent = "";
+      restoreDialog.showModal();
+      restoreConfirmationInput.focus();
+    });
+    row.append(main, restoreButton);
+    backupsList.append(row);
+  }
+}
+
+async function loadBackups() {
+  try {
+    const [result, settings] = await Promise.all([
+      request("/api/system/backups"),
+      request("/api/system/backup-settings"),
+    ]);
+    renderBackups(result.backups);
+    backupIntervalInput.value = String(settings.intervalHours);
+    backupSettingsStatus.textContent = `Ejecución automática · retención: ${result.retentionDays} días.`;
+    backupsStatus.textContent = `${result.backups.length} respaldo(s) cifrado(s).`;
+  } catch (error) {
+    backupsList.replaceChildren();
+    backupsStatus.textContent = error.message;
+  }
+}
+
+async function loadAuditLog() {
+  try {
+    const result = await request("/api/system/audit-log");
+    auditList.replaceChildren();
+    if (result.events.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "Aún no hay operaciones registradas.";
+      auditList.append(empty);
+    } else {
+      const actionLabels = {
+        "backup.created": "Respaldo creado",
+        "backup.restored": "Respaldo restaurado",
+        "backup.schedule.updated": "Intervalo de respaldos actualizado",
+        "metrics.sampling_interval.updated": "Intervalo de muestreo actualizado",
+        "metrics.alert_thresholds.updated": "Umbrales de alertas actualizados",
+      };
+      for (const event of result.events) {
+        const row = document.createElement("div");
+        row.className = "resource";
+        const main = document.createElement("div");
+        main.className = "resource-main";
+        const name = document.createElement("div");
+        name.className = "resource-name";
+        name.textContent = actionLabels[event.action] ?? event.action;
+        const detail = document.createElement("div");
+        detail.className = "resource-detail";
+        const timestamp = new Date(event.createdAt).toLocaleString("es-MX");
+        const metadata = Object.entries(event.details ?? {})
+          .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)
+          .join(" · ");
+        detail.textContent = [
+          timestamp,
+          event.actor,
+          event.resourceId,
+          metadata,
+        ].filter(Boolean).join(" · ");
+        main.append(name, detail);
+        row.append(main);
+        auditList.append(row);
+      }
+    }
+    auditStatus.textContent = `${result.events.length} evento(s) · se muestran como máximo 100.`;
+  } catch (error) {
+    auditList.replaceChildren();
+    auditStatus.textContent = error.message;
+  }
+}
+
+async function checkForUpdates() {
+  const checkButton = document.querySelector("#check-updates");
+  checkButton.disabled = true;
+  updatesAction.classList.add("hidden");
+  updatesReleaseNotes.textContent = "";
+  updatesStatus.textContent = "Consultando releases de GitHub…";
+  try {
+    const result = await request("/api/system/updates");
+    if (!result.configured) {
+      updatesStatus.textContent = `Versión instalada: ${result.currentVersion}. Configura VPS_MANAGER_GITHUB_REPOSITORY=owner/repo para consultar releases.`;
+      return;
+    }
+    if (!result.updateAvailable) {
+      updatesStatus.textContent = `VPS Manager está actualizado · versión ${result.currentVersion}.`;
+      return;
+    }
+    updatesStatus.textContent = result.updateReady
+      ? `Nueva versión disponible: ${result.latestVersion} (instalada: ${result.currentVersion}).`
+      : `La versión ${result.latestVersion} está publicada, pero no tiene un archivo de actualización con digest SHA-256 válido.`;
+    if (result.releaseUrl) {
+      const releaseLink = document.createElement("a");
+      releaseLink.href = result.releaseUrl;
+      releaseLink.target = "_blank";
+      releaseLink.rel = "noopener noreferrer";
+      releaseLink.textContent = "Ver release en GitHub";
+      releaseLink.className = "update-release-link";
+      updatesStatus.append(" ", releaseLink);
+    }
+    updatesReleaseNotes.textContent = result.releaseNotes;
+    if (result.updateReady && result.command) {
+      updateCommand.textContent = result.command;
+      updatesAction.classList.remove("hidden");
+    }
+  } catch (error) {
+    updatesStatus.textContent = error.message;
+  } finally {
+    checkButton.disabled = false;
+  }
+}
+
+async function loadMetricAlerts() {
+  try {
+    const result = await request("/api/system/metric-alerts");
+    const signature = JSON.stringify(result.alerts);
+    if (signature !== metricAlertsSignature) {
+      metricAlertsSignature = signature;
+      metricAlertsList.replaceChildren();
+      for (const alert of result.alerts) {
+        const item = document.createElement("li");
+        if (alert.metric === "cpu" || alert.metric === "memory") {
+          const metricLabel = alert.metric === "cpu" ? "CPU" : "RAM";
+          const sampledAt = new Date(alert.sampledAt).toLocaleString("es-MX");
+          item.textContent = `${metricLabel} · ${alert.containerName} · ${alert.group}: ${alert.valuePercent.toFixed(1)}% (umbral ${alert.thresholdPercent}%) · ${sampledAt}`;
+        } else if (alert.metric === "disk") {
+          item.textContent = `Disco · ${alert.freePercent.toFixed(1)}% libre (umbral ≤ ${alert.thresholdPercent}%)`;
+        } else if (alert.metric === "service") {
+          item.textContent = `Servicio · ${alert.serviceName} · ${alert.group}: ${alert.runningTasks}/${alert.desiredTasks} tareas activas`;
+        } else if (alert.metric === "restarts") {
+          item.textContent = `Reinicios · ${alert.containerName} · ${alert.group}: ${alert.restartCount} en ${alert.windowMinutes} min (umbral ${alert.thresholdCount})`;
+        } else if (alert.metric === "http") {
+          const detail = alert.statusCode
+            ? `HTTP ${alert.statusCode}`
+            : alert.reason === "timeout" ? "timeout" : "sin conexión";
+          item.textContent = `HTTP · ${alert.serviceName} · ${alert.url}: ${detail}`;
+        } else if (alert.metric === "deployment") {
+          const details = alert.reasons
+            .map(({ reason, message }) => `${reason}${message ? `: ${message}` : ""}`)
+            .join(" · ");
+          item.textContent = `Despliegue · ${alert.serviceName} · ${alert.group}: ${details}`;
+        } else {
+          const detail = alert.daysRemaining === undefined
+            ? alert.reason === "timeout" ? "timeout consultando certificado" : "certificado no disponible"
+            : alert.daysRemaining < 0
+              ? `vencido hace ${Math.abs(alert.daysRemaining)} días`
+              : `vence en ${alert.daysRemaining} días`;
+          item.textContent = `TLS · ${alert.serviceName} · ${alert.hostname}: ${detail}`;
+        }
+        metricAlertsList.append(item);
+      }
+    }
+    metricAlertsStatus.textContent = result.alerts.length
+      ? `${result.alerts.length} alerta(s) activa(s) · CPU/RAM requieren ${result.consecutiveSamples} muestras consecutivas`
+      : `Sin alertas activas · CPU/RAM requieren ${result.consecutiveSamples} muestras consecutivas`;
+  } catch (error) {
+    metricAlertsSignature = "";
+    metricAlertsList.replaceChildren();
+    metricAlertsStatus.textContent = error.message;
+  }
+}
+
+async function loadMetricsHistory() {
+  historyStatus.textContent = "Cargando histórico…";
+  try {
+    const result = await request("/api/system/metrics-history");
+    renderMetricsHistory(result.samples);
+    historyStatus.textContent = result.samples.length
+      ? `${result.samples.length} puntos agrupados · últimas ${result.hours} horas · retención ${result.retentionDays} días`
+      : `Sin muestras todavía · retención ${result.retentionDays} días`;
+  } catch (error) {
+    historyCharts.classList.add("hidden");
+    historyLegend.replaceChildren();
+    historyEmpty.classList.add("hidden");
+    historyStatus.textContent = error.message;
+  }
+}
+
+async function loadContainerMetrics() {
+  refreshMetricsButton.disabled = true;
+  metricsStatus.textContent = "Consultando CPU y memoria…";
+  try {
+    const result = await request("/api/docker/container-metrics");
+    containerMetrics.clear();
+    for (const metrics of result.metrics) {
+      containerMetrics.set(metrics.id, metrics);
+    }
+    metricsLoaded = true;
+    renderMetricsGroups();
+    renderFilteredResources();
+    const unavailableCount = result.unavailable.length;
+    const updatedAt = new Date().toLocaleTimeString("es-MX");
+    metricsStatus.textContent = unavailableCount
+      ? `Muestra puntual · CPU agregada (puede superar 100%) · ${unavailableCount} sin métricas · ${updatedAt}`
+      : `Muestra puntual actualizada · CPU agregada (puede superar 100%) · ${updatedAt}`;
+    await Promise.all([loadMetricsHistory(), loadMetricAlerts()]);
+  } catch (error) {
+    metricsStatus.textContent = error.message;
+  } finally {
+    refreshMetricsButton.disabled = false;
+  }
+}
+
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
   try {
-    const [containersResult, servicesResult, serverResult, stacksResult] = await Promise.all([
+    const [containersResult, servicesResult, serverResult, stacksResult, systemResult] = await Promise.all([
       request("/api/docker/containers"),
       request("/api/docker/services"),
       request("/api/docker/info"),
       request("/api/docker/stacks"),
+      request("/api/system/status"),
     ]);
-    renderServerInfo(serverResult.server);
+    renderServerInfo(serverResult.server, systemResult.database);
+    containerMetrics.clear();
+    metricsLoaded = false;
+    metricsGroups.replaceChildren();
+    metricsGroups.classList.add("hidden");
+    metricsStatus.textContent = "";
     resourceData.containers = containersResult.containers;
     resourceData.services = servicesResult.services;
     resourceData.stacks = stacksResult.stacks;
     renderFilteredResources();
+    await Promise.all([
+      loadMetricsSettings(),
+      loadMetricsHistory(),
+      loadMetricAlerts(),
+      loadBackups(),
+      loadAuditLog(),
+      checkForUpdates(),
+    ]);
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
   } catch (error) {
     statusMessage.textContent = error.message;
@@ -279,6 +740,112 @@ logoutButton.addEventListener("click", async () => {
 });
 
 refreshButton.addEventListener("click", loadResources);
+refreshMetricsButton.addEventListener("click", loadContainerMetrics);
+document.querySelector("#refresh-history").addEventListener("click", loadMetricsHistory);
+document.querySelector("#refresh-backups").addEventListener("click", loadBackups);
+document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
+document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
+document.querySelector("#copy-update-command").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(updateCommand.textContent);
+    updatesStatus.textContent = "Comando copiado. Ejecútalo en una sesión SSH del VPS.";
+  } catch (error) {
+    updatesStatus.textContent = `No se pudo copiar el comando: ${error.message}`;
+  }
+});
+createBackupButton.addEventListener("click", async () => {
+  createBackupButton.disabled = true;
+  backupsStatus.textContent = "Creando y cifrando respaldo de PostgreSQL…";
+  try {
+    const result = await request("/api/system/backups", { method: "POST" });
+    backupsStatus.textContent = `Respaldo ${result.backup.id} creado y cifrado.`;
+    await loadBackups();
+  } catch (error) {
+    backupsStatus.textContent = error.message;
+  } finally {
+    createBackupButton.disabled = false;
+  }
+});
+backupSettingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = backupSettingsForm.querySelector("button");
+  submitButton.disabled = true;
+  backupSettingsStatus.textContent = "Guardando intervalo…";
+  try {
+    const result = await request("/api/system/backup-settings", {
+      method: "PATCH",
+      body: JSON.stringify({ intervalHours: Number(backupIntervalInput.value) }),
+    });
+    backupIntervalInput.value = String(result.intervalHours);
+    backupSettingsStatus.textContent = `Respaldo automático cada ${result.intervalHours} h · retención: ${result.retentionDays} días.`;
+  } catch (error) {
+    backupSettingsStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+restoreForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!selectedBackupId) return;
+  const submitButton = document.querySelector("#confirm-restore");
+  submitButton.disabled = true;
+  restoreStatus.textContent = "Validando y restaurando el respaldo…";
+  try {
+    await request(`/api/system/backups/${encodeURIComponent(selectedBackupId)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ confirmation: restoreConfirmationInput.value }),
+    });
+    restoreDialog.close();
+    backupsStatus.textContent = "Base de datos restaurada correctamente.";
+    selectedBackupId = undefined;
+    await loadResources();
+  } catch (error) {
+    restoreStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+for (const selector of ["#close-restore", "#cancel-restore"]) {
+  document.querySelector(selector).addEventListener("click", () => {
+    selectedBackupId = undefined;
+    restoreDialog.close();
+  });
+}
+metricsSettingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = metricsSettingsForm.querySelector("button");
+  submitButton.disabled = true;
+  metricsSettingsStatus.textContent = "Guardando configuración…";
+  try {
+    const result = await request("/api/system/metrics-settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        intervalMinutes: Number(metricsIntervalInput.value),
+        cpuPercent: Number(metricsCpuThresholdInput.value),
+        memoryPercent: Number(metricsMemoryThresholdInput.value),
+        diskFreePercent: Number(metricsDiskThresholdInput.value),
+        restartCount: Number(metricsRestartCountInput.value),
+        restartWindowMinutes: Number(metricsRestartWindowInput.value),
+        httpTimeoutSeconds: Number(metricsHttpTimeoutInput.value),
+        certificateWarningDays: Number(metricsCertificateDaysInput.value),
+      }),
+    });
+    metricsIntervalInput.value = String(result.intervalMinutes);
+    metricsCpuThresholdInput.value = String(result.cpuPercent);
+    metricsMemoryThresholdInput.value = String(result.memoryPercent);
+    metricsDiskThresholdInput.value = String(result.diskFreePercent);
+    metricsRestartCountInput.value = String(result.restartCount);
+    metricsRestartWindowInput.value = String(result.restartWindowMinutes);
+    metricsHttpTimeoutInput.value = String(result.httpTimeoutSeconds);
+    metricsCertificateDaysInput.value = String(result.certificateWarningDays);
+    metricsSettingsStatus.textContent = `Retención: ${result.retentionDays} días. CPU/RAM: ${result.consecutiveSamples} muestras consecutivas.`;
+    await loadMetricAlerts();
+  } catch (error) {
+    metricsSettingsStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
 for (const selector of ["#container-search", "#service-search", "#stack-search"]) {
   document.querySelector(selector).addEventListener("input", renderFilteredResources);
 }

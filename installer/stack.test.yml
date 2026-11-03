@@ -40,6 +40,9 @@ services:
         limits:
           cpus: "0.25"
           memory: 128M
+      labels:
+        - vps-manager.managed=true
+        - vps-manager.component=docker-proxy
 
   traefik:
     image: traefik:v3.7.17
@@ -69,18 +72,67 @@ services:
         limits:
           cpus: "0.50"
           memory: 256M
+      labels:
+        - vps-manager.managed=true
+        - vps-manager.component=ingress
+
+  postgres:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: vps_manager
+      POSTGRES_USER: vps_manager
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vps_manager -d vps_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+      labels:
+        - vps-manager.managed=true
+        - vps-manager.component=database
 
   manager:
-    image: vps-manager:0.1.0
+    image: vps-manager:${VPS_MANAGER_VERSION:-0.1.0}
     environment:
       PORT: "3000"
       DOCKER_API_URL: http://docker-proxy:2375
       COOKIE_SECURE: "false"
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: vps_manager
+      DATABASE_USER: vps_manager
+      BACKUP_DIRECTORY: /var/backups/vps-manager
+      VPS_MANAGER_GITHUB_REPOSITORY: ${VPS_MANAGER_GITHUB_REPOSITORY:-}
     secrets:
       - admin_credentials
       - session_key
+      - postgres_password
+      - backup_key
+    volumes:
+      - type: bind
+        source: /var/lib/vps-manager/backups
+        target: /var/backups/vps-manager
     networks:
       - proxy
+      - internal
     deploy:
       replicas: 1
       placement:
@@ -93,6 +145,8 @@ services:
           cpus: "0.50"
           memory: 256M
       labels:
+        - vps-manager.managed=true
+        - vps-manager.component=api
         - traefik.enable=true
         - traefik.swarm.network=vps-manager-proxy
         - traefik.http.routers.vps-manager.rule=Host(`${VPS_MANAGER_DOMAIN}`)
@@ -103,6 +157,13 @@ networks:
   proxy:
     external: true
     name: vps-manager-proxy
+  internal:
+    external: true
+    name: vps-manager-internal
+
+volumes:
+  postgres-data:
+    name: vps-manager-postgres-data
 
 secrets:
   admin_credentials:
@@ -111,3 +172,9 @@ secrets:
   session_key:
     external: true
     name: vps_manager_session_key
+  postgres_password:
+    external: true
+    name: vps_manager_postgres_password
+  backup_key:
+    external: true
+    name: vps_manager_backup_key

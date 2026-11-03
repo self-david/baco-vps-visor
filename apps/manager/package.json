@@ -1,0 +1,11 @@
+{
+  "name": "vps-manager",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pg": "8.16.3"
+  }
+}
