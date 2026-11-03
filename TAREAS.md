@@ -149,7 +149,7 @@ Estado: **parcial** (respaldos, auditoría operativa limitada y actualización m
 - [x] Registrar cambios de configuración y respaldos; mostrar los últimos 100 eventos al administrador.
 - [ ] Roles.
 - [ ] MFA.
-- [x] Consultar releases estables de GitHub y ofrecer actualización manual verificada de VPS Manager desde el VPS.
+- [x] Consultar releases estables de GitHub y permitir iniciar desde el panel una actualización verificada mediante un servicio host limitado; conservar alternativa manual por SSH.
 - [x] Mostrar diagnóstico bajo demanda desde el panel para Docker, Swarm, servicios, redes, PostgreSQL y respaldos; conservar el comando SSH para información del host.
 - [ ] Recuperación automática.
 

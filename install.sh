@@ -243,6 +243,8 @@ docker build --pull -t "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
 umask 077
 install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
+install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/web-update
+install -d -m 0755 /usr/local/libexec
 {
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"
   printf 'VPS_MANAGER_TEST_MODE=%s\n' "${TEST_MODE}"
@@ -255,6 +257,11 @@ install -m 0755 "${SOURCE_DIR}/installer/update.sh" /usr/local/bin/vps-manager-u
 install -m 0755 "${SOURCE_DIR}/installer/diagnostics.sh" /usr/local/bin/vps-manager-diagnostics
 install -m 0755 "${SOURCE_DIR}/installer/uninstall.sh" /usr/local/bin/vps-manager-uninstall
 install -m 0755 "${SOURCE_DIR}/installer/reset-password.sh" /usr/local/bin/vps-manager-reset-password
+install -m 0755 "${SOURCE_DIR}/installer/web-update-worker.sh" /usr/local/libexec/vps-manager-web-update
+install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.path" /etc/systemd/system/vps-manager-web-update.path
+install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.service" /etc/systemd/system/vps-manager-web-update.service
+systemctl daemon-reload
+systemctl enable --now vps-manager-web-update.path
 
 export VPS_MANAGER_VERSION VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
 if [[ "${TEST_MODE}" == "true" ]]; then

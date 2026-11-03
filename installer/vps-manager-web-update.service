@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the fixed VPS Manager release updater
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/vps-manager-web-update
+TimeoutStartSec=45min
+UMask=0077
+StandardOutput=journal
+StandardError=journal

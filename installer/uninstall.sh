@@ -28,6 +28,20 @@ if [[ "${confirmation}" != "ELIMINAR" ]]; then
   exit 0
 fi
 
+if systemctl is-active --quiet vps-manager-web-update.service; then
+  echo "No se puede desinstalar mientras una actualización web está en curso." >&2
+  exit 1
+fi
+
+if [[ -f /etc/systemd/system/vps-manager-web-update.path ]]; then
+  systemctl disable --now vps-manager-web-update.path
+  rm -f -- \
+    /etc/systemd/system/vps-manager-web-update.path \
+    /etc/systemd/system/vps-manager-web-update.service \
+    /usr/local/libexec/vps-manager-web-update
+  systemctl daemon-reload
+fi
+
 docker stack rm vps-manager
 for _ in $(seq 1 60); do
   if ! docker service ls --filter label=com.docker.stack.namespace=vps-manager --format '{{.ID}}' | grep -q .; then

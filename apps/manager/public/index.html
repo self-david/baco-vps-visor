@@ -296,11 +296,18 @@
                 </div>
                 <p id="updates-status" class="muted" aria-live="polite">Versión instalada: —</p>
                 <p id="updates-release-notes" class="muted update-release-notes"></p>
+                <p id="web-update-status" class="muted update-job-status" aria-live="polite">No hay una actualización web en curso.</p>
                 <div id="updates-action" class="update-action hidden">
-                  <code id="update-command">sudo vps-manager-update</code>
-                  <button id="copy-update-command" class="button resource-action" type="button">Copiar comando</button>
+                  <button id="start-web-update" class="button resource-action" type="button">Actualizar desde el panel</button>
+                  <details class="update-manual">
+                    <summary>Usar el comando SSH manual</summary>
+                    <div class="update-action">
+                      <code id="update-command">sudo vps-manager-update</code>
+                      <button id="copy-update-command" class="button secondary resource-action" type="button">Copiar comando</button>
+                    </div>
+                  </details>
                 </div>
-                <p class="muted update-note">El panel solo consulta releases públicas. La actualización se ejecuta manualmente en el VPS para mantener Docker fuera del alcance de escritura de la API.</p>
+                <p class="muted update-note">La actualización web solicita una tarea fija al servicio host de systemd; no permite enviar comandos ni versiones y no concede acceso Docker de escritura al panel. También puedes ejecutarla manualmente por SSH.</p>
               </section>
             </div>
           </section>

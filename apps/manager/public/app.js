@@ -47,6 +47,8 @@ const updatesStatus = document.querySelector("#updates-status");
 const updatesReleaseNotes = document.querySelector("#updates-release-notes");
 const updatesAction = document.querySelector("#updates-action");
 const updateCommand = document.querySelector("#update-command");
+const webUpdateButton = document.querySelector("#start-web-update");
+const webUpdateStatus = document.querySelector("#web-update-status");
 const diagnosticsStatus = document.querySelector("#diagnostics-status");
 const diagnosticsList = document.querySelector("#diagnostics-list");
 const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
@@ -56,6 +58,9 @@ let metricsLoaded = false;
 let metricAlertsRefreshTimer;
 let metricAlertsSignature = "";
 let selectedBackupId;
+let webUpdatePollTimer;
+let webUpdatePending = false;
+let lastWebUpdateState;
 
 function activateDashboardTab(tabId, { focus = false, updateHash = true } = {}) {
   const selectedTab = dashboardTabs.find((tab) => tab.id === `tab-button-${tabId}`);
@@ -124,6 +129,12 @@ function showAuthenticated(authenticated) {
   } else if (!authenticated && metricAlertsRefreshTimer !== undefined) {
     clearInterval(metricAlertsRefreshTimer);
     metricAlertsRefreshTimer = undefined;
+  }
+  if (!authenticated) {
+    if (webUpdatePollTimer !== undefined) clearTimeout(webUpdatePollTimer);
+    webUpdatePollTimer = undefined;
+    webUpdatePending = false;
+    lastWebUpdateState = undefined;
   }
 }
 
@@ -637,6 +648,63 @@ async function checkForUpdates() {
     updatesStatus.textContent = error.message;
   } finally {
     checkButton.disabled = false;
+    await loadWebUpdateStatus();
+  }
+}
+
+function scheduleWebUpdatePoll() {
+  if (webUpdatePollTimer !== undefined || !webUpdatePending || dashboardView.classList.contains("hidden")) return;
+  webUpdatePollTimer = setTimeout(() => {
+    webUpdatePollTimer = undefined;
+    void loadWebUpdateStatus();
+  }, 4000);
+}
+
+async function loadWebUpdateStatus() {
+  try {
+    const { update } = await request("/api/system/web-update");
+    const previousState = lastWebUpdateState;
+    lastWebUpdateState = update?.state;
+    webUpdatePending = update?.state === "queued" || update?.state === "running";
+    webUpdateButton.disabled = webUpdatePending;
+    if (!update) {
+      webUpdateStatus.textContent = "No hay una actualización web en curso.";
+    } else {
+      webUpdateStatus.textContent = update.message;
+    }
+    if (webUpdatePending) {
+      scheduleWebUpdatePoll();
+    } else if (webUpdatePollTimer !== undefined) {
+      clearTimeout(webUpdatePollTimer);
+      webUpdatePollTimer = undefined;
+    }
+    if (update?.state === "succeeded" && previousState !== "succeeded") {
+      updatesStatus.textContent = "Actualización completada; verificando la versión instalada…";
+      void checkForUpdates();
+    }
+  } catch (error) {
+    webUpdateStatus.textContent = error.message;
+    if (webUpdatePending) scheduleWebUpdatePoll();
+    else webUpdateButton.disabled = false;
+  }
+}
+
+async function startWebUpdate() {
+  if (!window.confirm("Se descargará e instalará la release estable verificada más reciente. El panel puede reiniciarse durante la actualización. ¿Continuar?")) {
+    return;
+  }
+  webUpdateButton.disabled = true;
+  webUpdateStatus.textContent = "Validando la release y enviando la solicitud al servicio host…";
+  try {
+    const result = await request("/api/system/web-update", { method: "POST" });
+    webUpdatePending = true;
+    lastWebUpdateState = result.update.state;
+    webUpdateStatus.textContent = `${result.update.message} Versión objetivo: ${result.latestVersion}.`;
+    scheduleWebUpdatePoll();
+  } catch (error) {
+    webUpdateStatus.textContent = error.message;
+    webUpdateButton.disabled = false;
+    await loadWebUpdateStatus();
   }
 }
 
@@ -842,6 +910,7 @@ document.querySelector("#refresh-history").addEventListener("click", loadMetrics
 document.querySelector("#refresh-backups").addEventListener("click", loadBackups);
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
+webUpdateButton.addEventListener("click", startWebUpdate);
 document.querySelector("#copy-update-command").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(updateCommand.textContent);

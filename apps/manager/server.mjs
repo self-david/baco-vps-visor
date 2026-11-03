@@ -8,6 +8,7 @@ import { createBackupManager } from "./backup-manager.mjs";
 import { createBackupScheduler } from "./backup-scheduler.mjs";
 import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
+import { createWebUpdater } from "./web-updater.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
@@ -50,6 +51,7 @@ const updateChecker = createUpdateChecker({
   repository: process.env.VPS_MANAGER_GITHUB_REPOSITORY ?? "self-david/baco-vps-visor",
   currentVersion,
 });
+const webUpdater = createWebUpdater();
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -147,6 +149,19 @@ function hasSession(request) {
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     return Number.isInteger(decoded.expiresAt) && decoded.expiresAt > Date.now() / 1000;
+  } catch {
+    return false;
+  }
+}
+
+function hasSameOrigin(request) {
+  const origin = request.headers.origin;
+  const host = request.headers.host;
+  if (typeof origin !== "string" || typeof host !== "string") return false;
+  try {
+    const originUrl = new URL(origin);
+    const expectedUrl = new URL(`${secureCookies ? "https" : "http"}://${host}`);
+    return originUrl.origin === expectedUrl.origin;
   } catch {
     return false;
   }
@@ -580,6 +595,56 @@ const server = createServer(async (request, response) => {
       respondJson(response, 503, {
         error: "No se pudo consultar o verificar la release de GitHub. Inténtalo más tarde.",
       });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/system/web-update") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        respondJson(response, 200, { update: await webUpdater.getStatus() });
+      } catch (error) {
+        console.error("Web update status request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el estado de la actualización." });
+      }
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const release = await updateChecker.check();
+      if (!release.configured || !release.updateAvailable || !release.updateReady) {
+        respondJson(response, 409, {
+          error: "No hay una nueva release estable verificada disponible para instalar.",
+        });
+        return;
+      }
+      const update = await webUpdater.requestUpdate();
+      const audited = await recordAuditEventOrRespond(response, {
+        action: "system.update.requested",
+        resourceType: "system",
+        resourceId: "vps-manager",
+        details: { requestId: update.id, latestVersion: release.latestVersion, source: "web" },
+      }, "La solicitud de actualización");
+      if (!audited) return;
+      respondJson(response, 202, { update, latestVersion: release.latestVersion });
+    } catch (error) {
+      if (error?.code === "UPDATE_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Web update request failed:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar la actualización desde el panel." });
     }
     return;
   }

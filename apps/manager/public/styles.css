@@ -103,6 +103,9 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .update-note, .update-release-notes { margin: 8px 0; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .update-action { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .update-action code { overflow-wrap: anywhere; padding: 8px 10px; border: 1px solid #34435b; border-radius: 8px; color: #cbd6e7; background: #0e1521; }
+.update-job-status { padding: 10px 12px; border-left: 3px solid #536a91; background: #111a28; }
+.update-manual { flex-basis: 100%; }
+.update-manual summary { color: #b8c5d9; cursor: pointer; font-size: .85rem; }
 .update-release-link { color: #9eb9ff; }
 .danger { border-color: #9c4545; color: #fff; background: #9b3535; }
 .danger:hover { background: #b74444; }
