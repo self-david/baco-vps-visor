@@ -112,6 +112,89 @@ export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
     }
   }
 
+  async function requestArchive(path, token) {
+    let response;
+    try {
+      response = await fetchImpl(`${apiUrl}${path}`, {
+        headers: {
+          Accept: "application/zip, application/octet-stream",
+          Authorization: `token ${token}`,
+        },
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch {
+      const unavailable = new Error("No se pudo descargar el código desde Gitea.");
+      unavailable.code = "GITEA_UNAVAILABLE";
+      throw unavailable;
+    }
+
+    if (response.status === 401) {
+      const invalid = new Error("El token de Gitea fue rechazado o ya no es válido.");
+      invalid.code = "GITEA_TOKEN_INVALID";
+      throw invalid;
+    }
+    if (response.status === 403) {
+      const forbidden = new Error("El token no tiene permiso para leer el repositorio.");
+      forbidden.code = "GITEA_TOKEN_FORBIDDEN";
+      throw forbidden;
+    }
+    if (response.status === 404) {
+      const missing = new Error("No se encontró el repositorio o el commit solicitados.");
+      missing.code = "GITEA_RESOURCE_NOT_FOUND";
+      throw missing;
+    }
+    if (!response.ok) {
+      const failed = new Error("Gitea no pudo descargar el código solicitado.");
+      failed.code = "GITEA_REQUEST_FAILED";
+      throw failed;
+    }
+
+    const archiveUrl = new URL(response.url);
+    if (archiveUrl.protocol !== "https:" || archiveUrl.hostname !== domain) {
+      const invalid = new Error("Gitea devolvió una descarga fuera de su dominio HTTPS.");
+      invalid.code = "GITEA_INVALID_RESPONSE";
+      throw invalid;
+    }
+    const maximumBytes = 32 * 1024 * 1024;
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+      const tooLarge = new Error("El código del proyecto supera el límite de descarga de 32 MiB.");
+      tooLarge.code = "GITEA_ARCHIVE_TOO_LARGE";
+      throw tooLarge;
+    }
+    if (!response.body) {
+      const invalid = new Error("Gitea devolvió un archivo vacío.");
+      invalid.code = "GITEA_INVALID_RESPONSE";
+      throw invalid;
+    }
+
+    const chunks = [];
+    let size = 0;
+    try {
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > maximumBytes) {
+          const tooLarge = new Error("El código del proyecto supera el límite de descarga de 32 MiB.");
+          tooLarge.code = "GITEA_ARCHIVE_TOO_LARGE";
+          throw tooLarge;
+        }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      if (error?.code === "GITEA_ARCHIVE_TOO_LARGE") throw error;
+      const unavailable = new Error("La descarga del código desde Gitea se interrumpió.");
+      unavailable.code = "GITEA_UNAVAILABLE";
+      throw unavailable;
+    }
+    const archive = Buffer.concat(chunks);
+    if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) {
+      const invalid = new Error("Gitea devolvió un archivo ZIP inválido.");
+      invalid.code = "GITEA_INVALID_RESPONSE";
+      throw invalid;
+    }
+    return archive;
+  }
+
   async function listBranches(token, repositoryReference) {
     const repository = validateRepositoryReference(repositoryReference);
     const branches = [];
@@ -318,6 +401,32 @@ export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
     },
     listBranches,
     configurePushWebhook,
+    async getCommit(token, repositoryReference, reference) {
+      const repository = validateRepositoryReference(repositoryReference);
+      validateBranchName(reference);
+      const result = await request(
+        `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits/${encodeURIComponent(reference)}`,
+        token,
+      );
+      if (typeof result.sha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(result.sha)) {
+        const invalid = new Error("Gitea devolvió un identificador de commit inválido.");
+        invalid.code = "GITEA_INVALID_RESPONSE";
+        throw invalid;
+      }
+      return result.sha.toLowerCase();
+    },
+    async downloadArchive(token, repositoryReference, commitSha) {
+      const repository = validateRepositoryReference(repositoryReference);
+      if (typeof commitSha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha)) {
+        const invalid = new TypeError("El commit solicitado no es válido.");
+        invalid.code = "INVALID_COMMIT";
+        throw invalid;
+      }
+      return requestArchive(
+        `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/archive/${encodeURIComponent(commitSha)}.zip`,
+        token,
+      );
+    },
     async setDefaultBranch(token, repositoryReference, branchName) {
       const repository = validateRepositoryReference(repositoryReference);
       const branch = validateBranchName(branchName);

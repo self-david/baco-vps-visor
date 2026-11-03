@@ -48,5 +48,5 @@ export function validateProjectId(id) {
     invalid.code = "INVALID_PROJECT_ID";
     throw invalid;
   }
-  return id;
+  return id.toLowerCase();
 }

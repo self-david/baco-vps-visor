@@ -260,6 +260,44 @@ test("creates a push webhook and updates it instead of creating duplicates", asy
   assert.equal(calls[1].url, `https://${domain}/api/v1/repos/vpsadmin/project/hooks/17`);
 });
 
+test("resolves a branch to a commit and downloads only a bounded same-domain archive", async () => {
+  const calls = [];
+  const archive = Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2]);
+  const client = createGiteaClient({
+    domain,
+    async fetchImpl(url, options) {
+      calls.push({ url, options });
+      if (url.endsWith("/commits/release%2F1.0")) {
+        return Response.json({ sha: "A".repeat(40) });
+      }
+      const response = new Response(archive, {
+        headers: { "Content-Type": "application/zip", "Content-Length": String(archive.length) },
+      });
+      Object.defineProperty(response, "url", { value: url });
+      return response;
+    },
+  });
+
+  const commit = await client.getCommit(token, "vpsadmin/project", "release/1.0");
+  assert.equal(commit, "a".repeat(40));
+  assert.deepEqual(await client.downloadArchive(token, "vpsadmin/project", commit), archive);
+  assert.equal(calls[0].url, `https://${domain}/api/v1/repos/vpsadmin/project/commits/release%2F1.0`);
+  assert.equal(calls[1].url, `https://${domain}/api/v1/repos/vpsadmin/project/archive/${commit}.zip`);
+  assert.equal(calls[1].options.headers.Authorization, `token ${token}`);
+
+  const unsafeRedirect = createGiteaClient({
+    domain,
+    async fetchImpl(url) {
+      const response = new Response(archive);
+      Object.defineProperty(response, "url", { value: "https://other.example/archive.zip" });
+      return response;
+    },
+  });
+  await assert.rejects(unsafeRedirect.downloadArchive(token, "vpsadmin/project", commit), {
+    code: "GITEA_INVALID_RESPONSE",
+  });
+});
+
 test("paginates through repositories with more than fifty branches", async () => {
   const calls = [];
   const client = createGiteaClient({

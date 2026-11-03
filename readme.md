@@ -4,10 +4,10 @@
 **Estado:** Implementación incremental; primera fase funcional en desarrollo  
 **Versión:** 1.0  
 **Sistema operativo objetivo:** Ubuntu Server 24.04 LTS  
-**Arquitectura:** Docker Swarm de un solo nodo  
+**Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, reinicio y escalado acotados de servicios Swarm administrados por VPS Manager mediante un agente host aislado, cola persistente con leases, reintentos limitados y recuperación idempotente para esos handlers, métricas históricas de CPU/RAM con retención de siete días, alertas operativas, auditoría, respaldos cifrados y actualización verificada desde el panel o por SSH. Las demás funciones (otras operaciones Docker, proyectos Git, catálogo, roles, etc.) siguen pendientes.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos, rollback a despliegues anteriores, registro privado, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. La incorporación de nodos desde el panel, secretos de aplicaciones, configuración genérica del catálogo y despliegue automático por push siguen pendientes.
 
 ---
 
@@ -165,12 +165,13 @@ El repositorio incluye `install.sh`, `installer/stack.yml`, `installer/diagnosti
 
 El instalador usa Docker Buildx con BuildKit para construir la imagen local del
 panel y cargarla en el Docker Engine antes de desplegar el stack. La construcción
-de imágenes de proyectos registrados todavía no está habilitada.
+de proyectos registrados se solicita manualmente desde el panel después de
+configurar el registro privado; los builds no se activan con webhooks.
 
 El instalador:
 
 - Solo admite Ubuntu Server 24.04 LTS en `amd64` o `arm64`.
-- Instala Docker Engine desde el repositorio APT oficial e inicializa Swarm de un nodo si hace falta.
+- Instala Docker Engine desde el repositorio APT oficial e inicializa un Swarm de un solo nodo si hace falta. Para distribuir proyectos entre VPS, el administrador debe unir los demás servidores al mismo Swarm; el panel aún no gestiona el alta de nodos.
 - Despliega el panel y Traefik con HTTPS de Let's Encrypt.
 - Espera a que los servicios estén activos y valida el certificado HTTPS y el endpoint de salud.
 - Requiere un dominio con DNS configurado y los puertos TCP 80/443 disponibles y permitidos en el firewall del VPS y del proveedor.
@@ -181,7 +182,7 @@ El instalador:
 - No configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor.
 - Conserva los secretos y los volúmenes (Traefik y PostgreSQL) durante la desinstalación normal.
 
-El panel permite consultar contenedores, servicios y stacks; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar únicamente los servicios administrados en modo replicado, de 1 a 100 réplicas. Un agente `systemd` del host vuelve a validar la etiqueta y acepta solo las operaciones fijas `restart-service` y `scale-service`; no acepta comandos ni parámetros Docker arbitrarios. El escalado solicita a Swarm aplicar la cantidad deseada en segundo plano, por lo que las tareas pueden quedar pendientes si no hay recursos disponibles. El servicio API de VPS Manager siempre conserva una réplica. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
+El panel permite consultar contenedores, servicios y stacks; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar los servicios permitidos en modo replicado, de 1 a 100 réplicas; el API y el registro privado conservan una sola réplica. El agente `systemd` del host valida nuevamente las operaciones permitidas (reiniciar, escalar, instalar Gitea, configurar el registro privado, construir/publicar imágenes y desplegar o retirar servicios de proyecto); no acepta comandos Docker arbitrarios. El escalado puede dejar tareas pendientes si no hay recursos disponibles. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
 
 #### Prueba en una red privada
 
@@ -224,7 +225,9 @@ sudo vps-manager-uninstall
 
 El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de Docker Engine, Swarm, réplicas de los servicios del stack, redes, conexión PostgreSQL y disponibilidad de archivos de respaldo cifrados. Esa comprobación no realiza cambios. Los detalles del host que requieren acceso al sistema operativo (Ubuntu, memoria, espacio de disco y puertos) siguen disponibles con `sudo vps-manager-diagnostics` por SSH. El panel no monta el socket Docker: la operación de reinicio pasa por un canal de solicitud dedicado y restringido del agente host.
 
-El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. Gitea es una aplicación opcional que puede instalarse desde Aplicaciones en instalaciones con dominio público y HTTPS. Requiere que `git.<dominio-del-panel>` apunte al VPS, que el puerto TCP `2222` esté libre y accesible, y al menos 768 MB disponibles para el servicio. Se utiliza SQLite con una sola réplica y un volumen persistente independiente. La contraseña aleatoria del administrador se puede consultar una sola vez durante los 30 minutos posteriores a la instalación.
+La desinstalación retira el servicio del registro privado, pero conserva su volumen de imágenes y secretos por defecto. `sudo vps-manager-uninstall --purge-secrets` también retira sus secretos de autenticación; no elimina el volumen persistente del registro.
+
+El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. Gitea es una aplicación opcional que puede instalarse desde Aplicaciones en instalaciones con dominio público y HTTPS. Requiere que `git.<dominio-del-panel>` apunte al VPS, que el puerto TCP `2222` esté libre y accesible, y al menos 768 MB disponibles para el servicio. Se utiliza SQLite con una sola réplica y un volumen persistente independiente. La contraseña aleatoria del administrador se puede consultar una sola vez durante los 30 minutos posteriores a la instalación. El instalador solo crea el nodo inicial del Swarm; los nodos de VPS adicionales deben incorporarse manualmente antes de solicitar un despliegue global de proyectos.
 
 Después de instalar Gitea, crea en sus ajustes de usuario un token con permiso de lectura de cuenta y escritura de repositorios. En Aplicaciones, VPS Manager valida el token contra la API HTTPS y lo guarda como secreto Swarm versionado; no lo persiste en PostgreSQL ni lo muestra otra vez. El servicio del panel se reinicia para montar el secreto y su nombre se conserva en `/opt/vps-manager/install.env`, por lo que las siguientes actualizaciones del stack mantienen el token. Luego puedes crear repositorios privados inicializados con un README desde el panel; el formulario muestra las direcciones de clonación HTTPS y SSH. La sección Administrar ramas permite consultar las ramas de repositorios disponibles y cambiar la rama predeterminada cuando el token tiene permisos de administración. Estos cambios se registran en la auditoría; el panel no crea ni elimina ramas. Para rotarlo, envía uno nuevo desde el mismo formulario; para revocarlo, revócalo en Gitea.
 
@@ -234,7 +237,7 @@ La comprobación de actualizaciones consulta `GET /repos/{owner}/{repo}/releases
 
 La API web no ejecuta comandos ni acepta versiones arbitrarias. Escribe una solicitud identificada aleatoriamente en `/var/lib/vps-manager/web-update`; una unidad `systemd` del host observa ese directorio y ejecuta exclusivamente `/usr/local/bin/vps-manager-update`. El estado se muestra en el panel mientras el servicio descarga, valida e instala la release. El canal entre el contenedor `manager` y el worker se limita a ese directorio dedicado; el proxy Docker permanece de solo lectura y no se concede acceso general al host. Si el servicio falla, consulta `sudo journalctl -u vps-manager-web-update.service`; el comando SSH `sudo vps-manager-update` permanece disponible como alternativa.
 
-El agente de operaciones utiliza otro directorio dedicado (`/var/lib/vps-manager/service-operations`) y las unidades `vps-manager-service-agent.path`/`.service`. Solo acepta identificadores de servicios Swarm existentes con la etiqueta `vps-manager.managed=true`; ejecuta exclusivamente reinicios y escalados fijos contra el socket local de Docker. El escalado requiere modo replicado, admite de 1 a 100 réplicas y no permite cambiar el servicio API de VPS Manager a otro valor que no sea una réplica. El backend guarda tareas en PostgreSQL y las procesa con una cola serializada: leases con token evitan que workers atrasados sobrescriban el resultado, y las tareas en curso se recuperan después de reiniciar el backend. Los errores recuperables de despacho/consulta se reintentan hasta cinco intentos con espera exponencial; un fallo comunicado por el agente es terminal y no se repite automáticamente, para evitar duplicar una operación cuyo efecto pudiera ser incierto. Los IDs de solicitud hacen idempotente el reenvío. El historial y los intentos aparecen en la pestaña Tareas. El escalado envía la cantidad deseada en segundo plano; Swarm puede dejar tareas pendientes si no hay recursos disponibles. Para consultar fallos del worker host, usa `sudo journalctl -u vps-manager-service-agent.service`. No se habilitan detener, eliminar, actualizar imágenes ni operar servicios ajenos a VPS Manager.
+El agente de operaciones utiliza directorios dedicados para tareas, credenciales temporales de configuración y credenciales root-only del registro, además de las unidades `vps-manager-service-agent.path`/`.service`. Valida las etiquetas de los servicios y opera solo mediante solicitudes fijas; no acepta comandos Docker arbitrarios. El escalado requiere modo replicado, admite de 1 a 100 réplicas y protege el API y el registro privado de cambios de réplica. El backend guarda tareas en PostgreSQL y las procesa con una cola serializada: leases con token evitan que workers atrasados sobrescriban el resultado, y las tareas en curso se recuperan después de reiniciar el backend. Los errores recuperables de despacho/consulta se reintentan hasta cinco intentos con espera exponencial; un fallo comunicado por el agente es terminal y no se repite automáticamente. Los IDs de solicitud hacen idempotente el reenvío. El historial aparece en la pestaña Tareas. Para consultar fallos del worker host, usa `sudo journalctl -u vps-manager-service-agent.service`. No se habilitan detener, eliminar ni operar servicios ajenos a VPS Manager.
 
 En una instalación existente, actualiza una vez por SSH con `sudo vps-manager-update` a una release que incluya esta función. Ese primer despliegue instala las unidades `systemd` y el directorio compartido; después podrás iniciar las siguientes actualizaciones desde el panel.
 
@@ -485,15 +488,93 @@ eliminar el registro del proyecto sin borrar el repositorio ni sus webhooks.
 Por ahora cada repositorio se puede asociar a un solo proyecto. Los pushes se
 autentican y registran, pero no inician despliegues.
 
-El registro implementado cubre estos datos:
+Desde el proyecto se puede solicitar manualmente una construcción de la rama
+de producción. VPS Manager obtiene el commit y su archivo ZIP autenticado desde
+la API de Gitea, limita la descarga a 32 MiB y la envía al agente host por el
+canal de solicitudes existente. El agente rechaza ZIPs con rutas inseguras,
+archivos especiales, más de 100 000 entradas o más de 1 GiB descomprimido, y
+requiere un `Dockerfile` regular en la raíz. BuildKit construye y publica la
+imagen como `<dominio-registro>/vps-manager-project-<id>:<commit>`. La tarea
+expira a los 14 minutos; no entrega el token de Gitea ni las credenciales del
+registro al Dockerfile ni despliega servicios. Los webhooks no inician builds.
+
+Después de un build exitoso, el administrador puede solicitar manualmente el
+despliegue de la última imagen desde el panel. El agente crea o actualiza el
+servicio `vps-manager-project-<id>` en modo global: Swarm programa exactamente
+una tarea del servicio en cada nodo activo y elegible, nunca varias réplicas
+del mismo servicio en un solo nodo. La autenticación del registro se reenvía a
+Swarm mediante `--with-registry-auth`. Para desplegar en varios VPS, deben
+estar unidos al mismo Swarm y tener conectividad segura entre nodos y al
+registro HTTPS. El instalador solo inicializa el primer nodo; la unión se
+administra fuera del panel. El servicio no publica puertos del host. En el
+panel se pueden configurar variables por proyecto y conectar hostnames desde
+la vista centralizada Dominios; Traefik aplica las rutas a través de la red
+privada `vps-manager-proxy` durante el siguiente despliegue. El panel muestra
+los despliegues exitosos anteriores y permite volver a uno de ellos conservando
+las variables y dominios actuales. También muestra el commit construido y el
+número de nodos con tareas activas. Retirar un servicio no borra la imagen del
+registro. Para borrar la ficha del proyecto primero hay que retirar el servicio
+y quitar sus dominios. Los pushes y webhooks siguen sin iniciar builds ni
+despliegues.
+
+En **Dominios**, configura una vez la IPv4 pública de entrada del VPS manager.
+Para cada hostname selecciona Cloudflare, especifica su zona activa, el proyecto
+y el puerto HTTP interno de la aplicación, y proporciona un token API con
+permisos `Zone:Read` y `DNS:Edit`. El token se guarda en el VPS en un archivo
+con permisos restringidos; no se guarda en PostgreSQL ni en el historial de
+tareas. VPS Manager crea registros A y actualiza los registros administrados
+cuando cambia la IPv4 de entrada. No sobrescribe registros A preexistentes:
+resuelve ese conflicto en Cloudflare antes de conectar el hostname. Quitar una
+configuración de dominio conserva su registro DNS en Cloudflare.
+
+Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
+proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
+Cloudflare como Full (strict). Las rutas nuevas y los cambios de dominios se
+aplican en el siguiente despliegue manual del proyecto.
+
+Las variables de entorno se guardan por proyecto en un archivo del VPS con
+permisos restringidos; no se incluyen en PostgreSQL, auditoría ni payloads de
+tareas. Swarm guarda estas variables en la especificación del servicio, por lo
+que cualquier administrador con acceso Docker/Swarm puede leerlas. No uses
+esta interfaz para secretos; los montajes de secretos aún no están
+implementados.
+
+Swarm requiere conectividad entre nodos para administración y redes overlay
+(TCP 2377, TCP/UDP 7946 y UDP 4789, salvo configuración distinta). Limita esas
+reglas a una red privada o VPN entre tus VPS; no expongas los puertos de control
+de Swarm a Internet. Cada VPS también debe poder acceder por HTTPS al dominio
+público del registro privado.
+
+En **Configuración → Registro privado de imágenes** se ingresan el dominio, el
+usuario y la contraseña después de instalar VPS Manager. El dominio debe tener
+un registro DNS A que apunte al VPS; Traefik sirve HTTPS y obtiene el certificado
+de Let's Encrypt. El agente crea o actualiza el servicio `registry:3.0.0` en
+Swarm, con autenticación bcrypt mediante un secreto Docker y almacenamiento
+persistente en `vps-manager-registry-data`. No se publica un puerto
+del registro en el host.
+
+La contraseña nunca se devuelve al navegador ni se guarda en PostgreSQL. El
+agente conserva la credencial (20–72 caracteres) en
+`/var/lib/vps-manager/registry/config.json`, accesible únicamente por root,
+porque BuildKit la necesita para publicar; el registro conserva su hash bcrypt
+como secreto Swarm. Al reconfigurar se ingresa una contraseña nueva. Los builds
+de distintos proyectos reutilizan este registro, pero siguen siendo tareas
+manuales e independientes.
+
+La ficha de proyecto implementada cubre estos datos:
 
 - Nombre.
 - Descripción.
 - Repositorio.
 - Rama de despliegue.
+- Variables de entorno del proyecto.
+- Dominios asociados y puertos HTTP internos.
+- Historial de despliegues exitosos y rollback.
 
-La configuración de construcción, dominio, variables, volúmenes, recursos,
-estado de despliegue e historial pertenece a fases posteriores.
+Los volúmenes y límites de recursos quedan pendientes. La configuración actual
+de variables, dominios y rollback aplica a proyectos Git; todavía no administra
+aplicaciones arbitrarias del catálogo. El historial de despliegues se deriva de
+las tareas persistidas.
 
 El modelo completo previsto incluye:
 
@@ -599,7 +680,12 @@ El usuario debe poder definir:
 
 ## 5.6. Versiones y rollback
 
-Cada despliegue debe conservar:
+El MVP registra los despliegues exitosos en las tareas persistidas y permite
+seleccionar el commit de un despliegue anterior del mismo proyecto. El rollback
+conserva las variables y dominios actuales del proyecto; no restaura
+automáticamente una configuración anterior.
+
+El historial completo previsto debe conservar:
 
 - Identificador del commit.
 - Rama.
@@ -609,15 +695,14 @@ Cada despliegue debe conservar:
 - Logs de construcción.
 - Logs de despliegue.
 
-Las imágenes deben identificarse por commit, no solamente por `latest`.
-
-Debe existir una opción para regresar a una imagen anterior.
-
-El rollback debe permitir recuperar la configuración de despliegue asociada a esa versión, sin sobrescribir las variables actuales de forma involuntaria.
+Las imágenes se identifican por commit. Las aplicaciones arbitrarias del
+catálogo y la restauración de configuración histórica quedan pendientes.
 
 ## 5.7. Historial de despliegues
 
-Mostrar:
+El panel muestra el historial de tareas de despliegue persistidas y ofrece
+rollback para los despliegues exitosos anteriores del proyecto. El historial
+detallado previsto incluye:
 
 - Proyecto.
 - Commit.
@@ -773,7 +858,19 @@ Para recursos externos:
 
 Utilizar Traefik como proxy inverso.
 
-## 8.1. Funciones
+**Implementación actual:** la pestaña **Dominios** administra hostnames de
+proyectos Git mediante Cloudflare. Se configura una IPv4 de entrada para el VPS
+manager y se puede conectar cada hostname a un proyecto y puerto HTTP interno.
+El panel crea/sincroniza registros A y las etiquetas de Traefik se aplican al
+siguiente despliegue. Los certificados usan el desafío HTTP de Let's Encrypt.
+La sincronización de varios registros al cambiar la IPv4 puede ser parcial; el
+panel informa qué hostnames fallaron y permite volver a guardar la IPv4 para
+reintentar.
+La integración no administra todavía dominios de aplicaciones arbitrarias,
+registros AAAA, reglas de redirección ni el estado de vencimiento de
+certificados.
+
+## 8.1. Funciones previstas
 
 - Registrar dominios.
 - Asociar dominios a proyectos.
@@ -809,7 +906,14 @@ No se deben exponer servicios administrativos o bases de datos directamente a In
 
 ## 8.3. Validaciones
 
-Antes de crear un dominio:
+La integración actual valida el formato y que el hostname pertenezca a la zona
+Cloudflare seleccionada, requiere un proyecto y un puerto interno válidos y no
+sobrescribe registros A que no estén previamente registrados por VPS Manager.
+El token requiere permisos `Zone:Read` y `DNS:Edit` y se conserva en un archivo
+host-side con permisos restringidos.
+Al quitar una configuración, el registro DNS se conserva en Cloudflare.
+
+Las validaciones futuras también deben:
 
 - Comprobar configuración.
 - Comprobar puerto interno.
@@ -824,8 +928,16 @@ La emisión de certificados requiere que el DNS y los puertos correspondientes e
 # 9. Variables de entorno y secretos
 
 Cada proyecto y aplicación debe disponer de su propio sistema de configuración.
+Actualmente, los proyectos Git admiten variables por proyecto desde el panel;
+la configuración genérica de aplicaciones del catálogo sigue pendiente.
 
 ## 9.1. Variables
+
+El MVP permite editar un objeto JSON de nombres y valores de texto. Las
+variables se guardan en un archivo del VPS con permisos restringidos y se
+aplican al siguiente despliegue o rollback. El límite actual es 100 variables
+y 24 KiB por proyecto. El endpoint de lectura devuelve los valores a la sesión
+administrativa para poder editarlos; no guardes secretos aquí.
 
 Ejemplo:
 
@@ -836,7 +948,7 @@ JWT_SECRET=...
 PUBLIC_URL=https://app.ejemplo.com
 ```
 
-Permitir:
+Funciones previstas:
 
 - Agregar variables.
 - Editar variables.
@@ -847,14 +959,20 @@ Permitir:
 
 ## 9.2. Seguridad
 
-Los secretos no deben:
+Las variables de entorno se incluyen en la especificación del servicio Swarm y
+pueden leerse por administradores con acceso Docker/Swarm. No uses este MVP
+para guardar valores secretos. Los secretos de aplicaciones todavía no están
+implementados.
 
-- Aparecer en logs.
-- Ser enviados al frontend después de guardarse.
-- Guardarse en texto plano en la base de datos.
-- Incluirse en imágenes Docker.
-- Exponerse en errores.
+Los secretos deben:
 
+- No aparecer en logs.
+- No enviarse al frontend después de guardarse.
+- No guardarse en texto plano en la base de datos.
+- No incluirse en imágenes Docker.
+- No exponerse en errores.
+
+Estos requisitos no están cubiertos por la configuración actual del MVP.
 Utilizar Docker Secrets para credenciales que deban entregarse a servicios Swarm.
 
 Para secretos de aplicaciones que no puedan consumir Docker Secrets, utilizar almacenamiento cifrado y archivos temporales protegidos.
@@ -1348,6 +1466,23 @@ GET    /api/projects/:id/deployments
 `POST /api/projects` y `PATCH /api/projects/:id` aceptan `name`, `description`,
 `repository` y `productionBranch`. El backend verifica que el repositorio esté
 disponible para la cuenta conectada y que la rama exista antes de guardar.
+`GET/PUT /api/projects/:id/environment` consulta o actualiza las variables del
+proyecto. `POST /api/projects/:id/rollback` acepta `{ "commitSha": "..." }`
+únicamente para un despliegue exitoso anterior del mismo proyecto.
+
+## Dominios
+
+```text
+GET    /api/domains
+POST   /api/domains
+PUT    /api/domains/ingress-ip
+PUT    /api/domains/:id
+DELETE /api/domains/:id
+```
+
+La creación/actualización requiere zona, hostname, ID de proyecto, puerto HTTP
+interno, proveedor `cloudflare`, estado de proxy y, al conectar por primera vez,
+un token API. El token no se incluye en respuestas, auditoría ni tareas.
 
 ## Git
 
@@ -1443,7 +1578,7 @@ POST /api/docker/services/:id/scale  {"replicas": 1..100}
 
 Ambas rutas requieren sesión y origen válido; solo admiten servicios administrados por VPS Manager. El escalado exige modo replicado, registra en auditoría las réplicas originales y deseadas y rechaza el servicio API si el objetivo no es exactamente una réplica. El worker reclama tareas con leases y tokens de propietario; recupera leases vencidas tras reiniciar el backend y reintenta errores recuperables, con cinco intentos por defecto y un límite de diez. Todo handler que admita reintentos debe ser idempotente usando el ID duradero de su tarea. El agente host valida una allowlist fija y los IDs de tarea hacen idempotentes los reenvíos. El escalado confirma que Swarm aceptó la configuración deseada; no garantiza que todas las réplicas puedan programarse con los recursos disponibles.
 
-El panel expone consultas Docker de solo lectura y muestra detalles de imagen, estado, puertos publicados, modo de servicio y réplicas. Permite buscar por nombre, imagen o ID y filtrar contenedores por estado, servicios por modo y stacks por cantidad de servicios. Consulta CPU y RAM por contenedor en ejecución cada 15 minutos por defecto; el intervalo (1–1440 minutos) puede cambiarse desde el panel y se guarda en PostgreSQL. Las muestras también se guardan al solicitar CPU/RAM, se agrupan por stack/proyecto usando las etiquetas Docker y se muestran como gráficos de las últimas 24 horas; los contenedores sin etiquetas compatibles se agrupan como "Sin grupo". Se eliminan muestras con más de 7 días y se limitan a cuatro las consultas Docker simultáneas. Esto no añade Prometheus, cAdvisor ni dependencias de aplicación adicionales. También permite consultar las últimas 100 líneas de logs por contenedor o servicio, con un límite de respuesta de 1 MiB. La disponibilidad de logs de servicios depende del driver de logging de Docker. Las únicas escrituras Docker disponibles son el reinicio y el escalado restringidos y auditados de servicios administrados por VPS Manager.
+El panel expone consultas Docker de solo lectura y muestra detalles de imagen, estado, puertos publicados, modo de servicio y réplicas. Permite buscar por nombre, imagen o ID y filtrar contenedores por estado, servicios por modo y stacks por cantidad de servicios. Consulta CPU y RAM por contenedor en ejecución cada 15 minutos por defecto; el intervalo (1–1440 minutos) puede cambiarse desde el panel y se guarda en PostgreSQL. Las muestras también se guardan al solicitar CPU/RAM, se agrupan por stack/proyecto usando las etiquetas Docker y se muestran como gráficos de las últimas 24 horas; los contenedores sin etiquetas compatibles se agrupan como "Sin grupo". Se eliminan muestras con más de 7 días y se limitan a cuatro las consultas Docker simultáneas. Esto no añade Prometheus, cAdvisor ni dependencias de aplicación adicionales. También permite consultar las últimas 100 líneas de logs por contenedor o servicio, con un límite de respuesta de 1 MiB. La disponibilidad de logs de servicios depende del driver de logging de Docker. Las escrituras Docker incluyen el reinicio y el escalado restringidos y auditados de servicios administrados, además de crear/actualizar y retirar los servicios Swarm internos de proyectos mediante tareas manuales y un agente host de operaciones fijas. Estos servicios no publican puertos ni reciben configuración de Traefik en esta fase.
 
 ---
 
@@ -1467,11 +1602,16 @@ Por ello, el flujo futuro será:
 6. Ejecutar el despliegue.
 7. Comprobar el resultado.
 
-Como primera implementación, se puede utilizar un registro privado alojado en el mismo VPS, siempre con autenticación y almacenamiento persistente.
+El registro privado dedicado se configura después de instalar, desde el
+navegador. El formulario crea un servicio Swarm autenticado por HTTPS detrás de
+Traefik y con volumen persistente; su dominio DNS debe apuntar al VPS.
 
-Actualmente BuildKit solo se utiliza para construir la imagen de VPS Manager
-durante la instalación. La descarga de código de proyectos, construcción,
-publicación en registro y despliegue Swarm siguen pendientes.
+BuildKit permite solicitar construcciones manuales desde los repositorios
+registrados y publica las imágenes en ese registro. El panel despliega
+manualmente proyectos como servicios Swarm globales, con una tarea por nodo
+activo unido al clúster. Variables y dominios configurados para un proyecto se
+aplican en el siguiente despliegue. El instalador no añade otros VPS al Swarm.
+Los pushes de Git no disparan builds ni despliegues.
 
 ## 17.2. Configuración declarativa
 
@@ -1727,15 +1867,20 @@ El desarrollo debe ser incremental.
 
 ## Fase 5 — Deploy automático
 
-- Integrar BuildKit.
-- Construir imágenes.
-- Configurar registro privado.
-- Implementar despliegue Swarm.
-- Configurar variables.
-- Configurar dominios.
-- Implementar rollback.
+- [x] Integrar BuildKit.
+- [x] Construir y publicar imágenes manualmente.
+- [x] Configurar registro privado desde el navegador.
+- [x] Desplegar manualmente proyectos como servicios Swarm globales internos, sin puertos publicados.
+- [x] Configurar variables por proyecto Git.
+- [x] Administrar dominios Cloudflare para proyectos Git desde un panel central.
+- [x] Hacer rollback de un proyecto a un despliegue exitoso anterior.
+- [ ] Aplicar configuración genérica a aplicaciones del catálogo.
+- [ ] Gestionar secretos mediante Docker Secrets.
+- [ ] Desplegar automáticamente al recibir un push.
 
-**Resultado:** `git push` despliega proyectos.
+**Resultado previsto:** `git push` despliega proyectos. En el estado actual,
+builds y despliegues se solicitan manualmente desde el panel; el rollback
+conserva las variables y dominios actualmente configurados.
 
 ## Fase 6 — Catálogo
 

@@ -145,7 +145,7 @@ log "El instalador no modificará UFW ni reglas existentes del firewall."
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg git python3 openssl
+apt-get install -y ca-certificates curl gnupg git python3 openssl apache2-utils
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL --retry 3 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -276,6 +276,7 @@ install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/web-update
 install -d -o root -g 1000 -m 0730 /var/lib/vps-manager/service-operations
+install -d -o root -g root -m 0700 /var/lib/vps-manager/registry
 install -d -m 0755 /usr/local/libexec
 {
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"

@@ -92,17 +92,20 @@ Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; f
 
 ## Fase 5 — Deploy automático
 
-Estado: **parcial** (BuildKit construye la imagen de VPS Manager; falta construir y desplegar proyectos)
+Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales; falta automatizar push)
 
 - [x] Integrar BuildKit mediante Docker Buildx para construir la imagen del panel durante la instalación.
-- [ ] Construir imágenes.
-- [ ] Configurar registro privado.
-- [ ] Implementar despliegue Swarm.
-- [ ] Configurar variables.
-- [ ] Configurar dominios.
-- [ ] Implementar rollback.
+- [x] Construir manualmente imágenes de repositorios Gitea registrados y publicarlas en el registro privado, etiquetadas por commit y sin desplegarlas.
+- [x] Configurar el registro privado desde el navegador, con HTTPS, autenticación y almacenamiento persistente.
+- [x] Desplegar manualmente en modo global la última imagen construida, con una tarea por nodo activo del Swarm y sin publicar puertos.
+- [ ] Gestionar desde el panel la incorporación y el estado de VPS/nodos adicionales del Swarm (por ahora se unen manualmente).
+- [x] Configurar variables de entorno por proyecto; se almacenan en archivo restringido del VPS y se aplican al desplegar.
+- [x] Administrar dominios en un panel central, conectar Cloudflare por dominio, sincronizar registros A y asignar hostnames/puertos HTTP a proyectos.
+- [x] Revertir un proyecto a un despliegue anterior exitoso, conservando su configuración actual.
 
-**Resultado:** `git push` despliega proyectos.
+**Alcance actual:** variables, dominios y rollback están implementados para proyectos Git. Las aplicaciones arbitrarias del catálogo, el montaje de secretos y el despliegue automático por `git push` siguen pendientes.
+
+**Resultado previsto:** `git push` despliega proyectos; en el estado actual, builds y despliegues se solicitan manualmente desde el panel.
 
 ---
 

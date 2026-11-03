@@ -57,6 +57,20 @@ test("validates scale targets for replicated services without allowing panel dow
       Labels: { "vps-manager.managed": "true", "vps-manager.component": "gitea" },
     },
   }, 2), { code: "APPLICATION_REPLICA_COUNT" });
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: {
+      ...service.Spec,
+      Labels: { "vps-manager.managed": "true", "vps-manager.component": "registry" },
+    },
+  }, 2), { code: "APPLICATION_REPLICA_COUNT" });
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: {
+      ...service.Spec,
+      Labels: { "vps-manager.managed": "true", "vps-manager.component": "project" },
+    },
+  }, 2), { code: "PROJECT_REPLICA_COUNT" });
 });
 
 test("accepts only public DNS hostnames for application subdomains", () => {
@@ -186,6 +200,192 @@ test("queues the Gitea API token only for the host agent and reports secret moun
     await assert.rejects(agent.hasGiteaApiToken(), /invalid format/);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stages private registry credentials separately and exposes only public configuration status", async () => {
+  const fixture = await createFixture();
+  const password = "r".repeat(32);
+  const credentialsPath = join(fixture.directory, `registry-credentials-${requestId}.json`);
+  try {
+    await fixture.agent.stageRegistryCredentials(requestId, {
+      domain: "registry.example.com",
+      username: "registry-user",
+      password,
+    });
+    const staged = JSON.parse(await readFile(credentialsPath, "utf8"));
+    assert.equal(staged.password, password);
+    const operation = await fixture.agent.requestRegistryConfiguration(
+      "registry.example.com",
+      "registry-user",
+      requestId,
+    );
+    assert.equal(operation.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "configure-registry",
+      domain: "registry.example.com",
+      username: "registry-user",
+    });
+    assert.equal(JSON.stringify(await fixture.agent.getStatus()).includes(password), false);
+    assert.deepEqual(await fixture.agent.getStatus(), {
+      id: requestId,
+      state: "queued",
+      operation: "configure-registry",
+      domain: "registry.example.com",
+      username: "registry-user",
+      replicas: undefined,
+      message: "Configuración del registro aceptada para registry.example.com; esperando al agente del VPS.",
+    });
+    await assert.rejects(
+      fixture.agent.stageRegistryCredentials(secondRequestId, {
+        domain: "localhost",
+        username: "user",
+        password,
+      }),
+      /configuration fields are invalid/,
+    );
+    await assert.rejects(
+      fixture.agent.stageRegistryCredentials(secondRequestId, {
+        domain: "registry.example.com",
+        username: "user",
+        password: "short",
+      }),
+      /configuration fields are invalid/,
+    );
+
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "configure-registry",
+      state: "succeeded",
+      domain: "registry.example.com",
+      username: "registry-user",
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Registro configurado.",
+      password,
+    }));
+    await assert.rejects(fixture.agent.getStatus(), /invalid format/);
+    await rm(join(fixture.directory, "status.json"));
+    await writeFile(join(fixture.directory, "registry-status.json"), JSON.stringify({
+      domain: "registry.example.com",
+      username: "registry-user",
+    }));
+    assert.deepEqual(await fixture.agent.getRegistryConfiguration(), {
+      domain: "registry.example.com",
+      username: "registry-user",
+    });
+    await writeFile(join(fixture.directory, "registry-status.json"), JSON.stringify({
+      domain: "registry.example.com",
+      username: "registry-user",
+      password,
+    }));
+    await assert.rejects(fixture.agent.getRegistryConfiguration(), /invalid format/);
+    await fixture.agent.removeRegistryCredentials(requestId);
+    await assert.rejects(readFile(credentialsPath), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("stages a bounded project archive and requests only a fixed BuildKit operation", async () => {
+  const fixture = await createFixture();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const commitSha = "a".repeat(40);
+  const archive = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  const archivePath = join(fixture.directory, `build-source-${requestId}.zip`);
+  try {
+    await fixture.agent.stageProjectBuildArchive(requestId, archive);
+    assert.deepEqual(await readFile(archivePath), archive);
+    const operation = await fixture.agent.requestProjectBuild(projectId, commitSha, requestId);
+    assert.equal(operation.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "build-project",
+      projectId,
+      commitSha,
+    });
+    assert.equal((await fixture.agent.getStatus()).projectId, projectId);
+    await assert.rejects(
+      fixture.agent.requestProjectBuild(projectId, commitSha, secondRequestId),
+      { code: "OPERATION_IN_PROGRESS" },
+    );
+
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "build-project",
+      state: "succeeded",
+      projectId,
+      commitSha,
+      image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Imagen construida.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).image, `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`);
+    await fixture.agent.removeProjectBuildArchive(requestId);
+    await assert.rejects(readFile(archivePath), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("requests a fixed Swarm deployment and removal for a project", async () => {
+  const fixture = await createFixture();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const commitSha = "a".repeat(40);
+  try {
+    const deployment = await fixture.agent.requestProjectDeploy(projectId, commitSha, requestId);
+    assert.equal(deployment.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "deploy-project",
+      projectId,
+      commitSha,
+    });
+    assert.equal((await fixture.agent.getStatus()).commitSha, commitSha);
+    await assert.rejects(
+      fixture.agent.requestProjectDeploy(projectId, "bad", secondRequestId),
+      /fields are invalid/,
+    );
+    await assert.rejects(
+      fixture.agent.requestProjectDeploy(projectId, commitSha, secondRequestId),
+      { code: "OPERATION_IN_PROGRESS" },
+    );
+
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "deploy-project",
+      state: "succeeded",
+      projectId,
+      commitSha,
+      serviceId,
+      image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Servicio desplegado.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).serviceId, serviceId);
+
+    const removal = await fixture.agent.requestProjectUndeploy(projectId, secondRequestId);
+    assert.equal(removal.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: secondRequestId,
+      operation: "remove-project",
+      projectId,
+    });
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: secondRequestId,
+      operation: "remove-project",
+      state: "succeeded",
+      projectId,
+      updatedAt: "2026-11-03T18:01:00Z",
+      message: "Servicio retirado.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).operation, "remove-project");
+  } finally {
+    await fixture.cleanup();
   }
 });
 

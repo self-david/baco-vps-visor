@@ -28,9 +28,14 @@ function createFakePool() {
             return { rowCount: 0 };
           }
           if (sql.includes("pg_advisory_xact_lock")) return { rowCount: 1 };
+          if (sql.includes("FROM projects")) return { rowCount: 1, rows: [{ id: values[0] }] };
           if (sql.includes("SELECT id FROM tasks") && sql.includes("status IN")) {
             const active = [...tasks.values()].find((task) =>
-              task.type === values[0] && ["pending", "in_progress"].includes(task.status));
+              (sql.includes("type IN ('project.deploy', 'project.undeploy')")
+                ? ["project.deploy", "project.undeploy"].includes(task.type)
+                : task.type === values[0])
+              && task.payload.projectId === values[sql.includes("type IN ('project.deploy', 'project.undeploy')") ? 0 : 1]
+              && ["pending", "in_progress"].includes(task.status));
             return { rowCount: active ? 1 : 0, rows: active ? [{ id: active.id }] : [] };
           }
           if (sql.includes("INSERT INTO tasks")) {
@@ -150,6 +155,28 @@ function createFakePool() {
             .slice(0, values[0]),
         };
       }
+      if (sql.includes("SELECT DISTINCT ON (payload->>'projectId', result->>'commitSha')")) {
+        const projectIds = values[0];
+        return {
+          rows: [...tasks.values()]
+            .filter((candidate) => candidate.type === "project.deploy"
+              && candidate.status === "completed"
+              && projectIds.includes(candidate.payload.projectId)
+              && candidate.result?.image
+              && candidate.result?.commitSha),
+        };
+      }
+      if (sql.includes("SELECT DISTINCT ON (payload->>'projectId')")) {
+        const projectIds = values[0];
+        return {
+          rows: [...tasks.values()]
+            .filter((candidate) => candidate.type === "project.build"
+              && candidate.status === "completed"
+              && projectIds.includes(candidate.payload.projectId)
+              && candidate.result?.image
+              && candidate.result?.commitSha),
+        };
+      }
       throw new Error(`Unexpected pool query: ${sql}`);
     },
   };
@@ -235,6 +262,117 @@ test("looks up Gitea tasks independently of the truncated task-history list", as
   assert.equal((await store.getLatestTaskByType("application.gitea.install")).id, taskId);
   assert.equal(await store.getTaskById("f3a5e0bb-4911-4d38-8846-04bd9c917134"), null);
   await assert.rejects(store.getTaskById("invalid"), /identifier is invalid/);
+});
+
+test("returns only successful deployment history for selected projects", async () => {
+  const { store, tasks } = createFakePool();
+  const projectId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";
+  await store.createTask({
+    id: taskId,
+    type: "project.deploy",
+    payload: { projectId, projectName: "web", commitSha: "a".repeat(40) },
+  });
+  const deployed = tasks.get(taskId);
+  deployed.status = "completed";
+  deployed.result = {
+    message: "deployed",
+    image: `registry.example/vps-manager-project-${projectId.replaceAll("-", "")}:${"a".repeat(40)}`,
+    commitSha: "a".repeat(40),
+    serviceId,
+  };
+  deployed.completed_at = new Date("2026-11-03T18:02:00Z");
+  assert.equal((await store.getRecentProjectDeployments([projectId]))[0].result.commitSha, "a".repeat(40));
+  assert.deepEqual(await store.getRecentProjectDeployments([]), []);
+  await assert.rejects(store.getRecentProjectDeployments(["invalid"]), /identifiers are invalid/);
+});
+
+test("validates and serializes project image build tasks without allowing duplicate active builds", async () => {
+  const { pool, tasks, auditEvents } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async (_client, event) => auditEvents.push(event) });
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const task = {
+    id: taskId,
+    type: "project.build",
+    payload: {
+      projectId,
+      projectName: "project",
+      repository: "vpsadmin/project",
+      branch: "release/1.0",
+    },
+  };
+  await store.createTask(task);
+  assert.deepEqual(tasks.get(taskId).payload, task.payload);
+  await assert.rejects(store.createTask({
+    ...task,
+    id: workerId,
+  }), { code: "PROJECT_BUILD_IN_PROGRESS" });
+  assert.equal((await store.claimNextTask(workerId, 60)).projectName, "project");
+});
+
+test("serializes project deploy and removal tasks and lists the latest successful image", async () => {
+  const { pool, tasks } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async () => {} });
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const deployTask = {
+    id: taskId,
+    type: "project.deploy",
+    payload: { projectId, projectName: "project", commitSha: "a".repeat(40) },
+  };
+  await store.createTask(deployTask);
+  await assert.rejects(store.createTask({
+    id: workerId,
+    type: "project.undeploy",
+    payload: { projectId, projectName: "project" },
+  }), { code: "PROJECT_DEPLOYMENT_IN_PROGRESS" });
+  assert.deepEqual(tasks.get(taskId).payload, deployTask.payload);
+  await store.claimNextTask(workerId, 60);
+  await store.completeTask(taskId, workerId, { message: "Servicio desplegado." });
+
+  const buildId = "f3a5e0bb-4911-4d38-8846-04bd9c917134";
+  await store.createTask({
+    id: buildId,
+    type: "project.build",
+    payload: {
+      projectId,
+      projectName: "project",
+      repository: "vpsadmin/project",
+      branch: "main",
+    },
+  });
+  await store.claimNextTask(workerId, 60);
+  await store.completeTask(buildId, workerId, {
+    message: "Imagen publicada.",
+    image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${"b".repeat(40)}`,
+    commitSha: "b".repeat(40),
+    branch: "main",
+  });
+  const [latestBuild] = await store.getLatestProjectBuilds([projectId]);
+  assert.equal(latestBuild.projectId, projectId);
+  assert.equal(latestBuild.result.commitSha, "b".repeat(40));
+  assert.deepEqual(await store.getLatestProjectBuilds([]), []);
+  await assert.rejects(store.getLatestProjectBuilds(["invalid"]), /identifiers are invalid/);
+});
+
+test("persists reusable registry configuration metadata without accepting credentials", async () => {
+  const { pool, tasks } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async () => {} });
+  const registryTask = {
+    id: taskId,
+    type: "registry.configure",
+    payload: { domain: "registry.example.com", username: "registry-user" },
+  };
+  await store.createTask(registryTask);
+  assert.deepEqual(tasks.get(taskId).payload, registryTask.payload);
+  assert.equal(Object.hasOwn(tasks.get(taskId).payload, "password"), false);
+  await assert.rejects(store.createTask({
+    ...registryTask,
+    id: workerId,
+  }), { code: "REGISTRY_CONFIGURATION_IN_PROGRESS" });
+  await assert.rejects(store.createTask({
+    id: workerId,
+    type: "registry.configure",
+    payload: { domain: "registry.example.com", username: "registry-user", password: "must-not-persist" },
+  }), /fields are invalid/);
 });
 
 test("claims tasks with a lease, records attempts and recovers expired work", async () => {

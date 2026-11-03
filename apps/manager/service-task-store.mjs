@@ -21,6 +21,24 @@ function mapTask(row, { includePayload = false } = {}) {
       }
       : {}),
     ...(row.type === "application.gitea.install" ? { domain: row.payload.domain } : {}),
+    ...(row.type === "registry.configure"
+      ? { domain: row.payload.domain, username: row.payload.username }
+      : {}),
+    ...(row.type === "project.build"
+      ? {
+        projectId: row.payload.projectId,
+        projectName: row.payload.projectName,
+        repository: row.payload.repository,
+        branch: row.payload.branch,
+      }
+      : {}),
+    ...(row.type === "project.deploy" || row.type === "project.undeploy"
+      ? {
+        projectId: row.payload.projectId,
+        projectName: row.payload.projectName,
+        ...(row.type === "project.deploy" ? { commitSha: row.payload.commitSha } : {}),
+      }
+      : {}),
     result: typeof row.result?.message === "string"
       ? {
         message: row.result.message,
@@ -29,6 +47,23 @@ function mapTask(row, { includePayload = false } = {}) {
             url: row.result.url,
             credentialsAvailable: true,
           }
+          : {}),
+        ...(row.type === "project.build" && typeof row.result.image === "string"
+          ? {
+            image: row.result.image,
+            commitSha: row.result.commitSha,
+            branch: row.result.branch,
+          }
+          : {}),
+        ...(row.type === "project.deploy" && typeof row.result.image === "string"
+          ? {
+            image: row.result.image,
+            commitSha: row.result.commitSha,
+            serviceId: row.result.serviceId,
+          }
+          : {}),
+        ...(row.type === "registry.configure" && typeof row.result.domain === "string"
+          ? { domain: row.result.domain }
           : {}),
       }
       : null,
@@ -69,6 +104,37 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
     throw new TypeError("Gitea application installation task fields are invalid.");
   }
+  if (type === "registry.configure"
+    && (Object.keys(payload).sort().join(",") !== ["domain", "username"].sort().join(",")
+      || typeof payload.domain !== "string"
+      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain)
+      || typeof payload.username !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(payload.username))) {
+    throw new TypeError("Private registry configuration task fields are invalid.");
+  }
+  if (type === "project.build"
+    && (Object.keys(payload).sort().join(",") !== ["branch", "projectId", "projectName", "repository"].sort().join(",")
+      || typeof payload.projectId !== "string" || !uuidPattern.test(payload.projectId)
+      || typeof payload.projectName !== "string" || payload.projectName.length < 1 || payload.projectName.length > 100
+      || typeof payload.repository !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(payload.repository)
+      || typeof payload.branch !== "string" || payload.branch.length < 1 || payload.branch.length > 255
+      || /[\u0000-\u001f\u007f]/.test(payload.branch))) {
+    throw new TypeError("Project image build task fields are invalid.");
+  }
+  if (type === "project.deploy"
+    && (Object.keys(payload).sort().join(",") !== ["commitSha", "projectId", "projectName"].sort().join(",")
+      || typeof payload.projectId !== "string" || !uuidPattern.test(payload.projectId)
+      || typeof payload.projectName !== "string" || payload.projectName.length < 1 || payload.projectName.length > 100
+      || typeof payload.commitSha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(payload.commitSha))) {
+    throw new TypeError("Project deployment task fields are invalid.");
+  }
+  if (type === "project.undeploy"
+    && (Object.keys(payload).sort().join(",") !== ["projectId", "projectName"].sort().join(",")
+      || typeof payload.projectId !== "string" || !uuidPattern.test(payload.projectId)
+      || typeof payload.projectName !== "string" || payload.projectName.length < 1 || payload.projectName.length > 100)) {
+    throw new TypeError("Project removal task fields are invalid.");
+  }
 }
 
 export function createTaskStore({ pool, insertAuditEvent }) {
@@ -96,6 +162,59 @@ export function createTaskStore({ pool, insertAuditEvent }) {
           throw error;
         }
       }
+      if (type === "registry.configure") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["registry.configure"]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type = $1 AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [type],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay una configuración del registro en curso.");
+          error.code = "REGISTRY_CONFIGURATION_IN_PROGRESS";
+          throw error;
+        }
+      }
+      if (type === "project.build") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.build:${payload.projectId}`]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type = $1 AND payload->>'projectId' = $2
+             AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [type, payload.projectId],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay una construcción en curso para este proyecto.");
+          error.code = "PROJECT_BUILD_IN_PROGRESS";
+          throw error;
+        }
+      }
+      if (type === "project.deploy" || type === "project.undeploy") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.deployment:${payload.projectId}`]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type IN ('project.deploy', 'project.undeploy')
+             AND payload->>'projectId' = $1
+             AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [payload.projectId],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay una operación de despliegue en curso para este proyecto.");
+          error.code = "PROJECT_DEPLOYMENT_IN_PROGRESS";
+          throw error;
+        }
+      }
+      if (type === "project.build" || type === "project.deploy" || type === "project.undeploy") {
+        const project = await client.query("SELECT id FROM projects WHERE id = $1 FOR KEY SHARE", [payload.projectId]);
+        if (project.rowCount === 0) {
+          const error = new Error("No se encontró el proyecto.");
+          error.code = "PROJECT_NOT_FOUND";
+          throw error;
+        }
+      }
       await client.query(
         `INSERT INTO tasks (id, type, status, payload, max_attempts)
          VALUES ($1, $2, 'pending', $3::jsonb, $4)`,
@@ -103,8 +222,8 @@ export function createTaskStore({ pool, insertAuditEvent }) {
       );
       await insertAuditEvent(client, {
         action: `${type}.requested`,
-        resourceType: type.startsWith("service.") ? "service" : "task",
-        resourceId: type.startsWith("service.") ? payload.serviceId : id,
+        resourceType: type.startsWith("service.") ? "service" : type.startsWith("project.") ? "project" : "task",
+        resourceId: type.startsWith("service.") ? payload.serviceId : type.startsWith("project.") ? payload.projectId : id,
         details: type.startsWith("service.")
           ? {
             serviceName: payload.serviceName,
@@ -116,6 +235,13 @@ export function createTaskStore({ pool, insertAuditEvent }) {
               }
               : {}),
           }
+          : type.startsWith("project.")
+            ? {
+              taskId: id,
+              projectName: payload.projectName,
+              ...(type === "project.build" ? { repository: payload.repository, branch: payload.branch } : {}),
+              ...(type === "project.deploy" ? { commitSha: payload.commitSha } : {}),
+            }
           : { type },
       });
       await client.query("COMMIT");
@@ -320,6 +446,48 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     return result.rows[0] ? mapTask(result.rows[0]) : null;
   }
 
+  async function getLatestProjectBuilds(projectIds) {
+    if (!Array.isArray(projectIds) || projectIds.some((id) => typeof id !== "string" || !uuidPattern.test(id))) {
+      throw new TypeError("The project identifiers are invalid.");
+    }
+    if (projectIds.length === 0) return [];
+    const result = await pool.query(
+      `SELECT DISTINCT ON (payload->>'projectId')
+         id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
+         created_at, updated_at, started_at, completed_at
+       FROM tasks
+       WHERE type = 'project.build'
+         AND status = 'completed'
+         AND payload->>'projectId' = ANY($1::text[])
+         AND result->>'image' IS NOT NULL
+         AND result->>'commitSha' IS NOT NULL
+       ORDER BY payload->>'projectId', completed_at DESC, created_at DESC, id DESC`,
+      [projectIds],
+    );
+    return result.rows.map((row) => mapTask(row));
+  }
+
+  async function getRecentProjectDeployments(projectIds) {
+    if (!Array.isArray(projectIds) || projectIds.some((id) => typeof id !== "string" || !uuidPattern.test(id))) {
+      throw new TypeError("The project identifiers are invalid.");
+    }
+    if (projectIds.length === 0) return [];
+    const result = await pool.query(
+      `SELECT DISTINCT ON (payload->>'projectId', result->>'commitSha')
+         id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
+         created_at, updated_at, started_at, completed_at
+       FROM tasks
+       WHERE type = 'project.deploy'
+         AND status = 'completed'
+         AND payload->>'projectId' = ANY($1::text[])
+         AND result->>'image' IS NOT NULL
+         AND result->>'commitSha' IS NOT NULL
+       ORDER BY payload->>'projectId', result->>'commitSha', completed_at DESC, created_at DESC, id DESC`,
+      [projectIds],
+    );
+    return result.rows.map((row) => mapTask(row));
+  }
+
   return {
     createTask,
     claimNextTask,
@@ -329,5 +497,7 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     listRecentTasks,
     getTaskById,
     getLatestTaskByType,
+    getLatestProjectBuilds,
+    getRecentProjectDeployments,
   };
 }

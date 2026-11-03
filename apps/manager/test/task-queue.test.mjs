@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createGiteaInstallHandler,
+  createProjectBuildHandler,
+  createProjectDeployHandler,
+  createProjectUndeployHandler,
+  createRegistryConfigureHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createTaskQueueWorker,
@@ -169,6 +173,157 @@ test("installs Gitea through the fixed agent operation and stores no credentials
     credentialsAvailable: true,
   });
   assert.deepEqual(requests, [{ domain: "git.example.com", requestId: giteaTask.id }]);
+});
+
+test("publishes a project image from a bounded source archive without deploying it", async () => {
+  const projectTask = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "project.build",
+    payload: {
+      projectId: "9a7f51bd-13bf-4c7a-9b03-9ba000000002",
+      projectName: "project",
+      repository: "vpsadmin/project",
+      branch: "main",
+    },
+  };
+  const commitSha = "a".repeat(40);
+  const archive = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  const calls = [];
+  let operation;
+  const handler = createProjectBuildHandler({
+    agent: {
+      async stageProjectBuildArchive(id, input) { calls.push(["stage", id, input]); },
+      async requestProjectBuild(projectId, sha, id) {
+        calls.push(["request", projectId, sha, id]);
+        operation = {
+          id,
+          operation: "build-project",
+          state: "succeeded",
+          projectId,
+          commitSha: sha,
+          image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${sha}`,
+        };
+      },
+      async getStatus() { return operation; },
+      async removeProjectBuildArchive(id) { calls.push(["remove", id]); },
+    },
+    async getBuildSource({ repository, branch }) {
+      calls.push(["source", repository, branch]);
+      return { commitSha, archive };
+    },
+  });
+
+  assert.deepEqual(await handler(projectTask, new AbortController().signal), {
+    message: `Imagen construida para project (main · ${commitSha.slice(0, 12)}).`,
+    image: `registry.example.com/vps-manager-project-${projectTask.payload.projectId.replaceAll("-", "")}:${commitSha}`,
+    commitSha,
+    branch: "main",
+  });
+  assert.deepEqual(calls, [
+    ["source", "vpsadmin/project", "main"],
+    ["stage", projectTask.id, archive],
+    ["request", projectTask.payload.projectId, commitSha, projectTask.id],
+    ["remove", projectTask.id],
+  ]);
+});
+
+test("deploys the last successful image as a manual Swarm task", async () => {
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const commitSha = "a".repeat(40);
+  const deployTask = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "project.deploy",
+    payload: { projectId, projectName: "project", commitSha },
+  };
+  const calls = [];
+  const handler = createProjectDeployHandler({
+    async requestProjectDeploy(id, sha, taskId) {
+      calls.push(["request", id, sha, taskId]);
+    },
+    async getStatus() {
+      return {
+        id: deployTask.id,
+        operation: "deploy-project",
+        state: "succeeded",
+        projectId,
+        commitSha,
+        serviceId: "9a7f51bdff120d8d0d48d4ca5",
+        image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+        message: "Servicio desplegado.",
+      };
+    },
+  }, { pollIntervalMs: 100 });
+
+  assert.deepEqual(await handler(deployTask, new AbortController().signal), {
+    message: `Servicio global de project desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
+    image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+    commitSha,
+    serviceId: "9a7f51bdff120d8d0d48d4ca5",
+  });
+  assert.deepEqual(calls, [["request", projectId, commitSha, deployTask.id]]);
+});
+
+test("removes a project's Swarm service through the same fixed host agent", async () => {
+  const undeployTask = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "project.undeploy",
+    payload: {
+      projectId: "9a7f51bd-13bf-4c7a-9b03-9ba000000002",
+      projectName: "project",
+    },
+  };
+  let request;
+  const handler = createProjectUndeployHandler({
+    async requestProjectUndeploy(projectId, id) { request = [projectId, id]; },
+    async getStatus() {
+      return {
+        id: undeployTask.id,
+        operation: "remove-project",
+        state: "succeeded",
+        projectId: undeployTask.payload.projectId,
+        message: "Servicio retirado.",
+      };
+    },
+  }, { pollIntervalMs: 100 });
+
+  assert.deepEqual(await handler(undeployTask, new AbortController().signal), {
+    message: "Se retiró el servicio Swarm de project.",
+  });
+  assert.deepEqual(request, [undeployTask.payload.projectId, undeployTask.id]);
+});
+
+test("configures a private registry through a fixed host operation without persisting the password in task payload", async () => {
+  const task = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "registry.configure",
+    payload: { domain: "registry.example.com", username: "registry-user" },
+  };
+  const calls = [];
+  const handler = createRegistryConfigureHandler({
+    async requestRegistryConfiguration(domain, username, id) {
+      calls.push(["request", domain, username, id]);
+    },
+    async getStatus() {
+      return {
+        id: task.id,
+        operation: "configure-registry",
+        state: "succeeded",
+        domain: task.payload.domain,
+        username: task.payload.username,
+        message: "Registro configurado.",
+      };
+    },
+    async removeRegistryCredentials(id) { calls.push(["remove", id]); },
+  });
+
+  assert.deepEqual(await handler(task, new AbortController().signal), {
+    message: "Registro configurado.",
+    domain: "registry.example.com",
+  });
+  assert.deepEqual(calls, [
+    ["request", "registry.example.com", "registry-user", task.id],
+    ["remove", task.id],
+  ]);
 });
 
 test("does not automatically retry a host-reported operation failure", async () => {

@@ -4,10 +4,21 @@ import { join } from "node:path";
 
 const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
-const allowedOperations = new Set(["restart-service", "scale-service", "install-gitea", "configure-gitea-token"]);
+const allowedOperations = new Set([
+  "restart-service",
+  "scale-service",
+  "install-gitea",
+  "configure-gitea-token",
+  "configure-registry",
+  "build-project",
+  "deploy-project",
+  "remove-project",
+]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const registryUsernamePattern = /^[A-Za-z0-9._-]{1,64}$/;
+const registryPasswordPattern = /^[A-Za-z0-9._-]{20,72}$/;
 
 export function isPublicHostname(hostname) {
   return typeof hostname === "string" && hostnamePattern.test(hostname)
@@ -62,6 +73,16 @@ export function validateServiceScale(service, replicas) {
     error.code = "APPLICATION_REPLICA_COUNT";
     throw error;
   }
+  if (service.Spec.Labels?.["vps-manager.component"] === "registry" && replicas !== 1) {
+    const error = new Error("El registro privado conserva una sola réplica.");
+    error.code = "APPLICATION_REPLICA_COUNT";
+    throw error;
+  }
+  if (service.Spec.Labels?.["vps-manager.component"] === "project" && replicas !== 1) {
+    const error = new Error("Los servicios de proyecto conservan una réplica hasta configurar persistencia y publicación.");
+    error.code = "PROJECT_REPLICA_COUNT";
+    throw error;
+  }
   return Number.isInteger(replicatedMode.Replicas) ? replicatedMode.Replicas : 1;
 }
 
@@ -78,9 +99,25 @@ function validateStatus(status) {
     || (status.operation !== undefined && !allowedOperations.has(status.operation))
     || (status.operation === "install-gitea"
       ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
-      : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
+      : status.operation === "configure-registry"
+        ? (!isPublicHostname(status.domain) || !registryUsernamePattern.test(status.username ?? ""))
+      : status.operation === "build-project"
+        ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+          || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+          || (status.state === "succeeded" && typeof status.image !== "string"))
+        : status.operation === "deploy-project"
+          ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+            || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+            || (status.state === "succeeded"
+              && (!serviceIdPattern.test(status.serviceId ?? "") || typeof status.image !== "string")))
+          : status.operation === "remove-project"
+            ? !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+        : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
-      && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))) {
+      && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
+    || (status.operation === "configure-registry"
+      && Object.keys(status).sort().join(",")
+        !== ["domain", "id", "message", "operation", "state", "updatedAt", "username"].sort().join(","))) {
     throw new Error("The service operation status file has an invalid format.");
   }
   return status;
@@ -94,6 +131,9 @@ export function createServiceOperationAgent({
   const requestPath = join(directory, "request.json");
   const statusPath = join(directory, "status.json");
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
+  const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
+  const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
+  const registryStatusPath = join(directory, "registry-status.json");
 
   async function readOptional(path) {
     try {
@@ -131,7 +171,17 @@ export function createServiceOperationAgent({
           ? isPublicHostname(queuedRequest.domain)
           : queuedRequest.operation === "configure-gitea-token"
             ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
-            : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
+            : queuedRequest.operation === "configure-registry"
+              ? isPublicHostname(queuedRequest.domain) && registryUsernamePattern.test(queuedRequest.username ?? "")
+            : queuedRequest.operation === "build-project"
+              ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
+                && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
+              : queuedRequest.operation === "deploy-project"
+                ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
+                  && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
+                : queuedRequest.operation === "remove-project"
+                  ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
+              : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
       if (!validCommonFields) {
         throw new Error("The service operation request file has an invalid format.");
       }
@@ -141,6 +191,14 @@ export function createServiceOperationAgent({
         ? ["id", "operation", "domain"]
         : queuedRequest.operation === "configure-gitea-token"
           ? ["id", "operation", "token"]
+          : queuedRequest.operation === "configure-registry"
+            ? ["id", "operation", "domain", "username"]
+          : queuedRequest.operation === "build-project"
+            ? ["id", "operation", "projectId", "commitSha"]
+          : queuedRequest.operation === "deploy-project"
+            ? ["id", "operation", "projectId", "commitSha"]
+            : queuedRequest.operation === "remove-project"
+              ? ["id", "operation", "projectId"]
         : queuedRequest.operation === "scale-service"
         ? ["id", "operation", "serviceId", "replicas"]
         : ["id", "operation", "serviceId"];
@@ -157,12 +215,28 @@ export function createServiceOperationAgent({
             ? { domain: queuedRequest.domain }
             : queuedRequest.operation === "configure-gitea-token"
               ? {}
+              : queuedRequest.operation === "configure-registry"
+                ? { domain: queuedRequest.domain, username: queuedRequest.username }
+              : queuedRequest.operation === "build-project"
+                ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
+                : queuedRequest.operation === "deploy-project"
+                  ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
+                  : queuedRequest.operation === "remove-project"
+                    ? { projectId: queuedRequest.projectId }
               : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
           message: queuedRequest.operation === "install-gitea"
             ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
             : queuedRequest.operation === "configure-gitea-token"
               ? "Configuración del token de Gitea aceptada; esperando al agente del VPS."
+              : queuedRequest.operation === "configure-registry"
+                ? `Configuración del registro aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
+              : queuedRequest.operation === "build-project"
+                ? "Construcción aceptada; esperando al agente BuildKit del VPS."
+                : queuedRequest.operation === "deploy-project"
+                  ? "Despliegue aceptado; esperando al agente Swarm del VPS."
+                  : queuedRequest.operation === "remove-project"
+                    ? "Retiro aceptado; esperando al agente Swarm del VPS."
             : queuedRequest.operation === "scale-service"
             ? "Solicitud aceptada; esperando que el agente del VPS escale el servicio."
             : "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
@@ -328,6 +402,223 @@ export function createServiceOperationAgent({
     };
   }
 
+  async function stageProjectBuildArchive(requestId, archive) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || !Buffer.isBuffer(archive)
+      || archive.length < 4
+      || archive.length > 32 * 1024 * 1024
+      || archive[0] !== 0x50
+      || archive[1] !== 0x4b) {
+      throw new TypeError("The project build archive is invalid.");
+    }
+    await writeFile(projectBuildArchivePath(requestId), archive, { flag: "wx", mode: 0o600 });
+  }
+
+  async function removeProjectBuildArchive(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The project build request identifier is invalid.");
+    }
+    await unlink(projectBuildArchivePath(requestId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
+
+  async function requestProjectBuild(projectId, commitSha, requestId) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId ?? "")
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")) {
+      throw new TypeError("Project build request fields are invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "build-project"
+        || currentStatus.projectId !== projectId
+        || currentStatus.commitSha !== commitSha) {
+        throw new Error("The task identifier already belongs to a different project build.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+
+    const requestData = {
+      id: requestId,
+      operation: "build-project",
+      projectId,
+      commitSha: commitSha.toLowerCase(),
+    };
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "build-project",
+      state: "queued",
+      projectId,
+      commitSha: commitSha.toLowerCase(),
+      message: "Construcción aceptada; esperando al agente BuildKit del VPS.",
+    };
+  }
+
+  async function requestProjectServiceOperation(operation, projectId, commitSha, requestId) {
+    const validProjectId = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+    if (!["deploy-project", "remove-project"].includes(operation)
+      || !validProjectId.test(projectId ?? "")
+      || (operation === "deploy-project" && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? ""))
+      || (operation === "remove-project" && commitSha !== undefined)
+      || !requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("Project service operation fields are invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== operation
+        || currentStatus.projectId !== projectId
+        || (operation === "deploy-project" && currentStatus.commitSha !== commitSha)) {
+        throw new Error("The task identifier already belongs to a different project operation.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const requestData = { id: requestId, operation, projectId };
+    if (operation === "deploy-project") requestData.commitSha = commitSha.toLowerCase();
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation,
+      state: "queued",
+      projectId,
+      ...(operation === "deploy-project" ? { commitSha: commitSha.toLowerCase() } : {}),
+      message: operation === "deploy-project"
+        ? "Despliegue aceptado; el servicio se mantendrá sin puertos publicados."
+        : "Retiro aceptado; el agente validará la propiedad del servicio.",
+    };
+  }
+
+  async function getRegistryConfiguration() {
+    const contents = await readOptional(registryStatusPath);
+    if (contents === undefined) return null;
+    let configuration;
+    try {
+      configuration = JSON.parse(contents);
+    } catch {
+      throw new Error("The registry configuration status file has an invalid format.");
+    }
+    if (!configuration || typeof configuration !== "object"
+      || !isPublicHostname(configuration.domain)
+      || !registryUsernamePattern.test(configuration.username ?? "")
+      || Object.keys(configuration).sort().join(",") !== ["domain", "username"].sort().join(",")) {
+      throw new Error("The registry configuration status file has an invalid format.");
+    }
+    return { domain: configuration.domain, username: configuration.username };
+  }
+
+  async function stageRegistryCredentials(requestId, { domain, username, password } = {}) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || !isPublicHostname(domain)
+      || !registryUsernamePattern.test(username ?? "")
+      || !registryPasswordPattern.test(password ?? "")) {
+      throw new TypeError("The private registry configuration fields are invalid.");
+    }
+    await writeFile(registryCredentialsPath(requestId), `${JSON.stringify({
+      requestId,
+      domain,
+      username,
+      password,
+    })}\n`, { flag: "wx", mode: 0o600 });
+  }
+
+  async function removeRegistryCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The registry configuration request identifier is invalid.");
+    }
+    await unlink(registryCredentialsPath(requestId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
+
+  async function requestRegistryConfiguration(domain, username, requestId) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || !isPublicHostname(domain)
+      || !registryUsernamePattern.test(username ?? "")) {
+      throw new TypeError("The private registry configuration fields are invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "configure-registry"
+        || currentStatus.domain !== domain
+        || currentStatus.username !== username) {
+        throw new Error("The task identifier already belongs to a different registry configuration.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+
+    const requestData = { id: requestId, operation: "configure-registry", domain, username };
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "configure-registry",
+      state: "queued",
+      domain,
+      username,
+      message: `Configuración del registro aceptada para ${domain}; el agente del VPS iniciará el cambio.`,
+    };
+  }
+
   async function hasGiteaApiToken() {
     try {
       const metadata = await stat(giteaApiTokenPath);
@@ -416,6 +707,17 @@ export function createServiceOperationAgent({
       requestOperation("scale-service", serviceId, requestId, replicas),
     requestGiteaInstall,
     requestGiteaApiToken,
+    requestProjectBuild,
+    requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>
+      requestProjectServiceOperation("deploy-project", projectId, commitSha, requestId),
+    requestProjectUndeploy: (projectId, requestId = createId()) =>
+      requestProjectServiceOperation("remove-project", projectId, undefined, requestId),
+    stageProjectBuildArchive,
+    removeProjectBuildArchive,
+    getRegistryConfiguration,
+    stageRegistryCredentials,
+    removeRegistryCredentials,
+    requestRegistryConfiguration,
     hasGiteaApiToken,
   };
 }

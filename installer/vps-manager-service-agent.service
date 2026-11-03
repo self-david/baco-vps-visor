@@ -17,4 +17,4 @@ ProtectHome=true
 PrivateTmp=true
 PrivateNetwork=true
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/vps-manager/service-operations
+ReadWritePaths=/var/lib/vps-manager/service-operations /var/lib/vps-manager/registry

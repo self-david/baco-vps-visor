@@ -32,6 +32,9 @@ label { color: #c4cede; font-size: .9rem; }
 input { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-radius: 8px; color: #f3f6fb; background: #0e1521; outline: none; }
 select { width: 100%; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
 input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%); }
+textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-radius: 8px; color: #f3f6fb; background: #0e1521; font: 0.88rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+.checkbox-label { display: flex; align-items: center; gap: 10px; }
+.checkbox-label input { width: auto; margin: 0; }
 .button { padding: 10px 15px; border: 1px solid #7097eb; border-radius: 8px; color: #09111f; background: #8eafff; font-weight: 700; cursor: pointer; }
 .button:hover { background: #a4bdff; }
 .button.secondary { border-color: #34435b; color: #dce5f4; background: #1a2535; }
@@ -63,6 +66,7 @@ input:focus { border-color: #7097eb; box-shadow: 0 0 0 3px rgb(112 151 235 / 17%
 .gitea-form h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
 .gitea-form label { color: #c4cede; font-size: .84rem; }
 .gitea-form input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
+.gitea-form .checkbox-label input { width: auto; padding: 0; }
 .gitea-form p { margin: 0; font-size: .82rem; line-height: 1.5; }
 .gitea-form a { color: #9eb8ff; overflow-wrap: anywhere; }
 .gitea-repository-result { display: grid; gap: 8px; }

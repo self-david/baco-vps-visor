@@ -65,6 +65,29 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+if docker service inspect vps-manager_registry >/dev/null 2>&1; then
+  registry_labels="$(docker service inspect \
+    --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' \
+    vps-manager_registry)"
+  if [[ "${registry_labels}" == "true registry" ]]; then
+    docker service rm vps-manager_registry
+    for _ in $(seq 1 60); do
+      if ! docker service inspect vps-manager_registry >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+    if docker service inspect vps-manager_registry >/dev/null 2>&1; then
+      echo "No se pudo retirar el servicio del registro privado." >&2
+      exit 1
+    fi
+  else
+    echo "Se conservó un servicio no administrado llamado vps-manager_registry." >&2
+  fi
+fi
+
+rm -f -- /var/lib/vps-manager/registry/config.json /var/lib/vps-manager/service-operations/registry-status.json
+
 if [[ "${1:-}" == "--purge-secrets" ]]; then
   for secret in vps_manager_admin_credentials vps_manager_session_key vps_manager_backup_key; do
     if docker secret inspect "${secret}" >/dev/null 2>&1; then
@@ -76,10 +99,15 @@ if [[ "${1:-}" == "--purge-secrets" ]]; then
       docker secret rm "${secret}"
     fi
   done < <(docker secret ls --filter label=vps-manager.component=gitea-api-token --format '{{.Name}}')
+  while IFS= read -r secret; do
+    if [[ "${secret}" =~ ^vps_manager_registry_auth_[a-f0-9]{32}$ ]]; then
+      docker secret rm "${secret}"
+    fi
+  done < <(docker secret ls --filter label=vps-manager.component=registry-auth --format '{{.Name}}')
 fi
 
 if [[ "${1:-}" == "--purge-secrets" ]]; then
-  echo "Stack eliminado. PostgreSQL y los respaldos se conservaron, pero se eliminaron secretos seleccionados."
+  echo "Stack eliminado. PostgreSQL, las imágenes del registro y los respaldos se conservaron, pero se eliminaron secretos seleccionados."
 else
-  echo "Stack eliminado. PostgreSQL, los respaldos y su clave de cifrado se conservaron."
+  echo "Stack eliminado. PostgreSQL, los datos del registro privado, los respaldos y sus secretos se conservaron."
 fi

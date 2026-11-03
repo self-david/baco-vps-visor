@@ -86,6 +86,38 @@ const projectSaveButton = document.querySelector("#project-save");
 const projectCancelEditButton = document.querySelector("#project-cancel-edit");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
+const projectEnvironmentDialog = document.querySelector("#project-environment-dialog");
+const projectEnvironmentForm = document.querySelector("#project-environment-form");
+const projectEnvironmentId = document.querySelector("#project-environment-id");
+const projectEnvironmentJson = document.querySelector("#project-environment-json");
+const projectEnvironmentStatus = document.querySelector("#project-environment-status");
+const domainsIngressForm = document.querySelector("#domains-ingress-form");
+const domainsIngressIp = document.querySelector("#domains-ingress-ip");
+const domainsIngressStatus = document.querySelector("#domains-ingress-status");
+const domainForm = document.querySelector("#domain-form");
+const domainFormTitle = document.querySelector("#domain-form-title");
+const domainIdInput = document.querySelector("#domain-id");
+const domainProviderSelect = document.querySelector("#domain-provider");
+const domainZoneInput = document.querySelector("#domain-zone");
+const domainHostnameInput = document.querySelector("#domain-hostname");
+const domainProjectSelect = document.querySelector("#domain-project");
+const domainPortInput = document.querySelector("#domain-port");
+const domainTokenInput = document.querySelector("#domain-token");
+const domainProxiedInput = document.querySelector("#domain-proxied");
+const domainFormStatus = document.querySelector("#domain-form-status");
+const domainSaveButton = document.querySelector("#domain-save");
+const domainCancelEditButton = document.querySelector("#domain-cancel-edit");
+const domainsStatus = document.querySelector("#domains-status");
+const domainsList = document.querySelector("#domains-list");
+const refreshDomainsButton = document.querySelector("#refresh-domains");
+const registryForm = document.querySelector("#registry-configure-form");
+const registryDomainInput = document.querySelector("#registry-domain");
+const registryUsernameInput = document.querySelector("#registry-username");
+const registryPasswordInput = document.querySelector("#registry-password");
+const registryState = document.querySelector("#registry-state");
+const registryStatus = document.querySelector("#registry-status");
+const registryFormStatus = document.querySelector("#registry-form-status");
+const registrySaveButton = document.querySelector("#registry-save");
 let giteaStatusPollTimer;
 let giteaTokenConfigurationPending = false;
 let giteaRepositoriesLoaded = false;
@@ -107,6 +139,7 @@ let webUpdatePending = false;
 let lastWebUpdateState;
 let serviceOperationPollTimer;
 let serviceOperationPending = false;
+let registryConfigurationPollTimer;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -134,6 +167,9 @@ function showAuthenticated(authenticated) {
   if (!authenticated) {
     if (webUpdatePollTimer !== undefined) clearTimeout(webUpdatePollTimer);
     webUpdatePollTimer = undefined;
+    if (registryConfigurationPollTimer !== undefined) clearTimeout(registryConfigurationPollTimer);
+    registryConfigurationPollTimer = undefined;
+    registrySaveButton.disabled = false;
     webUpdatePending = false;
     lastWebUpdateState = undefined;
     if (serviceOperationPollTimer !== undefined) clearTimeout(serviceOperationPollTimer);
@@ -464,6 +500,14 @@ async function loadTaskHistory() {
       title.className = "resource-name";
       title.textContent = task.type === "application.gitea.install"
         ? "Instalación de Gitea"
+        : task.type === "registry.configure"
+          ? `Configuración del registro · ${task.domain}`
+        : task.type === "project.build"
+          ? `Construcción de ${task.projectName} · ${task.branch}`
+        : task.type === "project.deploy"
+          ? `Despliegue de ${task.projectName} · ${task.commitSha?.slice(0, 12) ?? ""}`
+          : task.type === "project.undeploy"
+            ? `Retiro del servicio de ${task.projectName}`
         : task.type === "service.restart"
         ? `Reinicio de ${task.serviceName}`
         : task.type === "service.scale"
@@ -488,7 +532,8 @@ async function loadTaskHistory() {
       if (task.error || task.result?.message) {
         const message = document.createElement("div");
         message.className = `task-result${task.status === "failed" ? " status-error" : ""}`;
-        message.textContent = task.error ?? task.result.message;
+        message.textContent = task.error
+          ?? `${task.result.message}${task.result.image ? ` · ${task.result.image}` : ""}`;
         row.append(message);
       }
       tasksList.append(row);
@@ -1218,7 +1263,13 @@ function renderProjects() {
     name.textContent = project.name;
     const details = document.createElement("div");
     details.className = "resource-detail";
-    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""}`;
+    const latestBuild = project.latestBuild
+      ? `Último build: ${project.latestBuild.commitSha.slice(0, 12)}`
+      : "Sin builds exitosos";
+    const deployment = project.deployment
+      ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} nodos activos · ${project.deployment.commitSha?.slice(0, 12) ?? "commit desconocido"}`
+      : "Sin servicio desplegado";
+    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""} · ${latestBuild} · ${deployment}`;
     main.append(name, details);
 
     const actions = document.createElement("div");
@@ -1240,10 +1291,141 @@ function renderProjects() {
       projectForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
 
+    const configureEnvironment = document.createElement("button");
+    configureEnvironment.className = "button secondary resource-action";
+    configureEnvironment.type = "button";
+    configureEnvironment.textContent = "Variables";
+    configureEnvironment.disabled = !giteaCanManageProjects;
+    configureEnvironment.addEventListener("click", async () => {
+      configureEnvironment.disabled = true;
+      projectEnvironmentStatus.textContent = `Consultando variables de ${project.name}…`;
+      try {
+        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/environment`);
+        projectEnvironmentId.value = project.id;
+        projectEnvironmentJson.value = JSON.stringify(result.environment, null, 2);
+        projectEnvironmentStatus.textContent = "";
+        projectEnvironmentDialog.showModal();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+      } finally {
+        configureEnvironment.disabled = !giteaCanManageProjects;
+      }
+    });
+
+    const build = document.createElement("button");
+    build.className = "button secondary resource-action";
+    build.type = "button";
+    build.textContent = "Construir imagen";
+    build.disabled = !giteaCanManageProjects;
+    build.addEventListener("click", async () => {
+      if (!confirm(`¿Construir y publicar una imagen de ${project.name} desde ${project.repository} · ${project.productionBranch}? No se desplegará automáticamente.`)) return;
+      build.disabled = true;
+      projectsStatus.textContent = `Solicitando construcción de ${project.name}…`;
+      try {
+        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/build`, {
+          method: "POST",
+          body: JSON.stringify({ branch: project.productionBranch }),
+        });
+        projectsStatus.textContent = result.message;
+        await loadTaskHistory();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+      } finally {
+        build.disabled = !giteaCanManageProjects;
+      }
+    });
+
+    const deploy = document.createElement("button");
+    deploy.className = "button secondary resource-action";
+    deploy.type = "button";
+    const deploymentIsCurrent = project.deployment?.commitSha === project.latestBuild?.commitSha
+      && project.deployment.mode === "global"
+      && project.deployment.desiredReplicas > 0
+      && project.deployment.runningReplicas === project.deployment.desiredReplicas
+      && project.deployment.configurationCurrent === true;
+    deploy.textContent = deploymentIsCurrent
+      ? "Ya desplegado"
+      : project.deployment?.commitSha === project.latestBuild?.commitSha
+        ? project.deployment.configurationCurrent === false
+          ? "Aplicar configuración"
+          : "Reintentar despliegue"
+      : "Desplegar imagen";
+    deploy.disabled = !project.latestBuild || deploymentIsCurrent;
+    deploy.addEventListener("click", async () => {
+      if (!confirm(`¿Desplegar en Swarm la imagen ${project.latestBuild.commitSha.slice(0, 12)} de ${project.name}? Se ejecutará una instancia por cada VPS/nodo activo. Se aplicarán las variables y rutas de dominio configuradas; no se publicarán puertos del host.`)) return;
+      deploy.disabled = true;
+      projectsStatus.textContent = `Solicitando despliegue de ${project.name}…`;
+      try {
+        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deploy`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        projectsStatus.textContent = result.message;
+        await loadTaskHistory();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+      } finally {
+        deploy.disabled = !project.latestBuild || deploymentIsCurrent;
+      }
+    });
+
+    const undeploy = document.createElement("button");
+    undeploy.className = "button secondary resource-action";
+    undeploy.type = "button";
+    undeploy.textContent = "Retirar servicio";
+    undeploy.disabled = !project.deployment;
+    undeploy.addEventListener("click", async () => {
+      if (!confirm(`¿Retirar el servicio Swarm de ${project.name}? La imagen publicada en el registro no se eliminará.`)) return;
+      undeploy.disabled = true;
+      projectsStatus.textContent = `Solicitando retiro del servicio de ${project.name}…`;
+      try {
+        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deployment`, {
+          method: "DELETE",
+        });
+        projectsStatus.textContent = result.message;
+        await loadTaskHistory();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+        undeploy.disabled = !project.deployment;
+      }
+    });
+
+    const rollbackTarget = project.deploymentHistory
+      ?.find((deploymentItem) => deploymentItem.commitSha !== project.deployment?.commitSha);
+    const rollback = document.createElement("button");
+    rollback.className = "button secondary resource-action";
+    rollback.type = "button";
+    rollback.textContent = rollbackTarget
+      ? `Rollback · ${rollbackTarget.commitSha.slice(0, 12)}`
+      : "Rollback";
+    rollback.disabled = !project.deployment || !rollbackTarget || !giteaCanManageProjects;
+    rollback.title = rollbackTarget
+      ? `Volver al despliegue exitoso ${rollbackTarget.commitSha.slice(0, 12)}`
+      : "No hay un despliegue exitoso anterior.";
+    rollback.addEventListener("click", async () => {
+      if (!rollbackTarget
+        || !confirm(`¿Revertir ${project.name} al despliegue exitoso ${rollbackTarget.commitSha.slice(0, 12)}? Se conservarán las variables y dominios actuales.`)) return;
+      rollback.disabled = true;
+      projectsStatus.textContent = `Solicitando rollback de ${project.name}…`;
+      try {
+        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/rollback`, {
+          method: "POST",
+          body: JSON.stringify({ commitSha: rollbackTarget.commitSha }),
+        });
+        projectsStatus.textContent = result.message;
+        await loadTaskHistory();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+        rollback.disabled = !project.deployment || !rollbackTarget || !giteaCanManageProjects;
+      }
+    });
+
     const remove = document.createElement("button");
     remove.className = "button secondary resource-action";
     remove.type = "button";
     remove.textContent = "Eliminar";
+    remove.disabled = Boolean(project.deployment);
+    remove.title = project.deployment ? "Retira primero el servicio desplegado." : "";
     remove.addEventListener("click", async () => {
       if (!confirm(`¿Eliminar la configuración del proyecto ${project.name}? El repositorio y su webhook de Gitea no se eliminarán.`)) return;
       remove.disabled = true;
@@ -1255,7 +1437,9 @@ function renderProjects() {
         remove.disabled = false;
       }
     });
-    actions.append(edit, remove);
+    actions.append(edit, configureEnvironment, build, deploy, rollback);
+    if (project.deployment) actions.append(undeploy);
+    actions.append(remove);
     row.append(main, actions);
     projectsList.append(row);
   }
@@ -1271,6 +1455,152 @@ async function loadProjects() {
     projects = [];
     projectsList.replaceChildren();
     projectsStatus.textContent = error.message;
+  }
+}
+
+function resetDomainForm() {
+  domainForm.reset();
+  domainIdInput.value = "";
+  domainPortInput.value = "3000";
+  domainFormTitle.textContent = "Conectar dominio";
+  domainSaveButton.textContent = "Conectar dominio";
+  domainCancelEditButton.classList.add("hidden");
+  domainTokenInput.required = true;
+  domainTokenInput.placeholder = "Token con Zone:Read y DNS:Edit";
+  domainFormStatus.textContent = "";
+}
+
+function renderDomains(domains, availableProjects) {
+  domainProjectSelect.replaceChildren(
+    new Option(availableProjects.length ? "Selecciona un proyecto" : "Registra primero un proyecto", ""),
+    ...availableProjects.map((project) => new Option(project.name, project.id)),
+  );
+  domainProjectSelect.disabled = availableProjects.length === 0;
+  domainsList.replaceChildren();
+  if (domains.length === 0) {
+    domainsStatus.textContent = "Todavía no hay dominios conectados.";
+    return;
+  }
+  domainsStatus.textContent = `${domains.length} dominio${domains.length === 1 ? "" : "s"} conectado${domains.length === 1 ? "" : "s"}. Los cambios de enrutamiento se aplican en el próximo despliegue.`;
+  for (const domain of domains) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = domain.hostname;
+    const details = document.createElement("div");
+    details.className = "resource-detail";
+    details.textContent = `${domain.provider} · ${domain.projectName} · puerto ${domain.port} · ${domain.proxied ? "proxy Cloudflare activo" : "DNS directo"} · token ${domain.tokenConfigured ? "guardado" : "faltante"}`;
+    main.append(name, details);
+
+    const actions = document.createElement("div");
+    actions.className = "resource-actions";
+    const edit = document.createElement("button");
+    edit.className = "button secondary resource-action";
+    edit.type = "button";
+    edit.textContent = "Editar";
+    edit.addEventListener("click", () => {
+      domainIdInput.value = domain.id;
+      domainProviderSelect.value = domain.provider;
+      domainZoneInput.value = domain.zone;
+      domainHostnameInput.value = domain.hostname;
+      domainProjectSelect.value = domain.projectId;
+      domainPortInput.value = String(domain.port);
+      domainProxiedInput.checked = domain.proxied;
+      domainTokenInput.value = "";
+      domainTokenInput.required = false;
+      domainTokenInput.placeholder = domain.tokenConfigured
+        ? "Deja vacío para conservar el token actual"
+        : "Token con Zone:Read y DNS:Edit";
+      domainFormTitle.textContent = `Editar ${domain.hostname}`;
+      domainSaveButton.textContent = "Guardar dominio";
+      domainCancelEditButton.classList.remove("hidden");
+      domainFormStatus.textContent = "";
+      domainForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "button secondary resource-action";
+    remove.type = "button";
+    remove.textContent = "Quitar";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`¿Quitar la configuración de ${domain.hostname}? El registro A de Cloudflare no se eliminará y el servicio actualizará sus rutas en el próximo despliegue.`)) return;
+      remove.disabled = true;
+      try {
+        const result = await request(`/api/domains/${encodeURIComponent(domain.id)}`, { method: "DELETE" });
+        domainsStatus.textContent = result.message;
+        await Promise.all([loadDomains(), loadProjects()]);
+      } catch (error) {
+        domainsStatus.textContent = error.message;
+        remove.disabled = false;
+      }
+    });
+    actions.append(edit, remove);
+    row.append(main, actions);
+    domainsList.append(row);
+  }
+}
+
+async function loadDomains() {
+  domainsStatus.textContent = "Consultando dominios…";
+  try {
+    const result = await request("/api/domains");
+    domainsIngressIp.value = result.ingressIp ?? "";
+    renderDomains(result.domains, result.projects);
+  } catch (error) {
+    domainsList.replaceChildren();
+    domainsStatus.textContent = error.message;
+  }
+}
+
+async function loadRegistryConfiguration() {
+  try {
+    const result = await request("/api/registry");
+    const registry = result.registry;
+    registryState.textContent = registry ? "Configurado" : "Sin configurar";
+    registryStatus.textContent = registry
+      ? `Configurado en https://${registry.domain}/. Verifica que el DNS apunte al VPS y que Traefik emita el certificado antes de publicar builds.`
+      : "La configuración se realiza aquí después de instalar VPS Manager.";
+    if (registry) {
+      registryDomainInput.value = registry.domain;
+      registryUsernameInput.value = registry.username;
+      registrySaveButton.textContent = "Actualizar configuración";
+    } else {
+      registrySaveButton.textContent = "Configurar registro privado";
+    }
+    registryPasswordInput.value = "";
+  } catch (error) {
+    registryState.textContent = "Estado desconocido";
+    registryStatus.textContent = error.message;
+  }
+}
+
+async function pollRegistryConfigurationTask(taskId) {
+  try {
+    const result = await request("/api/system/tasks");
+    const task = result.tasks.find((candidate) => candidate.id === taskId);
+    if (task?.status === "completed") {
+      await Promise.all([loadRegistryConfiguration(), loadTaskHistory()]);
+      registryFormStatus.textContent = `Configuración aplicada en https://${task.domain}/. Los builds manuales publicarán allí cuando DNS y HTTPS estén disponibles.`;
+      registrySaveButton.disabled = false;
+      registryConfigurationPollTimer = undefined;
+      return;
+    }
+    if (task?.status === "failed") {
+      registryFormStatus.textContent = `No se pudo configurar el registro: ${task.error ?? "error desconocido"}`;
+      await loadRegistryConfiguration();
+      registrySaveButton.disabled = false;
+      registryConfigurationPollTimer = undefined;
+      return;
+    }
+    registryFormStatus.textContent = "Configurando el servicio privado en el VPS…";
+    registryConfigurationPollTimer = setTimeout(() => void pollRegistryConfigurationTask(taskId), 2000);
+  } catch (error) {
+    registryFormStatus.textContent = error.message;
+    registrySaveButton.disabled = false;
+    registryConfigurationPollTimer = undefined;
   }
 }
 
@@ -1424,6 +1754,82 @@ projectForm.addEventListener("submit", async (event) => {
     projectSaveButton.disabled = false;
   }
 });
+projectEnvironmentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const projectId = projectEnvironmentId.value;
+  const submitButton = projectEnvironmentForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  projectEnvironmentStatus.textContent = "Guardando variables en el VPS…";
+  try {
+    const environment = JSON.parse(projectEnvironmentJson.value);
+    if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
+      throw new Error("Proporciona un objeto JSON con nombres y valores de variables.");
+    }
+    const result = await request(`/api/projects/${encodeURIComponent(projectId)}/environment`, {
+      method: "PUT",
+      body: JSON.stringify({ environment }),
+    });
+    projectEnvironmentStatus.textContent = result.message;
+    await loadProjects();
+  } catch (error) {
+    projectEnvironmentStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+document.querySelector("#close-project-environment").addEventListener("click", () => projectEnvironmentDialog.close());
+domainCancelEditButton.addEventListener("click", resetDomainForm);
+domainForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const id = domainIdInput.value;
+  const token = domainTokenInput.value;
+  const input = {
+    provider: domainProviderSelect.value,
+    zone: domainZoneInput.value.trim(),
+    hostname: domainHostnameInput.value.trim(),
+    projectId: domainProjectSelect.value,
+    port: Number(domainPortInput.value),
+    proxied: domainProxiedInput.checked,
+    ...(token ? { token } : {}),
+  };
+  domainSaveButton.disabled = true;
+  domainFormStatus.textContent = "Validando zona y configurando el registro DNS en Cloudflare…";
+  try {
+    const result = await request(id ? `/api/domains/${encodeURIComponent(id)}` : "/api/domains", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(input),
+    });
+    domainFormStatus.textContent = result.message;
+    domainTokenInput.value = "";
+    resetDomainForm();
+    domainsStatus.textContent = result.message;
+    await Promise.all([loadDomains(), loadProjects()]);
+  } catch (error) {
+    domainFormStatus.textContent = error.message;
+  } finally {
+    domainSaveButton.disabled = false;
+  }
+});
+domainsIngressForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = domainsIngressForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  domainsIngressStatus.textContent = "Actualizando registros A de Cloudflare…";
+  try {
+    const result = await request("/api/domains/ingress-ip", {
+      method: "PUT",
+      body: JSON.stringify({ ipv4: domainsIngressIp.value.trim() }),
+    });
+    const failures = result.failures?.map((failure) => `${failure.hostname}: ${failure.error}`).join(" · ");
+    domainsIngressStatus.textContent = failures ? `${result.message} ${failures}` : result.message;
+    await loadDomains();
+  } catch (error) {
+    domainsIngressStatus.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+refreshDomainsButton.addEventListener("click", () => void loadDomains());
 giteaBranchRefresh.addEventListener("click", () => {
   if (giteaBranchRepository.value) void loadGiteaBranches();
   else void loadGiteaRepositories(true);
@@ -1526,6 +1932,8 @@ async function loadResources() {
       loadTaskHistory(),
       loadGiteaApplication(),
       loadProjects(),
+      loadDomains(),
+      loadRegistryConfiguration(),
     ]);
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
@@ -1570,6 +1978,28 @@ document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog)
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
 installGiteaButton.addEventListener("click", installGitea);
+registryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  registrySaveButton.disabled = true;
+  registryFormStatus.textContent = "Solicitando la configuración segura del registro…";
+  try {
+    const result = await request("/api/registry/configure", {
+      method: "POST",
+      body: JSON.stringify({
+        domain: registryDomainInput.value.trim(),
+        username: registryUsernameInput.value,
+        password: registryPasswordInput.value,
+      }),
+    });
+    registryPasswordInput.value = "";
+    registryFormStatus.textContent = result.task.message;
+    await loadTaskHistory();
+    pollRegistryConfigurationTask(result.task.id);
+  } catch (error) {
+    registryFormStatus.textContent = error.message;
+    registrySaveButton.disabled = false;
+  }
+});
 revealGiteaCredentialsButton.addEventListener("click", revealGiteaCredentials);
 document.querySelector("#close-gitea-credentials").addEventListener("click", () => giteaCredentialsDialog.close());
 document.querySelector("#copy-gitea-credentials").addEventListener("click", async () => {

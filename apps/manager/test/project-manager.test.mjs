@@ -33,5 +33,6 @@ test("rejects unsafe or incomplete project metadata and malformed IDs", () => {
     assert.throws(() => validateProjectInput(project), { code: "INVALID_PROJECT" });
   }
   assert.equal(validateProjectId("d909f79b-e7f9-41e7-9e7a-6ea000000001"), "d909f79b-e7f9-41e7-9e7a-6ea000000001");
+  assert.equal(validateProjectId("D909F79B-E7F9-41E7-9E7A-6EA000000001"), "d909f79b-e7f9-41e7-9e7a-6ea000000001");
   assert.throws(() => validateProjectId("../project"), { code: "INVALID_PROJECT_ID" });
 });

@@ -19,6 +19,10 @@ import {
   createGiteaInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
+  createRegistryConfigureHandler,
+  createProjectBuildHandler,
+  createProjectDeployHandler,
+  createProjectUndeployHandler,
   createTaskQueueWorker,
 } from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
@@ -38,8 +42,16 @@ import {
   getRecentTasks,
   getTaskById,
   getLatestTaskByType,
+  getLatestProjectBuilds,
+  getRecentProjectDeployments,
   getProjects,
   getProject,
+  getProjectDomains,
+  getProjectDomain,
+  saveProjectDomain,
+  deleteProjectDomain,
+  getIngressIp,
+  setIngressIp,
   createProject,
   updateProject,
   deleteProject,
@@ -58,12 +70,28 @@ import {
   recordAuditEvent,
   recordGiteaWebhookDelivery,
   createGiteaInstallTask,
+  createRegistryConfigureTask,
+  createProjectBuildTask,
+  createProjectDeployTask,
+  createProjectUndeployTask,
   createServiceRestartTask,
   createServiceScaleTask,
   updateMetricAlertThresholds,
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
 } from "./db.mjs";
+import {
+  deleteProjectConfig,
+  getProjectEnvironment,
+  saveProjectEnvironment,
+  getProjectDeploymentConfig,
+  saveProjectDeploymentConfig,
+  saveCloudflareToken,
+  getCloudflareToken,
+  hasCloudflareToken,
+  deleteCloudflareToken,
+} from "./project-deployment-config.mjs";
+import { createCloudflareClient, isIpv4Address, validateDomainConfiguration } from "./cloudflare-client.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, "dist");
@@ -90,12 +118,34 @@ const updateChecker = createUpdateChecker({
 });
 const webUpdater = createWebUpdater();
 const serviceOperationAgent = createServiceOperationAgent();
+const serviceOperationsDirectory = process.env.SERVICE_OPERATIONS_DIRECTORY ?? "/var/lib/vps-manager/service-operations";
+const cloudflareClient = createCloudflareClient();
 const taskQueueWorker = createTaskQueueWorker({
   store: { claimNextTask, completeTask, failTask, renewTaskLease },
   handlers: {
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
     "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
+    "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
+    "project.build": createProjectBuildHandler({
+      agent: serviceOperationAgent,
+      getBuildSource: async ({ repository, branch }) => {
+        const { client, token } = await getGiteaApiContext();
+        const branches = await client.listBranches(token, repository);
+        if (!branches.some((item) => item.name === branch)) {
+          const invalid = new Error("La rama seleccionada ya no existe en el repositorio.");
+          invalid.code = "GITEA_BRANCH_NOT_FOUND";
+          throw invalid;
+        }
+        const commitSha = await client.getCommit(token, repository, branch);
+        return {
+          commitSha,
+          archive: await client.downloadArchive(token, repository, commitSha),
+        };
+      },
+    }),
+    "project.deploy": createProjectDeployHandler(serviceOperationAgent),
+    "project.undeploy": createProjectUndeployHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
 });
@@ -223,12 +273,12 @@ function hasSameOrigin(request) {
   }
 }
 
-async function readJson(request) {
+async function readJson(request, maximumBytes = 8192) {
   const chunks = [];
   let length = 0;
   for await (const chunk of request) {
     length += chunk.length;
-    if (length > 8192) throw new RequestError(413, "Request body exceeds 8 KB.");
+    if (length > maximumBytes) throw new RequestError(413, `Request body exceeds ${maximumBytes} bytes.`);
     chunks.push(chunk);
   }
   try {
@@ -516,6 +566,81 @@ async function getServices() {
   return services.map(({ stack, ...service }) => service);
 }
 
+async function getProjectDeploymentState(projects) {
+  const projectIds = projects.map((project) => project.id);
+  const [builds, deploymentHistory, deploymentConfigs, services, tasks, nodes] = await Promise.all([
+    getLatestProjectBuilds(projectIds),
+    getRecentProjectDeployments(projectIds),
+    Promise.all(projects.map(async (project) => [
+      project.id,
+      await getProjectDeploymentConfig(serviceOperationsDirectory, project.id),
+    ])),
+    dockerGet("/services"),
+    dockerGet("/tasks?desired-state=running"),
+    dockerGet("/nodes"),
+  ]);
+  const readyActiveNodes = nodes.filter((node) =>
+    node.Spec?.Availability === "active" && node.Status?.State === "ready").length;
+  const runningByService = new Map();
+  for (const task of tasks) {
+    if (task.Status?.State === "running") {
+      runningByService.set(task.ServiceID, (runningByService.get(task.ServiceID) ?? 0) + 1);
+    }
+  }
+  const latestBuilds = new Map(builds.map((build) => [build.projectId, {
+    taskId: build.id,
+    commitSha: build.result.commitSha,
+    image: build.result.image,
+  }]));
+  const deploymentsByProject = new Map();
+  const deploymentConfigHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
+    [projectId, config.configHash]));
+  for (const deployment of deploymentHistory) {
+    const projectId = deployment.projectId;
+    const history = deploymentsByProject.get(projectId) ?? [];
+    history.push({
+      taskId: deployment.id,
+      commitSha: deployment.result.commitSha,
+      image: deployment.result.image,
+      completedAt: deployment.completedAt,
+    });
+    deploymentsByProject.set(projectId, history);
+  }
+  for (const history of deploymentsByProject.values()) {
+    history.sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+  }
+  const deployments = new Map();
+  for (const service of services) {
+    const labels = service.Spec?.Labels;
+    if (labels?.["vps-manager.managed"] !== "true" || labels["vps-manager.component"] !== "project") continue;
+    const projectId = labels["vps-manager.project-id"];
+    try {
+      validateProjectId(projectId);
+    } catch (error) {
+      throw new Error("A managed project service has an invalid project identifier.", { cause: error });
+    }
+    if (deployments.has(projectId)) {
+      throw new Error("Multiple managed Swarm services are assigned to the same project.");
+    }
+    deployments.set(projectId, {
+      serviceId: service.ID,
+      serviceName: service.Spec?.Name ?? "unknown",
+      image: service.Spec?.TaskTemplate?.ContainerSpec?.Image ?? "unknown",
+      commitSha: labels["vps-manager.project-commit"] ?? null,
+      runningReplicas: runningByService.get(service.ID) ?? 0,
+      desiredReplicas: service.Spec?.Mode?.Global ? readyActiveNodes : service.Spec?.Mode?.Replicated?.Replicas ?? 1,
+      mode: service.Spec?.Mode?.Global ? "global" : "replicated",
+      configurationCurrent: labels["vps-manager.project-config-hash"] === deploymentConfigHashes.get(projectId),
+    });
+  }
+  return projects.map((project) => ({
+    ...project,
+    latestBuild: latestBuilds.get(project.id) ?? null,
+    deployment: deployments.get(project.id) ?? null,
+    deploymentHistory: deploymentsByProject.get(project.id) ?? [],
+  }));
+}
+
 async function getGiteaApplicationState() {
   const services = await dockerGet("/services");
   const service = services.find((item) => item.Spec?.Name === "vps-manager-gitea");
@@ -585,6 +710,17 @@ async function validateProjectSource(client, token, project) {
   if (!branches.some((branch) => branch.name === project.productionBranch)) {
     throw new RequestError(409, "La rama de producción seleccionada ya no existe en el repositorio.");
   }
+}
+
+async function saveProjectDomainAssignments(projectId) {
+  const domains = await getProjectDomains();
+  await saveProjectDeploymentConfig(
+    serviceOperationsDirectory,
+    projectId,
+    domains
+      .filter((domain) => domain.projectId === projectId)
+      .map((domain) => ({ hostname: domain.hostname, port: domain.port })),
+  );
 }
 
 async function getStacks() {
@@ -718,6 +854,342 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/domains") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    try {
+      const [domains, projects, ingressIp] = await Promise.all([
+        getProjectDomains(),
+        getProjects(),
+        getIngressIp(),
+      ]);
+      const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+      respondJson(response, 200, {
+        ingressIp,
+        domains: await Promise.all(domains.map(async (domain) => ({
+          id: domain.id,
+          provider: domain.provider,
+          zone: domain.zone,
+          hostname: domain.hostname,
+          projectId: domain.projectId,
+          projectName: projectNames.get(domain.projectId) ?? "Proyecto eliminado",
+          port: domain.port,
+          proxied: domain.proxied,
+          tokenConfigured: await hasCloudflareToken(serviceOperationsDirectory, domain.id),
+        }))),
+        projects,
+      });
+    } catch (error) {
+      console.error("Could not retrieve project domains:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar los dominios." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/domains/ingress-ip") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "PUT") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "PUT" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !isIpv4Address(body.ipv4)) {
+        respondJson(response, 400, { error: "Proporciona una dirección IPv4 pública válida para la entrada de Traefik." });
+        return;
+      }
+      const ingressIp = await setIngressIp(body.ipv4);
+      const domains = await getProjectDomains();
+      const failures = [];
+      for (const domain of domains) {
+        try {
+          const token = await getCloudflareToken(serviceOperationsDirectory, domain.id);
+          await cloudflareClient.upsertARecord(token, {
+            zoneId: domain.zoneId,
+            hostname: domain.hostname,
+            address: ingressIp,
+            proxied: domain.proxied,
+            existingRecordId: domain.dnsRecordId,
+          });
+        } catch (error) {
+          failures.push({ hostname: domain.hostname, error: error.message });
+        }
+      }
+      respondJson(response, failures.length ? 207 : 200, {
+        ingressIp,
+        synchronized: domains.length - failures.length,
+        failures,
+        message: failures.length
+          ? "La IPv4 quedó guardada, pero algunos registros no se pudieron actualizar."
+          : "La IPv4 quedó guardada y los registros DNS de Cloudflare están sincronizados.",
+      });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not update the ingress IP:", error);
+      respondJson(response, 503, { error: "No se pudo guardar la IPv4 de entrada." });
+    }
+    return;
+  }
+
+  const projectDomainMatch = url.pathname.match(/^\/api\/domains\/([a-f0-9-]+)$/i);
+  if ((url.pathname === "/api/domains" && request.method === "POST") || projectDomainMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    const isUpdate = Boolean(projectDomainMatch);
+    const allowedMethod = isUpdate ? "PUT" : "POST";
+    if (request.method !== allowedMethod && !(isUpdate && request.method === "DELETE")) {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: isUpdate ? "PUT, DELETE" : "POST, GET" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    const domainId = projectDomainMatch?.[1]?.toLowerCase();
+    if (isUpdate && !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(domainId)) {
+      respondJson(response, 400, { error: "El identificador del dominio no es válido." });
+      return;
+    }
+    if (isUpdate && request.method === "DELETE") {
+      try {
+        const existing = await getProjectDomain(domainId);
+        if (!existing) {
+          respondJson(response, 404, { error: "No se encontró el dominio." });
+          return;
+        }
+        await deleteProjectDomain(domainId);
+        await saveProjectDomainAssignments(existing.projectId);
+        await deleteCloudflareToken(serviceOperationsDirectory, domainId);
+        respondJson(response, 200, {
+          deleted: true,
+          message: "Se quitó la configuración. El registro A de Cloudflare se conserva; el enrutamiento del servicio se actualiza en su próximo despliegue.",
+        });
+      } catch (error) {
+        console.error("Could not remove project domain:", error);
+        respondJson(response, 503, { error: "No se pudo quitar la configuración del dominio." });
+      }
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      const input = validateDomainConfiguration(body);
+      const ingressIp = await getIngressIp();
+      if (!ingressIp) {
+        respondJson(response, 409, { error: "Configura primero la IPv4 pública del VPS manager." });
+        return;
+      }
+      const project = await getProject(input.projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto seleccionado." });
+        return;
+      }
+      const registryConfiguration = await serviceOperationAgent.getRegistryConfiguration();
+      const reservedHostnames = new Set([
+        managerDomain.toLowerCase(),
+        managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
+        registryConfiguration?.domain?.toLowerCase() ?? "",
+      ].filter(Boolean));
+      if (reservedHostnames.has(input.hostname)) {
+        respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });
+        return;
+      }
+      const existing = isUpdate ? await getProjectDomain(domainId) : null;
+      if (isUpdate && !existing) {
+        respondJson(response, 404, { error: "No se encontró el dominio." });
+        return;
+      }
+      if (!isUpdate && input.token === undefined) {
+        respondJson(response, 400, { error: "Proporciona un token de Cloudflare para conectar el dominio." });
+        return;
+      }
+      if (existing && (existing.zone !== input.zone || existing.hostname !== input.hostname)) {
+        respondJson(response, 409, {
+          error: "Para cambiar el hostname o la zona, quita esta configuración y crea otra. El registro A anterior se conservará en Cloudflare.",
+        });
+        return;
+      }
+      const currentDomains = await getProjectDomains();
+      const projectDomainCount = currentDomains.filter((domain) =>
+        domain.projectId === input.projectId && domain.id !== existing?.id).length;
+      if (projectDomainCount >= 20) {
+        respondJson(response, 409, { error: "Un proyecto admite como máximo 20 dominios." });
+        return;
+      }
+      let token = input.token;
+      if (token === undefined) {
+        if (!await hasCloudflareToken(serviceOperationsDirectory, domainId)) {
+          respondJson(response, 409, { error: "Vuelve a proporcionar un token de Cloudflare para este dominio." });
+          return;
+        }
+        token = await getCloudflareToken(serviceOperationsDirectory, domainId);
+      }
+      const zone = await cloudflareClient.verifyZone(token, input.zone);
+      const dnsRecord = await cloudflareClient.upsertARecord(token, {
+        zoneId: zone.id,
+        hostname: input.hostname,
+        address: ingressIp,
+        proxied: input.proxied,
+        existingRecordId: existing?.zoneId === zone.id && existing.hostname === input.hostname
+          ? existing.dnsRecordId
+          : undefined,
+      });
+      const id = domainId ?? randomUUID();
+      const saved = await saveProjectDomain({
+        id,
+        provider: "cloudflare",
+        zone: zone.name,
+        zoneId: zone.id,
+        hostname: input.hostname,
+        projectId: input.projectId,
+        port: input.port,
+        proxied: input.proxied,
+        dnsRecordId: dnsRecord.id,
+      });
+      if (input.token !== undefined) {
+        await saveCloudflareToken(serviceOperationsDirectory, id, input.token);
+      }
+      await saveProjectDomainAssignments(input.projectId);
+      if (existing && existing.projectId !== input.projectId) {
+        await saveProjectDomainAssignments(existing.projectId);
+      }
+      respondJson(response, isUpdate ? 200 : 201, {
+        domain: {
+          id: saved.id,
+          provider: saved.provider,
+          zone: saved.zone,
+          hostname: saved.hostname,
+          projectId: saved.projectId,
+          projectName: project.name,
+          port: saved.port,
+          proxied: saved.proxied,
+          tokenConfigured: true,
+        },
+        message: `Se conectó ${saved.hostname} con Cloudflare. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
+      });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      const status = {
+        CLOUDFLARE_TOKEN_INVALID: 401,
+        CLOUDFLARE_ZONE_NOT_FOUND: 400,
+        CLOUDFLARE_RECORD_EXISTS: 409,
+        CLOUDFLARE_RECORD_NOT_FOUND: 409,
+        CLOUDFLARE_UNAVAILABLE: 502,
+        CLOUDFLARE_REQUEST_FAILED: 502,
+        INVALID_PROJECT_ID: 400,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof TypeError || error instanceof RangeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error?.code === "23505") {
+        respondJson(response, 409, { error: "Ese hostname ya está configurado." });
+        return;
+      }
+      if (error?.code === "ENOENT") {
+        respondJson(response, 409, { error: "Vuelve a proporcionar un token de Cloudflare para este dominio." });
+        return;
+      }
+      console.error("Could not configure project domain:", error);
+      respondJson(response, 503, { error: "No se pudo guardar la configuración del dominio." });
+    }
+    return;
+  }
+
+  const projectEnvironmentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/environment$/);
+  if (projectEnvironmentMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectEnvironmentMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    if (request.method !== "GET" && request.method !== "PUT") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, PUT" });
+      return;
+    }
+    if (request.method === "PUT" && !hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      if (request.method === "GET") {
+        respondJson(response, 200, {
+          environment: await getProjectEnvironment(serviceOperationsDirectory, projectId),
+        });
+        return;
+      }
+      const body = await readJson(request, 72_000);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !Object.hasOwn(body, "environment")) {
+        respondJson(response, 400, { error: "Proporciona únicamente el objeto de variables del proyecto." });
+        return;
+      }
+      const environment = await saveProjectEnvironment(
+        serviceOperationsDirectory,
+        projectId,
+        body.environment,
+      );
+      await recordAuditEvent({
+        action: "project.environment.updated",
+        resourceType: "project",
+        resourceId: projectId,
+        details: { variableNames: Object.keys(environment), count: Object.keys(environment).length },
+      });
+      respondJson(response, 200, {
+        variableNames: Object.keys(environment),
+        message: `Se guardaron ${Object.keys(environment).length} variables para ${project.name}. Se aplicarán en su próximo despliegue.`,
+      });
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not update project environment:", error);
+      respondJson(response, 503, { error: "No se pudo guardar la configuración de variables." });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/projects") {
     if (!hasSession(request)) {
       respondJson(response, 401, { error: "Sesión requerida." });
@@ -725,7 +1197,8 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET") {
       try {
-        respondJson(response, 200, { projects: await getProjects() });
+        const projects = await getProjects();
+        respondJson(response, 200, { projects: await getProjectDeploymentState(projects) });
       } catch (error) {
         console.error("Could not list projects:", error);
         respondJson(response, 503, { error: "No se pudieron consultar los proyectos." });
@@ -777,6 +1250,309 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const projectBuildMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/build$/);
+  if (projectBuildMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectBuildMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || typeof body.branch !== "string"
+        || body.branch.length < 1 || body.branch.length > 255
+        || /[\u0000-\u001f\u007f]/.test(body.branch)) {
+        respondJson(response, 400, { error: "Selecciona una rama válida para construir." });
+        return;
+      }
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const registry = await serviceOperationAgent.getRegistryConfiguration();
+      if (!registry) {
+        respondJson(response, 409, { error: "Configura primero el registro privado en Configuración." });
+        return;
+      }
+      const { client, token } = await getGiteaApiContext();
+      const repositories = await client.listRepositories(token);
+      const repository = repositories.find((item) => item.fullName === project.repository);
+      if (!repository) {
+        respondJson(response, 404, { error: "No se encontró el repositorio en la cuenta conectada." });
+        return;
+      }
+      const branches = await client.listBranches(token, repository.fullName);
+      if (!branches.some((item) => item.name === body.branch)) {
+        respondJson(response, 409, { error: "La rama seleccionada ya no existe en el repositorio." });
+        return;
+      }
+      const taskId = randomUUID();
+      await createProjectBuildTask({
+        id: taskId,
+        projectId: project.id,
+        projectName: project.name,
+        repository: project.repository,
+        branch: body.branch,
+      });
+      const task = await getTaskById(taskId);
+      respondJson(response, 202, {
+        task,
+        message: "Construcción solicitada. La imagen se publicará en el registro privado; no se desplegarán servicios.",
+      });
+    } catch (error) {
+      const status = {
+        INVALID_REPOSITORY: 400,
+        GITEA_TOKEN_INVALID: 401,
+        GITEA_TOKEN_FORBIDDEN: 403,
+        GITEA_RESOURCE_NOT_FOUND: 404,
+        PROJECT_NOT_FOUND: 404,
+        PROJECT_BUILD_IN_PROGRESS: 409,
+        GITEA_BRANCH_NOT_FOUND: 409,
+        GITEA_TOO_MANY_REPOSITORIES: 422,
+        GITEA_TOO_MANY_BRANCHES: 422,
+        GITEA_UNAVAILABLE: 502,
+        GITEA_ARCHIVE_TOO_LARGE: 413,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not request project image build:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar la construcción de la imagen." });
+    }
+    return;
+  }
+
+  const projectDeploymentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/deploy$/);
+  if (projectDeploymentMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectDeploymentMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 0) {
+        respondJson(response, 400, { error: "La solicitud de despliegue no admite parámetros adicionales." });
+        return;
+      }
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const registry = await serviceOperationAgent.getRegistryConfiguration();
+      if (!registry) {
+        respondJson(response, 409, { error: "Configura primero el registro privado en Configuración." });
+        return;
+      }
+      const [latestBuild] = await getLatestProjectBuilds([project.id]);
+      if (!latestBuild) {
+        respondJson(response, 409, { error: "Construye una imagen del proyecto antes de desplegarlo." });
+        return;
+      }
+      const commitSha = latestBuild.result?.commitSha;
+      const expectedImage = `${registry.domain}/vps-manager-project-${project.id.replaceAll("-", "")}:${commitSha}`;
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
+        || latestBuild.result?.image !== expectedImage) {
+        respondJson(response, 409, { error: "El último build no coincide con la imagen esperada en el registro privado." });
+        return;
+      }
+      await getProjectDeploymentConfig(serviceOperationsDirectory, project.id);
+      const taskId = randomUUID();
+      await createProjectDeployTask({
+        id: taskId,
+        projectId: project.id,
+        projectName: project.name,
+        commitSha,
+      });
+      respondJson(response, 202, {
+        task: await getTaskById(taskId),
+        message: `Despliegue global solicitado para ${project.name} (${commitSha.slice(0, 12)}): Swarm ejecutará una tarea por nodo activo. El servicio no publicará puertos.`,
+      });
+    } catch (error) {
+      if (error?.code === "PROJECT_NOT_FOUND") {
+        respondJson(response, 404, { error: error.message });
+        return;
+      }
+      if (error?.code === "PROJECT_DEPLOYMENT_IN_PROGRESS" || error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not request project deployment:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar el despliegue del proyecto." });
+    }
+    return;
+  }
+
+  const projectRollbackMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/rollback$/);
+  if (projectRollbackMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectRollbackMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1
+        || typeof body.commitSha !== "string"
+        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(body.commitSha)) {
+        respondJson(response, 400, { error: "Selecciona un commit de despliegue anterior válido." });
+        return;
+      }
+      const targetCommitSha = body.commitSha.toLowerCase();
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const deployment = (await getProjectDeploymentState([project]))[0].deployment;
+      if (!deployment) {
+        respondJson(response, 409, { error: "El proyecto no tiene un servicio desplegado para revertir." });
+        return;
+      }
+      if (deployment.commitSha === targetCommitSha) {
+        respondJson(response, 409, { error: "El commit seleccionado ya está desplegado." });
+        return;
+      }
+      const history = await getRecentProjectDeployments([projectId]);
+      const previousDeployment = history.find((item) => item.result?.commitSha === targetCommitSha);
+      if (!previousDeployment) {
+        respondJson(response, 404, { error: "El commit no corresponde a un despliegue exitoso anterior de este proyecto." });
+        return;
+      }
+      const registry = await serviceOperationAgent.getRegistryConfiguration();
+      const expectedImage = registry
+        ? `${registry.domain}/vps-manager-project-${projectId.replaceAll("-", "")}:${targetCommitSha}`
+        : null;
+      if (!registry || previousDeployment.result?.image !== expectedImage) {
+        respondJson(response, 409, { error: "La imagen anterior no coincide con la imagen esperada en el registro privado." });
+        return;
+      }
+      await getProjectDeploymentConfig(serviceOperationsDirectory, projectId);
+      const taskId = randomUUID();
+      await createProjectDeployTask({
+        id: taskId,
+        projectId,
+        projectName: project.name,
+        commitSha: targetCommitSha,
+      });
+      respondJson(response, 202, {
+        task: await getTaskById(taskId),
+        message: `Rollback solicitado para ${project.name} al commit ${targetCommitSha.slice(0, 12)}. Se conservarán las variables y dominios actuales del proyecto.`,
+      });
+    } catch (error) {
+      if (error?.code === "PROJECT_DEPLOYMENT_IN_PROGRESS" || error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not request project rollback:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar el rollback del proyecto." });
+    }
+    return;
+  }
+
+  const projectUndeploymentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/deployment$/);
+  if (projectUndeploymentMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "DELETE") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "DELETE" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectUndeploymentMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const taskId = randomUUID();
+      await createProjectUndeployTask({ id: taskId, projectId: project.id, projectName: project.name });
+      respondJson(response, 202, {
+        task: await getTaskById(taskId),
+        message: `Retiro solicitado para ${project.name}.`,
+      });
+    } catch (error) {
+      if (error?.code === "PROJECT_NOT_FOUND") {
+        respondJson(response, 404, { error: error.message });
+        return;
+      }
+      if (error?.code === "PROJECT_DEPLOYMENT_IN_PROGRESS" || error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not request project service removal:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar el retiro del servicio." });
+    }
+    return;
+  }
+
   const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch) {
     if (!hasSession(request)) {
@@ -812,11 +1588,32 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "DELETE") {
       try {
+        const services = await dockerGet("/services");
+        const hasDeployment = services.some((service) => {
+          const labels = service.Spec?.Labels;
+          return service.Spec?.Name === `vps-manager-project-${projectId.replaceAll("-", "")}`
+            || (labels?.["vps-manager.managed"] === "true"
+              && labels["vps-manager.component"] === "project"
+              && labels["vps-manager.project-id"] === projectId);
+        });
+        if (hasDeployment) {
+          respondJson(response, 409, { error: "Retira primero el servicio desplegado antes de eliminar el proyecto." });
+          return;
+        }
+        if ((await getProjectDomains()).some((domain) => domain.projectId === projectId)) {
+          respondJson(response, 409, { error: "Quita primero los dominios asignados al proyecto." });
+          return;
+        }
         const deleted = await deleteProject(projectId);
+        if (deleted) await deleteProjectConfig(serviceOperationsDirectory, projectId);
         respondJson(response, deleted ? 200 : 404, deleted
           ? { deleted: true }
           : { error: "No se encontró el proyecto." });
       } catch (error) {
+        if (error?.code === "PROJECT_TASK_IN_PROGRESS") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
         console.error("Could not delete project:", error);
         respondJson(response, 503, { error: "No se pudo eliminar el proyecto." });
       }
@@ -977,6 +1774,89 @@ const server = createServer(async (request, response) => {
       }
       console.error("Web update request failed:", error);
       respondJson(response, 503, { error: "No se pudo iniciar la actualización desde el panel." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/registry") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    try {
+      respondJson(response, 200, { registry: await serviceOperationAgent.getRegistryConfiguration() });
+    } catch (error) {
+      console.error("Private registry status request failed:", error);
+      respondJson(response, 503, { error: "No se pudo consultar la configuración del registro." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/registry/configure") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let taskId;
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).sort().join(",") !== ["domain", "password", "username"].sort().join(",")
+        || !isPublicHostname(body.domain)
+        || typeof body.username !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(body.username)
+        || typeof body.password !== "string" || !/^[A-Za-z0-9._-]{20,72}$/.test(body.password)) {
+        respondJson(response, 400, {
+          error: "Proporciona un dominio público, un usuario válido y una contraseña de 20 a 72 caracteres (letras, números, punto, guion o guion bajo).",
+        });
+        return;
+      }
+      if (process.env.VPS_MANAGER_TEST_MODE === "true") {
+        respondJson(response, 409, { error: "El registro requiere una instalación con dominio público y HTTPS; no está disponible en modo de prueba." });
+        return;
+      }
+
+      taskId = randomUUID();
+      const domain = body.domain.toLowerCase();
+      await serviceOperationAgent.stageRegistryCredentials(taskId, {
+        domain,
+        username: body.username,
+        password: body.password,
+      });
+      try {
+        await createRegistryConfigureTask({ id: taskId, domain, username: body.username });
+      } catch (error) {
+        await serviceOperationAgent.removeRegistryCredentials(taskId);
+        if (error?.code === "REGISTRY_CONFIGURATION_IN_PROGRESS") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      respondJson(response, 202, {
+        task: {
+          id: taskId,
+          type: "registry.configure",
+          status: "pending",
+          domain,
+          username: body.username,
+          message: `Configuración del registro solicitada para https://${domain}/.`,
+        },
+      });
+    } catch (error) {
+      console.error("Could not request private registry configuration:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar la configuración del registro privado." });
     }
     return;
   }

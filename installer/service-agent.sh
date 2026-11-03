@@ -4,6 +4,8 @@ set -Eeuo pipefail
 readonly STATE_DIRECTORY="/var/lib/vps-manager/service-operations"
 readonly REQUEST_FILE="${STATE_DIRECTORY}/request.json"
 readonly STATUS_FILE="${STATE_DIRECTORY}/status.json"
+readonly REGISTRY_DIRECTORY="/var/lib/vps-manager/registry"
+readonly REGISTRY_CONFIG_FILE="${REGISTRY_DIRECTORY}/config.json"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "The service operations agent must run as root." >&2
@@ -27,13 +29,25 @@ fi
 
 request_data="$(python3 - "${REQUEST_FILE}" <<'PY'
 import json
+import hashlib
+import os
 import re
+import stat
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as request_file:
     request = json.load(request_file)
 if not isinstance(request, dict):
     raise SystemExit("Invalid service operation request.")
+if not re.fullmatch(
+    r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+    str(request.get("id", "")),
+):
+    raise SystemExit("Invalid service operation request identifier.")
+project_id = "-"
+commit_sha = "-"
+registry_domain = "-"
+registry_username = "-"
 common_fields = {"id", "operation", "serviceId"}
 if request.get("operation") == "restart-service":
     if set(request) != common_fields:
@@ -64,25 +78,96 @@ elif request.get("operation") == "configure-gitea-token":
         raise SystemExit("Invalid Gitea API token.")
     service_id = "-"
     replicas = "-"
+    project_id = "-"
+    commit_sha = "-"
+elif request.get("operation") == "configure-registry":
+    if set(request) != {"id", "operation", "domain", "username"}:
+        raise SystemExit("Invalid private registry configuration request fields.")
+    if not isinstance(request["domain"], str) or not re.fullmatch(
+        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+        request["domain"],
+    ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"]) \
+        or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", request["domain"], re.IGNORECASE):
+        raise SystemExit("Invalid private registry domain.")
+    if not isinstance(request["username"], str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", request["username"]):
+        raise SystemExit("Invalid private registry username.")
+    credential_path = f"/var/lib/vps-manager/service-operations/registry-credentials-{request['id']}.json"
+    credential_descriptor = os.open(credential_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        credential_metadata = os.fstat(credential_descriptor)
+        if not stat.S_ISREG(credential_metadata.st_mode) or credential_metadata.st_mode & 0o077 \
+            or credential_metadata.st_size > 2048:
+            raise SystemExit("Invalid private registry credentials file.")
+        with os.fdopen(credential_descriptor, encoding="utf-8") as credential_file:
+            credential_descriptor = -1
+            credentials = json.load(credential_file)
+    finally:
+        if credential_descriptor >= 0:
+            os.close(credential_descriptor)
+    if not isinstance(credentials, dict) \
+        or credentials.get("requestId") != request["id"] \
+        or credentials.get("domain") != request["domain"] \
+        or credentials.get("username") != request["username"] \
+        or not isinstance(credentials.get("password"), str) \
+        or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", credentials["password"]):
+        raise SystemExit("Invalid private registry credentials.")
+    service_id = "-"
+    replicas = "-"
+    registry_domain = request["domain"].lower()
+    registry_username = request["username"]
+elif request.get("operation") == "build-project":
+    if set(request) != {"id", "operation", "projectId", "commitSha"}:
+        raise SystemExit("Invalid project image build request fields.")
+    if not re.fullmatch(
+        r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+        str(request["projectId"]),
+    ):
+        raise SystemExit("Invalid project image build identifier.")
+    if not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", str(request["commitSha"])):
+        raise SystemExit("Invalid project image build commit.")
+    service_id = "-"
+    replicas = "-"
+    project_id = request["projectId"].lower()
+    commit_sha = request["commitSha"].lower()
+elif request.get("operation") == "deploy-project":
+    if set(request) != {"id", "operation", "projectId", "commitSha"}:
+        raise SystemExit("Invalid project deployment request fields.")
+    if not re.fullmatch(
+        r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+        str(request["projectId"]),
+    ):
+        raise SystemExit("Invalid project deployment identifier.")
+    if not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", str(request["commitSha"])):
+        raise SystemExit("Invalid project deployment commit.")
+    service_id = "-"
+    replicas = "-"
+    project_id = request["projectId"].lower()
+    commit_sha = request["commitSha"].lower()
+elif request.get("operation") == "remove-project":
+    if set(request) != {"id", "operation", "projectId"}:
+        raise SystemExit("Invalid project removal request fields.")
+    if not re.fullmatch(
+        r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+        str(request["projectId"]),
+    ):
+        raise SystemExit("Invalid project removal identifier.")
+    service_id = "-"
+    replicas = "-"
+    project_id = request["projectId"].lower()
 else:
     raise SystemExit("Invalid service operation request fields.")
-if not re.fullmatch(
-    r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
-    str(request["id"]),
-):
-    raise SystemExit("Invalid service operation request identifier.")
 if request["operation"] in {"restart-service", "scale-service"} and not re.fullmatch(
     r"[a-fA-F0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -95,6 +180,28 @@ write_status() {
   elif [[ "${operation}" == "configure-gitea-token" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "configure-registry" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","username":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${registry_domain}" "${registry_username}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "build-project" ]]; then
+    if [[ "${state}" == "succeeded" ]]; then
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    else
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    fi
+  elif [[ "${operation}" == "deploy-project" ]]; then
+    if [[ "${state}" == "succeeded" ]]; then
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","serviceId":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${service_id}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    else
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    fi
+  elif [[ "${operation}" == "remove-project" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${project_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -104,12 +211,23 @@ write_status() {
   fi
   chmod 0644 "${temporary_file}"
   mv -f -- "${temporary_file}" "${STATUS_FILE}"
+  if [[ "${operation}" == "configure-registry" && "${state}" != "running" ]]; then
+    registry_status_written=true
+  fi
 }
 
 if [[ "${operation}" == "install-gitea" ]]; then
   write_status "running" "Preparando la instalación segura de Gitea."
 elif [[ "${operation}" == "configure-gitea-token" ]]; then
   write_status "running" "Actualizando de forma segura el secreto del token de Gitea."
+elif [[ "${operation}" == "configure-registry" ]]; then
+  write_status "running" "Configurando el registro privado en el VPS."
+elif [[ "${operation}" == "build-project" ]]; then
+  write_status "running" "Preparando el contexto local de construcción."
+elif [[ "${operation}" == "deploy-project" ]]; then
+  write_status "running" "Preparando el despliegue privado del proyecto."
+elif [[ "${operation}" == "remove-project" ]]; then
+  write_status "running" "Validando el retiro del servicio del proyecto."
 elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
 else
@@ -121,6 +239,326 @@ if ! command -v docker >/dev/null 2>&1; then
   write_status "failed" "Docker no está disponible en el host."
   echo "Docker is not installed." >&2
   exit 1
+fi
+
+if [[ "${operation}" == "build-project" ]]; then
+  archive="${STATE_DIRECTORY}/build-source-${request_id}.zip"
+  build_directory=""
+  docker_config_directory=""
+  cleanup_project_build() {
+    if [[ -n "${build_directory}" ]]; then rm -rf -- "${build_directory}"; fi
+    if [[ -n "${docker_config_directory}" ]]; then rm -rf -- "${docker_config_directory}"; fi
+    rm -f -- "${archive}"
+  }
+  trap cleanup_project_build EXIT
+
+  if [[ -L "${archive}" || ! -f "${archive}" ]]; then
+    write_status "failed" "No se encontró el archivo seguro del código del proyecto."
+    exit 1
+  fi
+  archive_size="$(stat -c '%s' "${archive}")"
+  if (( archive_size < 4 || archive_size > 33554432 )); then
+    write_status "failed" "El archivo del código supera el límite permitido o está vacío."
+    exit 1
+  fi
+  if ! docker buildx version >/dev/null 2>&1; then
+    write_status "failed" "Docker Buildx (BuildKit) no está disponible en el host."
+    exit 1
+  fi
+
+  build_directory="$(mktemp -d /tmp/vps-manager-project-build.XXXXXX)"
+  context_directory="${build_directory}/context"
+  install -d -m 0700 "${context_directory}"
+  if ! python3 - "${archive}" "${context_directory}" <<'PY'
+import pathlib
+import shutil
+import stat
+import sys
+import zipfile
+
+archive_path = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2]).resolve()
+maximum_files = 100_000
+maximum_uncompressed = 1024 * 1024 * 1024
+
+try:
+    with zipfile.ZipFile(archive_path) as source:
+        entries = source.infolist()
+        if not entries or len(entries) > maximum_files:
+            raise ValueError("archive entry count is invalid")
+        root_name = None
+        total_size = 0
+        file_count = 0
+        for entry in entries:
+            name = entry.filename
+            if not name or "\\" in name or name.startswith("/"):
+                raise ValueError("archive path is invalid")
+            parts = name.rstrip("/").split("/")
+            if not parts or any(part in {"", ".", ".."} for part in parts):
+                raise ValueError("archive path traversal rejected")
+            if root_name is None:
+                root_name = parts[0]
+            if parts[0] != root_name:
+                raise ValueError("archive must contain one root directory")
+            if len(parts) == 1:
+                if not entry.is_dir():
+                    raise ValueError("archive root must be a directory")
+                continue
+            mode = (entry.external_attr >> 16) & 0o170000
+            if mode == stat.S_IFLNK or mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError("archive contains a non-regular file")
+            relative_parts = parts[1:]
+            target = destination.joinpath(*relative_parts)
+            if not target.resolve().is_relative_to(destination):
+                raise ValueError("archive path escaped the build context")
+            if entry.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            file_count += 1
+            total_size += entry.file_size
+            if file_count > maximum_files or total_size > maximum_uncompressed:
+                raise ValueError("archive expands beyond the build context limits")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source.open(entry) as input_file, target.open("xb") as output_file:
+                shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+            target.chmod(0o644 | (0o111 if mode == stat.S_IFREG and (entry.external_attr >> 16) & 0o111 else 0))
+    if root_name is None or file_count == 0:
+        raise ValueError("archive has no source files")
+except (OSError, zipfile.BadZipFile, RuntimeError, ValueError) as error:
+    print(f"Rejected project source archive: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    write_status "failed" "Gitea devolvió un archivo inválido o fuera de los límites seguros."
+    exit 1
+  fi
+  if [[ -L "${context_directory}/Dockerfile" || ! -f "${context_directory}/Dockerfile" ]]; then
+    write_status "failed" "El repositorio no contiene un Dockerfile regular en su raíz."
+    exit 1
+  fi
+
+  if [[ -L "${REGISTRY_CONFIG_FILE}" || ! -f "${REGISTRY_CONFIG_FILE}" ]]; then
+    write_status "failed" "Configura primero el registro privado desde el panel."
+    exit 1
+  fi
+  docker_config_directory="$(mktemp -d /tmp/vps-manager-registry-auth.XXXXXX)"
+  chmod 0700 "${docker_config_directory}"
+  if ! registry_domain="$(python3 - "${REGISTRY_CONFIG_FILE}" "${docker_config_directory}/config.json" <<'PY'
+import base64
+import json
+import os
+import re
+import stat
+import sys
+
+config_path, docker_config_path = sys.argv[1:]
+descriptor = os.open(config_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+        raise ValueError("registry credentials file permissions are invalid")
+    with os.fdopen(descriptor, encoding="utf-8") as config_file:
+        descriptor = -1
+        configuration = json.load(config_file)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+domain = configuration.get("domain")
+username = configuration.get("username")
+password = configuration.get("password")
+if not isinstance(domain, str) or not re.fullmatch(
+    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+    domain,
+) or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", domain, re.IGNORECASE):
+    raise SystemExit("The configured registry domain is invalid.")
+if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
+    raise SystemExit("The configured registry username is invalid.")
+if not isinstance(password, str) or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", password):
+    raise SystemExit("The configured registry password is invalid.")
+auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+temporary = f"{docker_config_path}.tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
+    json.dump({"auths": {domain.lower(): {"auth": auth}}}, config_file)
+    config_file.write("\n")
+os.replace(temporary, docker_config_path)
+print(domain.lower())
+PY
+  )"; then
+    write_status "failed" "No se pudo leer de forma segura la configuración del registro."
+    exit 1
+  fi
+
+  built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
+  if ! DOCKER_CONFIG="${docker_config_directory}" docker buildx build \
+    --pull \
+    --push \
+    --tag "${built_image}" \
+    --label vps-manager.managed=true \
+    --label "vps-manager.project-id=${project_id}" \
+    --label "vps-manager.commit=${commit_sha}" \
+    --file "${context_directory}/Dockerfile" \
+    "${context_directory}"; then
+    write_status "failed" "BuildKit no pudo construir o publicar la imagen en el registro privado."
+    exit 1
+  fi
+  write_status "succeeded" "Imagen construida y publicada en el registro privado; no fue desplegada."
+  exit 0
+fi
+
+if [[ "${operation}" == "configure-registry" ]]; then
+  readonly REGISTRY_SERVICE="vps-manager_registry"
+  registry_credentials_path="${STATE_DIRECTORY}/registry-credentials-${request_id}.json"
+  htpasswd_file="$(mktemp "${STATE_DIRECTORY}/registry-htpasswd.XXXXXX")"
+  new_secret="vps_manager_registry_auth_${request_id//-/}"
+  old_secret=""
+  registry_configuration_temp=""
+  registry_configuration_succeeded=false
+  registry_status_written=false
+  cleanup_registry_configuration() {
+    local exit_code="$?"
+    rm -f -- "${htpasswd_file}" "${registry_credentials_path}"
+    if [[ -n "${registry_configuration_temp}" ]]; then rm -f -- "${registry_configuration_temp}"; fi
+    if [[ "${registry_configuration_succeeded:-false}" != "true" ]]; then
+      service_secret=""
+      if docker service inspect "${REGISTRY_SERVICE}" >/dev/null 2>&1; then
+        service_secret="$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}}{{end}}' "${REGISTRY_SERVICE}" 2>/dev/null || true)"
+      fi
+      if [[ "${service_secret}" != "${new_secret}" ]]; then
+        docker secret rm "${new_secret}" >/dev/null 2>&1 || true
+      fi
+    fi
+    if (( exit_code != 0 )) && [[ "${registry_status_written}" != "true" ]]; then
+      write_status "failed" "No se pudo completar la configuración del registro privado." || true
+    fi
+  }
+  trap cleanup_registry_configuration EXIT
+  chmod 0600 "${htpasswd_file}"
+
+  if ! command -v htpasswd >/dev/null 2>&1; then
+    write_status "failed" "No está disponible htpasswd para proteger el registro."
+    exit 1
+  fi
+  if ! python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["password"])' \
+    "${registry_credentials_path}" | htpasswd -Bni "${registry_username}" > "${htpasswd_file}"; then
+    write_status "failed" "No se pudieron preparar las credenciales protegidas del registro."
+    exit 1
+  fi
+  install -d -o root -g root -m 0700 "${REGISTRY_DIRECTORY}"
+  registry_configuration_temp="$(mktemp "${REGISTRY_DIRECTORY}/config.XXXXXX")"
+  chmod 0600 "${registry_configuration_temp}"
+  python3 - "${registry_credentials_path}" "${registry_configuration_temp}" "${request_id}" "${registry_domain}" "${registry_username}" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+
+source_path, path, request_id, domain, username = sys.argv[1:]
+descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+        raise ValueError("registry credentials file permissions are invalid")
+    with os.fdopen(descriptor, encoding="utf-8") as source_file:
+        descriptor = -1
+        staged = json.load(source_file)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+if not isinstance(staged, dict) or staged.get("requestId") != request_id \
+    or staged.get("domain", "").lower() != domain or staged.get("username") != username \
+    or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", staged.get("password", "")):
+    raise SystemExit("Staged registry credentials do not match the request.")
+with open(path, "w", encoding="utf-8") as config_file:
+    json.dump({"domain": domain, "username": username, "password": staged["password"]}, config_file)
+    config_file.write("\n")
+os.chmod(path, 0o600)
+PY
+  if docker secret inspect "${new_secret}" >/dev/null 2>&1; then
+    write_status "failed" "El identificador de esta configuración ya está en uso."
+    exit 1
+  fi
+  if ! docker secret create \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=registry-auth \
+    "${new_secret}" "${htpasswd_file}" >/dev/null; then
+    write_status "failed" "No se pudo guardar el secreto de autenticación del registro."
+    exit 1
+  fi
+
+  registry_labels=(
+    --label-add vps-manager.managed=true
+    --label-add vps-manager.component=registry
+    --label-add traefik.enable=true
+    --label-add traefik.swarm.network=vps-manager-proxy
+    --label-add "traefik.http.routers.vps-manager-registry.rule=Host(\`${registry_domain}\`)"
+    --label-add traefik.http.routers.vps-manager-registry.entrypoints=websecure
+    --label-add traefik.http.routers.vps-manager-registry.tls=true
+    --label-add traefik.http.routers.vps-manager-registry.tls.certresolver=vpsmanager
+    --label-add traefik.http.services.vps-manager-registry.loadbalancer.server.port=5000
+  )
+  if docker service inspect "${REGISTRY_SERVICE}" >/dev/null 2>&1; then
+    service_labels="$(docker service inspect --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${REGISTRY_SERVICE}")"
+    if [[ "${service_labels}" != "true registry" ]]; then
+      write_status "failed" "Ya existe un servicio con el nombre reservado para el registro que no pertenece a VPS Manager."
+      exit 1
+    fi
+    old_secret="$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}}{{end}}' "${REGISTRY_SERVICE}")"
+    if [[ ! "${old_secret}" =~ ^vps_manager_registry_auth_[a-f0-9]{32}$ ]]; then
+      write_status "failed" "El registro existente no tiene un secreto de autenticación administrado."
+      exit 1
+    fi
+    if ! docker service update --detach=false \
+      --image registry:3.0.0 \
+      --secret-rm "${old_secret}" \
+      --secret-add "source=${new_secret},target=htpasswd" \
+      --env-add REGISTRY_AUTH=htpasswd \
+      --env-add REGISTRY_AUTH_HTPASSWD_PATH=/run/secrets/htpasswd \
+      --label-rm traefik.enable \
+      --label-rm traefik.swarm.network \
+      --label-rm traefik.http.routers.vps-manager-registry.rule \
+      --label-rm traefik.http.routers.vps-manager-registry.entrypoints \
+      --label-rm traefik.http.routers.vps-manager-registry.tls \
+      --label-rm traefik.http.routers.vps-manager-registry.tls.certresolver \
+      --label-rm traefik.http.services.vps-manager-registry.loadbalancer.server.port \
+      "${registry_labels[@]}" \
+      "${REGISTRY_SERVICE}" >/dev/null; then
+      write_status "failed" "No se pudo actualizar de forma segura el servicio del registro."
+      exit 1
+    fi
+    if ! docker secret rm "${old_secret}" >/dev/null; then
+      write_status "failed" "El registro se actualizó, pero no se pudo retirar el secreto anterior."
+      exit 1
+    fi
+  else
+    if ! docker service create --detach=false \
+      --name "${REGISTRY_SERVICE}" \
+      --replicas 1 \
+      --constraint node.role==manager \
+      --network vps-manager-proxy \
+      --mount type=volume,source=vps-manager-registry-data,target=/var/lib/registry \
+      --secret "source=${new_secret},target=htpasswd" \
+      --env REGISTRY_AUTH=htpasswd \
+      --env REGISTRY_AUTH_HTPASSWD_PATH=/run/secrets/htpasswd \
+      "${registry_labels[@]/--label-add/--label}" \
+      registry:3.0.0 >/dev/null; then
+      write_status "failed" "No se pudo iniciar el servicio privado del registro."
+      exit 1
+    fi
+  fi
+
+  registry_configuration_succeeded=true
+  unset registry_password
+  mv -f -- "${registry_configuration_temp}" "${REGISTRY_CONFIG_FILE}"
+  registry_configuration_temp=""
+
+  public_status_temp="$(mktemp "${STATE_DIRECTORY}/registry-status.XXXXXX")"
+  printf '{"domain":"%s","username":"%s"}\n' "${registry_domain}" "${registry_username}" > "${public_status_temp}"
+  chmod 0644 "${public_status_temp}"
+  mv -f -- "${public_status_temp}" "${STATE_DIRECTORY}/registry-status.json"
+  write_status "succeeded" "Registro privado configurado en https://${registry_domain}/ con almacenamiento persistente."
+  exit 0
 fi
 
 if [[ "${operation}" == "configure-gitea-token" ]]; then
@@ -414,6 +852,299 @@ PY
   exit 0
 fi
 
+if [[ "${operation}" == "deploy-project" || "${operation}" == "remove-project" ]]; then
+  docker_config_directory=""
+  cleanup_project_service_operation() {
+    if [[ -n "${docker_config_directory}" ]]; then rm -rf -- "${docker_config_directory}"; fi
+  }
+  trap cleanup_project_service_operation EXIT
+  readonly PROJECT_SERVICE="vps-manager-project-${project_id//-/}"
+  if [[ "${operation}" == "remove-project" ]]; then
+    if ! service_names="$(docker service ls --format '{{.Name}}')"; then
+      write_status "failed" "No se pudo consultar la lista de servicios Swarm."
+      exit 1
+    fi
+    if ! grep -Fxq -- "${PROJECT_SERVICE}" <<< "${service_names}"; then
+      write_status "succeeded" "El servicio del proyecto ya estaba retirado."
+      exit 0
+    fi
+    if ! service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "vps-manager.project-id"}}' "${PROJECT_SERVICE}")"; then
+      write_status "failed" "No se pudo inspeccionar el servicio del proyecto."
+      exit 1
+    fi
+    IFS=' ' read -r service_id managed_label component_label inspected_project_id <<< "${service_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "project" || "${inspected_project_id}" != "${project_id}" ]]; then
+      write_status "failed" "El servicio reservado no pertenece a este proyecto administrado."
+      exit 1
+    fi
+    if ! docker service rm "${PROJECT_SERVICE}" >/dev/null; then
+      write_status "failed" "Docker no pudo retirar el servicio del proyecto."
+      exit 1
+    fi
+    write_status "succeeded" "Servicio Swarm retirado; no se eliminaron imágenes ni datos externos."
+    exit 0
+  fi
+
+  if [[ -L "${REGISTRY_CONFIG_FILE}" || ! -f "${REGISTRY_CONFIG_FILE}" ]]; then
+    write_status "failed" "Configura primero el registro privado desde el panel."
+    exit 1
+  fi
+  if ! docker_config_directory="$(mktemp -d /tmp/vps-manager-project-auth.XXXXXX)" \
+    || ! chmod 0700 "${docker_config_directory}"; then
+    write_status "failed" "No se pudo preparar el archivo temporal de autenticación."
+    exit 1
+  fi
+  if ! registry_domain="$(python3 - "${REGISTRY_CONFIG_FILE}" "${docker_config_directory}/config.json" <<'PY'
+import base64
+import json
+import os
+import re
+import stat
+import sys
+
+config_path, docker_config_path = sys.argv[1:]
+descriptor = os.open(config_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+        raise ValueError("registry credentials permissions are invalid")
+    with os.fdopen(descriptor, encoding="utf-8") as config_file:
+        descriptor = -1
+        configuration = json.load(config_file)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+domain = configuration.get("domain")
+username = configuration.get("username")
+password = configuration.get("password")
+if not isinstance(domain, str) or not re.fullmatch(
+    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+    domain,
+) or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", domain, re.IGNORECASE):
+    raise SystemExit("The configured registry domain is invalid.")
+if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
+    raise SystemExit("The configured registry username is invalid.")
+if not isinstance(password, str) or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", password):
+    raise SystemExit("The configured registry password is invalid.")
+auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+descriptor = os.open(docker_config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as docker_config_file:
+    json.dump({"auths": {domain.lower(): {"auth": auth}}}, docker_config_file)
+    docker_config_file.write("\n")
+print(domain.lower())
+PY
+  )"; then
+    write_status "failed" "No se pudo preparar la autenticación segura del registro privado."
+    exit 1
+  fi
+  built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
+  deployment_config_file="${STATE_DIRECTORY}/project-config-${project_id}.json"
+  deployment_environment_file="$(mktemp "${STATE_DIRECTORY}/project-env.XXXXXX")"
+  deployment_metadata_file="$(mktemp "${STATE_DIRECTORY}/project-metadata.XXXXXX")"
+  cleanup_project_deployment_config() {
+    rm -f -- "${deployment_environment_file}" "${deployment_metadata_file}"
+  }
+  trap cleanup_project_deployment_config EXIT
+  if ! python3 - "${deployment_config_file}" "${deployment_metadata_file}" "${deployment_environment_file}" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+
+config_path, metadata_path, environment_path = sys.argv[1:]
+try:
+    descriptor = os.open(config_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+except FileNotFoundError:
+    configuration = {"environment": {}, "domain": None, "port": None}
+else:
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 80000:
+            raise SystemExit("Invalid project deployment configuration file.")
+        with os.fdopen(descriptor, encoding="utf-8") as config_file:
+            descriptor = -1
+            configuration = json.load(config_file)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+if not isinstance(configuration, dict) \
+    or set(configuration) - {"environment", "domain", "port", "domains"} \
+    or not isinstance(configuration.get("environment", {}), dict):
+    raise SystemExit("Invalid project deployment configuration.")
+environment = configuration.get("environment", {})
+if len(environment) > 100:
+    raise SystemExit("Too many project environment variables.")
+environment_size = 0
+for name, value in environment.items():
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name) \
+        or not isinstance(value, str) \
+        or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", value) \
+        or len(value.encode()) > 8192:
+        raise SystemExit("Invalid project environment variable.")
+    environment_size += len(name.encode()) + len(value.encode())
+if environment_size > 24576:
+    raise SystemExit("Project environment configuration is too large.")
+domains = configuration.get("domains")
+if domains is None:
+    domain = configuration.get("domain")
+    port = configuration.get("port")
+    domains = [] if domain is None and port is None else [{"hostname": domain, "port": port}]
+if not isinstance(domains, list) or len(domains) > 20:
+    raise SystemExit("Invalid project domain list.")
+for domain in domains:
+    if not isinstance(domain, dict) or set(domain) != {"hostname", "port"} \
+        or not isinstance(domain["hostname"], str) or not re.fullmatch(
+            r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
+            domain["hostname"], re.IGNORECASE
+        ) or not isinstance(domain["port"], int) or isinstance(domain["port"], bool) \
+        or not 1 <= domain["port"] <= 65535:
+        raise SystemExit("Invalid project domain configuration.")
+with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+    canonical = json.dumps({
+        "environment": dict(sorted(environment.items())),
+        "domains": sorted(domains, key=lambda domain: domain["hostname"]),
+    }, ensure_ascii=False, separators=(",", ":"))
+    metadata_file.write(hashlib.sha256(canonical.encode()).hexdigest() + "\n")
+    for domain in domains:
+        metadata_file.write(f"{domain['hostname']}\t{domain['port']}\n")
+with open(environment_path, "wb") as environment_file:
+    for name, value in environment.items():
+        environment_file.write(name.encode() + b"=" + value.encode() + b"\0")
+PY
+  then
+    write_status "failed" "La configuración local de variables o dominio del proyecto no es válida."
+    exit 1
+  fi
+  project_domains=()
+  {
+    IFS= read -r project_config_hash
+    while IFS=$'\t' read -r project_domain project_port; do
+      [[ -n "${project_domain}" ]] && project_domains+=("${project_domain}"$'\t'"${project_port}")
+    done
+  } < "${deployment_metadata_file}"
+  mapfile -d '' -t project_environment_entries < "${deployment_environment_file}"
+  project_environment_args=()
+  for environment_entry in "${project_environment_entries[@]}"; do
+    project_environment_args+=(--env-add "${environment_entry}")
+  done
+  project_traefik_label_args=()
+  for index in "${!project_domains[@]}"; do
+    IFS=$'\t' read -r project_domain project_port <<< "${project_domains[$index]}"
+    project_router="vps-manager-project-${project_id//-/}-${index}"
+    project_traefik_label_args+=(
+      --label-add "traefik.http.routers.${project_router}.rule=Host(\`${project_domain}\`)"
+      --label-add "traefik.http.routers.${project_router}.entrypoints=websecure"
+      --label-add "traefik.http.routers.${project_router}.tls=true"
+      --label-add "traefik.http.routers.${project_router}.tls.certresolver=vpsmanager"
+      --label-add "traefik.http.services.${project_router}.loadbalancer.server.port=${project_port}"
+    )
+  done
+  if (( ${#project_domains[@]} > 0 )); then
+    project_traefik_label_args+=(--label-add traefik.enable=true --label-add traefik.swarm.network=vps-manager-proxy)
+  fi
+  project_traefik_remove_args=()
+  for index in {0..19}; do
+    project_router="vps-manager-project-${project_id//-/}-${index}"
+    project_traefik_remove_args+=(
+      --label-rm "traefik.http.routers.${project_router}.rule"
+      --label-rm "traefik.http.routers.${project_router}.entrypoints"
+      --label-rm "traefik.http.routers.${project_router}.tls"
+      --label-rm "traefik.http.routers.${project_router}.tls.certresolver"
+      --label-rm "traefik.http.services.${project_router}.loadbalancer.server.port"
+    )
+  done
+  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "vps-manager.project-id"}}' "${PROJECT_SERVICE}" 2>/dev/null)"; then
+    IFS=' ' read -r _ managed_label component_label inspected_project_id <<< "${service_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "project" || "${inspected_project_id}" != "${project_id}" ]]; then
+      write_status "failed" "El servicio reservado ya existe y no pertenece a este proyecto administrado."
+      exit 1
+    fi
+    if ! published_ports="$(docker service inspect --format '{{json .Endpoint.Spec.Ports}}' "${PROJECT_SERVICE}")"; then
+      write_status "failed" "No se pudo validar la configuración de puertos del servicio existente."
+      exit 1
+    fi
+    if [[ "${published_ports}" != "null" && "${published_ports}" != "[]" ]]; then
+      write_status "failed" "El servicio existente publica puertos; retíralo manualmente antes de volver a desplegarlo."
+      exit 1
+    fi
+    if ! existing_environment="$(docker service inspect --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' "${PROJECT_SERVICE}")"; then
+      write_status "failed" "No se pudo consultar las variables existentes del servicio."
+      exit 1
+    fi
+    if ! existing_environment_names="$(python3 -c 'import json,sys; values=json.loads(sys.stdin.read() or "[]") or []; isinstance(values, list) or sys.exit(1); [print(item.split("=", 1)[0]) for item in values if isinstance(item, str) and "=" in item]' <<< "${existing_environment}")"; then
+      write_status "failed" "La configuración de variables actual del servicio no es válida."
+      exit 1
+    fi
+    project_environment_remove_args=()
+    while IFS= read -r environment_name; do
+      if [[ "${environment_name}" =~ ^[A-Za-z_][A-Za-z0-9_]{0,127}$ ]]; then
+        project_environment_remove_args+=(--env-rm "${environment_name}")
+      fi
+    done <<< "${existing_environment_names}"
+    project_network_args=()
+    if ! project_network_id="$(docker network inspect --format '{{.ID}}' vps-manager-proxy)"; then
+      write_status "failed" "No se encontró la red privada de Traefik."
+      exit 1
+    fi
+    if ! existing_network_ids="$(docker service inspect --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}' "${PROJECT_SERVICE}")"; then
+      write_status "failed" "No se pudieron consultar las redes del servicio existente."
+      exit 1
+    fi
+    if [[ " ${existing_network_ids} " != *" ${project_network_id} "* ]]; then
+      project_network_args+=(--network-add vps-manager-proxy)
+    fi
+    if ! DOCKER_CONFIG="${docker_config_directory}" docker service update --detach=false \
+      --mode global \
+      --image "${built_image}" \
+      --with-registry-auth \
+      --force \
+      "${project_environment_remove_args[@]}" \
+      "${project_environment_args[@]}" \
+      "${project_network_args[@]}" \
+      --label-rm traefik.enable \
+      --label-rm traefik.swarm.network \
+      "${project_traefik_remove_args[@]}" \
+      --label-add vps-manager.managed=true \
+      --label-add vps-manager.component=project \
+      --label-add "vps-manager.project-id=${project_id}" \
+      --label-add "vps-manager.project-commit=${commit_sha}" \
+      --label-add "vps-manager.project-image=${built_image}" \
+      --label-add "vps-manager.project-config-hash=${project_config_hash}" \
+      "${project_traefik_label_args[@]}" \
+      "${PROJECT_SERVICE}" >/dev/null; then
+      write_status "failed" "Swarm no pudo actualizar el servicio del proyecto."
+      exit 1
+    fi
+  else
+    if ! DOCKER_CONFIG="${docker_config_directory}" docker service create --detach=false \
+      --name "${PROJECT_SERVICE}" \
+      --mode global \
+      --restart-condition on-failure \
+      --network vps-manager-proxy \
+      --with-registry-auth \
+      "${project_environment_args[@]}" \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=project \
+      --label "vps-manager.project-id=${project_id}" \
+      --label "vps-manager.project-commit=${commit_sha}" \
+      --label "vps-manager.project-image=${built_image}" \
+      --label "vps-manager.project-config-hash=${project_config_hash}" \
+      "${project_traefik_label_args[@]}" \
+      "${built_image}" >/dev/null; then
+      write_status "failed" "Swarm no pudo crear el servicio del proyecto."
+      exit 1
+    fi
+  fi
+  if ! service_id="$(docker service inspect --format '{{.ID}}' "${PROJECT_SERVICE}")" \
+    || ! [[ "${service_id}" =~ ^[a-fA-F0-9]{25,64}$ ]]; then
+    write_status "failed" "Swarm creó el servicio, pero no se pudo validar su identificador."
+    exit 1
+  fi
+  write_status "succeeded" "Servicio global desplegado con una tarea por nodo Swarm activo y sin puertos publicados."
+  exit 0
+fi
+
 if ! service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${service_id}")"; then
   write_status "failed" "No se pudo encontrar el servicio solicitado."
   exit 1
@@ -434,6 +1165,11 @@ if [[ "${operation}" == "scale-service" ]]; then
   if [[ "${component_label}" == "gitea" && "${replicas}" != "1" ]]; then
     write_status "failed" "Gitea usa SQLite y debe conservar exactamente una réplica."
     echo "Rejected scaling the Gitea application away from one replica." >&2
+    exit 1
+  fi
+  if [[ "${component_label}" == "registry" && "${replicas}" != "1" ]]; then
+    write_status "failed" "El registro privado debe conservar exactamente una réplica."
+    echo "Rejected scaling the private registry away from one replica." >&2
     exit 1
   fi
   if docker service update --replicas "${replicas}" --detach=true "${service_id}"; then

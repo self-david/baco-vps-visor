@@ -279,10 +279,176 @@ export async function updateProject(id, project) {
   }
 }
 
+function mapProjectDomain(row) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    zone: row.zone_name,
+    zoneId: row.zone_id,
+    hostname: row.hostname,
+    projectId: row.project_id,
+    port: row.port,
+    proxied: row.proxied,
+    dnsRecordId: row.dns_record_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function getProjectDomains() {
+  const result = await pool.query(`
+    SELECT id, provider, zone_name, hostname, project_id, port, proxied,
+      dns_record_id, created_at, updated_at
+    FROM project_domains
+    ORDER BY lower(hostname), id
+  `);
+  return result.rows.map(mapProjectDomain);
+}
+
+export async function getProjectDomain(id) {
+  const result = await pool.query(`
+    SELECT id, provider, zone_name, hostname, project_id, port, proxied,
+      dns_record_id, created_at, updated_at
+    FROM project_domains
+    WHERE id = $1
+  `, [id]);
+  return result.rows[0] ? mapProjectDomain(result.rows[0]) : null;
+}
+
+export async function saveProjectDomain(domain) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      INSERT INTO project_domains (
+        id, provider, zone_name, zone_id, hostname, project_id, port, proxied, dns_record_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (id) DO UPDATE
+      SET provider = EXCLUDED.provider,
+          zone_name = EXCLUDED.zone_name,
+          zone_id = EXCLUDED.zone_id,
+          hostname = EXCLUDED.hostname,
+          project_id = EXCLUDED.project_id,
+          port = EXCLUDED.port,
+          proxied = EXCLUDED.proxied,
+          dns_record_id = EXCLUDED.dns_record_id,
+          updated_at = now()
+      RETURNING id, provider, zone_name, hostname, project_id, port, proxied,
+        dns_record_id, created_at, updated_at
+    `, [
+      domain.id,
+      domain.provider,
+      domain.zone,
+      domain.zoneId,
+      domain.hostname,
+      domain.projectId,
+      domain.port,
+      domain.proxied,
+      domain.dnsRecordId,
+    ]);
+    await insertAuditEvent(client, {
+      action: "project.domain.saved",
+      resourceType: "domain",
+      resourceId: domain.id,
+      details: {
+        hostname: domain.hostname,
+        projectId: domain.projectId,
+        provider: domain.provider,
+      },
+    });
+    await client.query("COMMIT");
+    return mapProjectDomain(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteProjectDomain(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      DELETE FROM project_domains
+      WHERE id = $1
+      RETURNING id, hostname, project_id
+    `, [id]);
+    if (result.rowCount > 0) {
+      await insertAuditEvent(client, {
+        action: "project.domain.deleted",
+        resourceType: "domain",
+        resourceId: result.rows[0].id,
+        details: { hostname: result.rows[0].hostname, projectId: result.rows[0].project_id },
+      });
+    }
+    await client.query("COMMIT");
+    return result.rowCount > 0;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getIngressIp() {
+  const result = await pool.query(
+    "SELECT value FROM server_settings WHERE key = $1",
+    ["domains_ingress_ipv4"],
+  );
+  const value = result.rows[0]?.value;
+  return typeof value === "string" ? value : null;
+}
+
+export async function setIngressIp(ip) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`
+      INSERT INTO server_settings (key, value)
+      VALUES ($1, to_jsonb($2::text))
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value, updated_at = now()
+    `, ["domains_ingress_ipv4", ip]);
+    await insertAuditEvent(client, {
+      action: "domains.ingress_ip.updated",
+      resourceType: "setting",
+      resourceId: "domains_ingress_ipv4",
+      details: { ipv4: ip },
+    });
+    await client.query("COMMIT");
+    return ip;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function deleteProject(id) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.build:${id}`]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.deployment:${id}`]);
+    const activeTask = await client.query(
+      `SELECT id FROM tasks
+       WHERE type IN ('project.build', 'project.deploy', 'project.undeploy')
+         AND payload->>'projectId' = $1
+         AND status IN ('pending', 'in_progress')
+       LIMIT 1
+       FOR UPDATE`,
+      [id],
+    );
+    if (activeTask.rowCount > 0) {
+      const error = new Error("No se puede eliminar el proyecto mientras hay una tarea de proyecto en curso.");
+      error.code = "PROJECT_TASK_IN_PROGRESS";
+      throw error;
+    }
     const result = await client.query(`
       DELETE FROM projects
       WHERE id = $1
@@ -358,6 +524,62 @@ export async function createGiteaInstallTask(task) {
     type: "application.gitea.install",
     payload: { domain: task.domain },
   });
+}
+
+export async function createRegistryConfigureTask(task) {
+  return createTask({
+    id: task.id,
+    type: "registry.configure",
+    payload: { domain: task.domain, username: task.username },
+    maxAttempts: 1,
+  });
+}
+
+export async function createProjectBuildTask(task) {
+  return createTask({
+    id: task.id,
+    type: "project.build",
+    payload: {
+      projectId: task.projectId,
+      projectName: task.projectName,
+      repository: task.repository,
+      branch: task.branch,
+    },
+    maxAttempts: 1,
+  });
+}
+
+export async function createProjectDeployTask(task) {
+  return createTask({
+    id: task.id,
+    type: "project.deploy",
+    payload: {
+      projectId: task.projectId,
+      projectName: task.projectName,
+      commitSha: task.commitSha,
+    },
+    maxAttempts: 1,
+  });
+}
+
+export async function createProjectUndeployTask(task) {
+  return createTask({
+    id: task.id,
+    type: "project.undeploy",
+    payload: {
+      projectId: task.projectId,
+      projectName: task.projectName,
+    },
+    maxAttempts: 1,
+  });
+}
+
+export async function getLatestProjectBuilds(projectIds) {
+  return taskStore.getLatestProjectBuilds(projectIds);
+}
+
+export async function getRecentProjectDeployments(projectIds) {
+  return taskStore.getRecentProjectDeployments(projectIds);
 }
 
 export async function claimNextTask(workerId, leaseSeconds) {
