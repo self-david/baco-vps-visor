@@ -10,11 +10,38 @@ $versionFile = Join-Path $repositoryDirectory "apps\manager\VERSION"
 function Invoke-Git {
   param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-  $output = & git -C $repositoryDirectory @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = & git -C $repositoryDirectory @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($exitCode -ne 0) {
     throw "Falló git $($Arguments -join ' ')`n$($output -join "`n")"
   }
   return $output
+}
+
+function Test-GitAncestor {
+  param(
+    [Parameter(Mandatory = $true)][string]$Ancestor,
+    [Parameter(Mandatory = $true)][string]$Commit
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = & git -C $repositoryDirectory merge-base --is-ancestor $Ancestor $Commit 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($exitCode -gt 1) {
+    throw "No se pudo comparar $Ancestor con $Commit.`n$($output -join "`n")"
+  }
+  return $exitCode -eq 0
 }
 
 if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
@@ -38,17 +65,16 @@ if ($dirtyFiles.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$dirt
 }
 
 Invoke-Git -Arguments @("fetch", "origin", "main", "--tags") | Out-Null
-$ancestorOutput = & git -C $repositoryDirectory merge-base --is-ancestor origin/main HEAD 2>&1
-if ($LASTEXITCODE -ne 0) {
-  throw "La rama main local no contiene todos los cambios de origin/main. Integra los cambios remotos antes de publicar.`n$($ancestorOutput -join "`n")"
+if (-not (Test-GitAncestor -Ancestor "origin/main" -Commit "HEAD")) {
+  throw "La rama main local no contiene todos los cambios de origin/main. Integra los cambios remotos antes de publicar."
 }
 
 $currentVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 if ($currentVersion -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
   throw "apps\manager\VERSION no contiene una versión semver estable válida: '$currentVersion'."
 }
-if ([version]$Version -le [version]$currentVersion) {
-  throw "La nueva versión ($Version) debe ser mayor que la versión actual ($currentVersion)."
+if ([version]$Version -lt [version]$currentVersion) {
+  throw "La versión solicitada ($Version) no puede ser menor que la versión de apps\manager\VERSION ($currentVersion)."
 }
 
 $existingTags = @(Invoke-Git -Arguments @("tag", "--list", "v*"))
@@ -74,9 +100,11 @@ if ([version]$Version -le $highestVersion) {
   throw "La versión debe ser mayor que la versión más alta etiquetada ($highestVersion)."
 }
 
-Set-Content -LiteralPath $versionFile -Value $Version -NoNewline -Encoding ascii
-Invoke-Git -Arguments @("add", "--", "apps/manager/VERSION") | Out-Null
-Invoke-Git -Arguments @("commit", "-m", "chore: prepare release $tag") | Out-Null
+if ([version]$Version -gt [version]$currentVersion) {
+  Set-Content -LiteralPath $versionFile -Value $Version -NoNewline -Encoding ascii
+  Invoke-Git -Arguments @("add", "--", "apps/manager/VERSION") | Out-Null
+  Invoke-Git -Arguments @("commit", "-m", "chore: prepare release $tag") | Out-Null
+}
 Invoke-Git -Arguments @("push", "origin", "HEAD:main") | Out-Null
 Invoke-Git -Arguments @("tag", "-a", $tag, "-m", "Release $tag") | Out-Null
 Invoke-Git -Arguments @("push", "origin", "refs/tags/$tag") | Out-Null
