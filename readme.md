@@ -197,7 +197,7 @@ Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proye
 .\deploy-test.ps1
 ```
 
-El script prepara una copia temporal del proyecto, excluye `.git`, `node_modules` y `password-test.txt`, la sube por SCP a un directorio único y elimina los temporales al terminar. Después normaliza los finales de línea de los scripts Bash y ejecuta la instalación por SSH con terminal interactiva. Solicitará la contraseña SSH y `sudo` según corresponda, además de la contraseña administrativa del panel. No guardes contraseñas en el script.
+El script usa `baco@192.168.100.158` como destino y la IP `192.168.100.158` como dominio de prueba por defecto. Puedes sobrescribirlos con `.\deploy-test.ps1 -Server baco@IP -Domain IP`. Prepara una copia temporal del proyecto, excluye `.git`, `node_modules` y `password-test.txt`, la sube por SCP a un directorio único y elimina los temporales al terminar. Después normaliza los finales de línea de los scripts Bash y ejecuta la instalación por SSH con terminal interactiva. Solicitará la contraseña SSH y `sudo` según corresponda, además de la contraseña administrativa del panel. No guardes contraseñas en el script.
 
 #### Instalación con dominio y HTTPS
 
@@ -254,7 +254,7 @@ Desde Windows, puedes copiar e instalar el comando de recuperación y cambiar la
 .\reset-test-password.ps1
 ```
 
-Para pruebas, también puedes guardar la nueva contraseña en un archivo de texto de una sola línea (mínimo 16 caracteres) y pasar su ruta:
+El script cambia la contraseña en `baco@192.168.100.158` por defecto; puedes elegir otro servidor con `-Server baco@IP`. Para pruebas, también puedes guardar la nueva contraseña en un archivo de texto de una sola línea (mínimo 16 caracteres) y pasar su ruta:
 
 ```powershell
 .\reset-test-password.ps1 -PasswordFile .\password-test.txt

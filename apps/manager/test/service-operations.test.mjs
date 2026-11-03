@@ -61,7 +61,7 @@ test("validates scale targets for replicated services without allowing panel dow
 
 test("accepts only public DNS hostnames for application subdomains", () => {
   assert.equal(isPublicHostname("git.example.com"), true);
-  assert.equal(isPublicHostname("192.168.100.156"), false);
+  assert.equal(isPublicHostname("192.168.100.158"), false);
   assert.equal(isPublicHostname("git.example.com;id"), false);
   assert.equal(isPublicHostname("git.local"), false);
 });

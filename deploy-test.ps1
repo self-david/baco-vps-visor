@@ -1,10 +1,23 @@
+param(
+  [string]$Server = "baco@192.168.100.158",
+  [string]$Domain = "192.168.100.158"
+)
+
 $ErrorActionPreference = "Stop"
 
-$server = "baco@192.168.100.158"
 $projectDirectory = $PSScriptRoot
 $deploymentId = [guid]::NewGuid().ToString("N")
 $localStageDirectory = Join-Path $env:TEMP "vps-manager-deploy-$deploymentId"
 $remoteStageDirectory = "/tmp/vps-manager-deploy-$deploymentId"
+
+if ($Server -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+$') {
+  throw "El servidor debe tener el formato usuario@host."
+}
+$parsedAddress = $null
+if ((-not [System.Net.IPAddress]::TryParse($Domain, [ref]$parsedAddress)) -or
+  ($parsedAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork)) {
+  throw "El dominio de prueba debe ser una dirección IPv4."
+}
 
 function Copy-ProjectFiles {
   param(
@@ -55,7 +68,7 @@ try {
     throw "Falló la copia del proyecto por SCP (código $scpExitCode)."
   }
 
-  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash '$remoteStageDirectory/install.sh'"
+  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN='$Domain' bash '$remoteStageDirectory/install.sh'"
   Write-Host "Conectando al VPS, normalizando los scripts y ejecutando la instalación..."
   & ssh -tt $server $remoteCommand
   if ($LASTEXITCODE -ne 0) {

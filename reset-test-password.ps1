@@ -1,16 +1,19 @@
 param(
   [Parameter(Position = 0)]
-  [string]$PasswordFile
+  [string]$PasswordFile,
+  [string]$Server = "baco@192.168.100.158"
 )
 
 $ErrorActionPreference = "Stop"
 
-$server = "baco@192.168.100.158"
 $transferId = [guid]::NewGuid().ToString("N")
 $remoteDirectory = "/tmp/vps-manager-password-reset-$transferId"
 $localStageDirectory = Join-Path $env:TEMP "vps-manager-password-reset-$transferId"
 $remoteDirectoryCreated = $false
 
+if ($Server -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+$') {
+  throw "El servidor debe tener el formato usuario@host."
+}
 if (-not (Get-Command scp -ErrorAction SilentlyContinue)) {
   throw "No se encontró scp. Instala el cliente OpenSSH de Windows."
 }
