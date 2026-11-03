@@ -279,7 +279,6 @@ else
   export VPS_MANAGER_DOMAIN="${DOMAIN}" VPS_MANAGER_EMAIL="${EMAIL}" VPS_MANAGER_TEST_MODE=false
 fi
 docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
-docker service update --force --detach=false "${STACK_NAME}_manager"
 
 log "Esperando que los servicios de Swarm inicien."
 service_total=0
@@ -287,7 +286,8 @@ service_count=0
 for attempt in $(seq 1 90); do
   service_total="$(docker stack services "${STACK_NAME}" --format '{{.Name}}' 2>/dev/null | wc -l)"
   service_total="${service_total//[[:space:]]/}"
-  service_count="$(docker stack services "${STACK_NAME}" --format '{{.Replicas}}' 2>/dev/null | grep -c '^1/1$' || true)"
+  service_count="$(docker stack services "${STACK_NAME}" --format '{{.Replicas}}' 2>/dev/null \
+    | awk -F/ '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 == $2 { count++ } END { print count + 0 }')"
   if [[ "${service_total}" -ge 4 && "${service_count}" == "${service_total}" ]]; then
     break
   fi
@@ -297,7 +297,7 @@ done
 docker stack services "${STACK_NAME}"
 if [[ "${service_total}" -lt 4 || "${service_count}" != "${service_total}" ]]; then
   docker stack ps "${STACK_NAME}" --no-trunc || true
-  fail "No todos los servicios llegaron a 1/1. Ejecuta: sudo vps-manager-diagnostics"
+  fail "No todos los servicios llegaron al número deseado de réplicas. Ejecuta: sudo vps-manager-diagnostics"
 fi
 
 log "Esperando que el panel responda por ${PANEL_SCHEME^^}."

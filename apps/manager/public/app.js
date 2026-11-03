@@ -76,6 +76,7 @@ function activateDashboardTab(tabId, { focus = false, updateHash = true } = {}) 
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
   }
+
   for (const panel of dashboardPanels) {
     const active = panel.id === selectedTab.getAttribute("aria-controls");
     panel.hidden = !active;
@@ -183,8 +184,10 @@ function renderResources(target, resources, getDetail, getState, onAction, empty
         action.addEventListener("click", () => onAction(resource));
         actions.append(action);
       }
-      const secondaryAction = getSecondaryAction?.(resource);
-      if (secondaryAction) {
+      const secondaryActions = getSecondaryAction?.(resource);
+      for (const secondaryAction of Array.isArray(secondaryActions)
+        ? secondaryActions
+        : secondaryActions ? [secondaryActions] : []) {
         const action = document.createElement("button");
         action.className = "button resource-action";
         action.type = "button";
@@ -383,7 +386,12 @@ function renderFilteredResources() {
     (service) => showResourceLogs(service, "services"),
     services.length === 0 && serviceHasFilters ? "No hay servicios que coincidan con los filtros." : "No hay servicios Swarm.",
     (service) => service.managed
-      ? { label: "Reiniciar", onClick: requestServiceRestart }
+      ? [
+        { label: "Reiniciar", onClick: requestServiceRestart },
+        ...(service.mode === "replicado"
+          ? [{ label: "Escalar", onClick: requestServiceScale }]
+          : []),
+      ]
       : undefined,
   );
   updateResourceCount("#service-count", services.length, resourceData.services.length);
@@ -419,7 +427,7 @@ async function loadServiceOperationStatus() {
     if (operation) {
       serviceOperationStatus.textContent = operation.message;
     } else {
-      serviceOperationStatus.textContent = "Solo se pueden reiniciar servicios administrados por VPS Manager.";
+      serviceOperationStatus.textContent = "Solo se pueden reiniciar o escalar servicios administrados por VPS Manager.";
     }
     if (serviceOperationPending) {
       scheduleServiceOperationPoll();
@@ -461,6 +469,8 @@ async function loadTaskHistory() {
       title.className = "resource-name";
       title.textContent = task.type === "service.restart"
         ? `Reinicio de ${task.serviceName}`
+        : task.type === "service.scale"
+          ? `Escalado de ${task.serviceName}`
         : `Tarea: ${task.type}`;
       const details = document.createElement("div");
       details.className = "resource-detail task-detail";
@@ -472,7 +482,10 @@ async function loadTaskHistory() {
         ? "Reintentando"
         : statusLabels[task.status] ?? "Estado desconocido";
       const attempts = task.attempts > 0 ? ` · intento ${task.attempts}/${task.maxAttempts}` : "";
-      details.textContent = `${currentStatus} · ${createdAt}${attempts}${finishedAt}`;
+      const scaleChange = task.type === "service.scale"
+        ? ` · ${task.originalReplicas} → ${task.desiredReplicas} réplicas`
+        : "";
+      details.textContent = `${currentStatus} · ${createdAt}${scaleChange}${attempts}${finishedAt}`;
       main.append(title, details);
       row.append(main);
       if (task.error || task.result?.message) {
@@ -504,6 +517,43 @@ async function requestServiceRestart(service) {
       method: "POST",
     });
     serviceOperationStatus.textContent = `${result.serviceName}: reinicio en cola.`;
+    await loadTaskHistory();
+    scheduleServiceOperationPoll();
+  } catch (error) {
+    serviceOperationPending = false;
+    serviceOperationStatus.textContent = error.message;
+    renderFilteredResources();
+    await loadServiceOperationStatus();
+  }
+}
+
+async function requestServiceScale(service) {
+  const requestedReplicas = window.prompt(
+    `Réplicas deseadas para ${service.name} (1-100). Actualmente: ${service.desiredReplicas}. Swarm puede dejar tareas pendientes si no hay recursos suficientes.`,
+    String(service.desiredReplicas),
+  );
+  if (requestedReplicas === null) return;
+  const replicas = Number(requestedReplicas);
+  if (!Number.isInteger(replicas) || replicas < 1 || replicas > 100) {
+    serviceOperationStatus.textContent = "Indica un número entero de réplicas entre 1 y 100.";
+    return;
+  }
+  if (replicas === service.desiredReplicas) {
+    serviceOperationStatus.textContent = "El servicio ya tiene ese número de réplicas deseadas.";
+    return;
+  }
+  if (!window.confirm(`¿Cambiar ${service.name} de ${service.desiredReplicas} a ${replicas} réplicas? Swarm programará las tareas según los recursos disponibles.`)) {
+    return;
+  }
+  serviceOperationPending = true;
+  serviceOperationStatus.textContent = `Solicitando escalar ${service.name} a ${replicas} réplicas…`;
+  renderFilteredResources();
+  try {
+    const result = await request(`/api/docker/services/${encodeURIComponent(service.id)}/scale`, {
+      method: "POST",
+      body: JSON.stringify({ replicas }),
+    });
+    serviceOperationStatus.textContent = result.operation.message;
     await loadTaskHistory();
     scheduleServiceOperationPoll();
   } catch (error) {

@@ -212,6 +212,19 @@ export async function createServiceRestartTask(task) {
   });
 }
 
+export async function createServiceScaleTask(task) {
+  return createTask({
+    id: task.id,
+    type: "service.scale",
+    payload: {
+      serviceId: task.serviceId,
+      serviceName: task.serviceName,
+      desiredReplicas: task.desiredReplicas,
+      originalReplicas: task.originalReplicas,
+    },
+  });
+}
+
 export async function claimNextTask(workerId, leaseSeconds) {
   return taskStore.claimNextTask(workerId, leaseSeconds);
 }

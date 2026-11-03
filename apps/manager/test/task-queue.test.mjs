@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createServiceRestartHandler,
+  createServiceScaleHandler,
   createTaskQueueWorker,
   TaskExecutionError,
 } from "../task-queue.mjs";
@@ -106,6 +107,36 @@ test("resumes a service operation by its durable task ID and does not repeat com
     message: "Servicio reiniciado.",
   });
   assert.deepEqual(requests, [{ serviceId: task.payload.serviceId, requestId: task.id }]);
+});
+
+test("dispatches scale tasks through the scale-only agent method", async () => {
+  const scaleTask = {
+    ...task,
+    type: "service.scale",
+    payload: { ...task.payload, originalReplicas: 2, desiredReplicas: 5 },
+  };
+  const requests = [];
+  const handler = createServiceScaleHandler({
+    async requestScale(serviceId, replicas, requestId) {
+      requests.push({ serviceId, replicas, requestId });
+      return { id: requestId, state: "running" };
+    },
+    async getStatus() {
+      return {
+        id: scaleTask.id,
+        state: "succeeded",
+        message: "Escalado solicitado.",
+      };
+    },
+  });
+  assert.deepEqual(await handler(scaleTask, new AbortController().signal), {
+    message: "Escalado solicitado.",
+  });
+  assert.deepEqual(requests, [{
+    serviceId: scaleTask.payload.serviceId,
+    replicas: 5,
+    requestId: scaleTask.id,
+  }]);
 });
 
 test("does not automatically retry a host-reported operation failure", async () => {

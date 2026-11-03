@@ -121,7 +121,7 @@
                     <option value="global">Global</option>
                   </select>
                 </div>
-                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Solo se pueden reiniciar servicios administrados por VPS Manager.</p>
+                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Solo se pueden reiniciar o escalar servicios administrados por VPS Manager.</p>
                 <div id="services" class="resource-list"></div>
               </section>
               <section class="card roadmap-card">
@@ -242,7 +242,7 @@
               </section>
               <section class="card roadmap-card">
                 <div class="card-heading"><h3>Próximas mejoras</h3><span class="badge roadmap-badge">En desarrollo</span></div>
-                <p class="muted">La cola se guarda en PostgreSQL y recupera las tareas con leases vencidas. Actualmente solo permite reinicios limitados de servicios administrados.</p>
+                <p class="muted">La cola se guarda en PostgreSQL y recupera las tareas con leases vencidas. Actualmente permite reinicios y escalados limitados de servicios administrados.</p>
                 <ul class="roadmap-list"><li>Agregar handlers explícitos para nuevas clases de operaciones</li><li>Seguimiento de progreso detallado</li><li>Cancelación segura para operaciones compatibles</li></ul>
               </section>
             </div>
@@ -331,7 +331,7 @@
             </div>
           </section>
         </div>
-        <p class="footnote">Vista de consulta con reinicio controlado de servicios administrados por VPS Manager.</p>
+        <p class="footnote">Vista de consulta con reinicio y escalado controlados de servicios administrados por VPS Manager.</p>
       </section>
     </main>
     <dialog id="logs-dialog" class="logs-dialog" aria-labelledby="logs-title">

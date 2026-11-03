@@ -154,6 +154,17 @@ services:
       - internal
     deploy:
       replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 5s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        monitor: 30s
+        order: start-first
       placement:
         constraints:
           - node.role == manager

@@ -120,10 +120,11 @@ export function createTaskQueueWorker({
   };
 }
 
-export function createServiceRestartHandler(agent, { pollIntervalMs = 1000 } = {}) {
-  if (!agent || typeof agent.requestRestart !== "function" || typeof agent.getStatus !== "function"
+function createServiceOperationHandler(agent, operation, { pollIntervalMs = 1000 } = {}) {
+  const requestOperation = operation === "restart-service" ? agent?.requestRestart : agent?.requestScale;
+  if (!agent || typeof requestOperation !== "function" || typeof agent.getStatus !== "function"
     || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
-    throw new TypeError("The service restart task handler configuration is invalid.");
+    throw new TypeError("The service operation task handler configuration is invalid.");
   }
 
   return async (task, signal) => {
@@ -131,9 +132,14 @@ export function createServiceRestartHandler(agent, { pollIntervalMs = 1000 } = {
     if (typeof serviceId !== "string" || !/^[a-f0-9]{25,64}$/i.test(serviceId)) {
       throw new TaskExecutionError("La tarea contiene un identificador de servicio inválido.", { retryable: false });
     }
+    const replicas = operation === "scale-service" ? task.payload?.desiredReplicas : undefined;
+    if (operation === "scale-service" && (!Number.isInteger(replicas) || replicas < 1 || replicas > 100)) {
+      throw new TaskExecutionError("La tarea contiene un número de réplicas inválido.", { retryable: false });
+    }
     if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
 
-    await agent.requestRestart(serviceId, task.id);
+    if (operation === "scale-service") await agent.requestScale(serviceId, replicas, task.id);
+    else await agent.requestRestart(serviceId, task.id);
     while (!signal.aborted) {
       const operation = await agent.getStatus();
       if (operation?.id === task.id) {
@@ -146,4 +152,12 @@ export function createServiceRestartHandler(agent, { pollIntervalMs = 1000 } = {
     }
     throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
   };
+}
+
+export function createServiceRestartHandler(agent, options) {
+  return createServiceOperationHandler(agent, "restart-service", options);
+}
+
+export function createServiceScaleHandler(agent, options) {
+  return createServiceOperationHandler(agent, "scale-service", options);
 }

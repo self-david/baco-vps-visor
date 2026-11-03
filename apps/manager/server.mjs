@@ -9,8 +9,16 @@ import { createBackupScheduler } from "./backup-scheduler.mjs";
 import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
 import { createWebUpdater } from "./web-updater.mjs";
-import { createServiceOperationAgent, findManagedService } from "./service-operations.mjs";
-import { createServiceRestartHandler, createTaskQueueWorker } from "./task-queue.mjs";
+import {
+  createServiceOperationAgent,
+  findManagedService,
+  validateServiceScale,
+} from "./service-operations.mjs";
+import {
+  createServiceRestartHandler,
+  createServiceScaleHandler,
+  createTaskQueueWorker,
+} from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
@@ -33,6 +41,7 @@ import {
   saveContainerMetrics,
   recordAuditEvent,
   createServiceRestartTask,
+  createServiceScaleTask,
   updateMetricAlertThresholds,
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
@@ -65,6 +74,7 @@ const taskQueueWorker = createTaskQueueWorker({
   store: { claimNextTask, completeTask, failTask, renewTaskLease },
   handlers: {
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
+    "service.scale": createServiceScaleHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
 });
@@ -453,6 +463,7 @@ async function getServicesWithStacks() {
       image: service.Spec?.TaskTemplate?.ContainerSpec?.Image ?? "unknown",
       mode,
       replicas: replicated ? `${running}/${replicated.Replicas ?? 1}` : `${running} activos`,
+      desiredReplicas: replicated ? replicated.Replicas ?? 1 : null,
       managed: service.Spec?.Labels?.["vps-manager.managed"] === "true",
     };
   });
@@ -672,7 +683,8 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const recentServiceTask = (await getRecentTasks()).find((task) => task.type === "service.restart");
+      const recentServiceTask = (await getRecentTasks()).find((task) =>
+        task.type === "service.restart" || task.type === "service.scale");
       const operation = recentServiceTask
         ? {
           id: recentServiceTask.id,
@@ -683,12 +695,21 @@ const server = createServer(async (request, response) => {
             failed: "failed",
           }[recentServiceTask.status],
           serviceId: recentServiceTask.serviceId,
+          operation: recentServiceTask.type === "service.scale" ? "scale-service" : "restart-service",
+          replicas: recentServiceTask.desiredReplicas,
           message: recentServiceTask.status === "completed"
-            ? recentServiceTask.result?.message ?? "Servicio reiniciado correctamente."
+            ? recentServiceTask.result?.message
+              ?? (recentServiceTask.type === "service.scale"
+                ? `Servicio escalado a ${recentServiceTask.desiredReplicas} réplicas.`
+                : "Servicio reiniciado correctamente.")
             : recentServiceTask.error
-              ?? (recentServiceTask.status === "pending"
-                ? "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio."
-                : "Reinicio de servicio en curso."),
+              ?? (recentServiceTask.type === "service.scale"
+                ? recentServiceTask.status === "pending"
+                  ? `Solicitud aceptada; esperando que el agente escale a ${recentServiceTask.desiredReplicas} réplicas.`
+                  : `Escalado a ${recentServiceTask.desiredReplicas} réplicas en curso.`
+                : recentServiceTask.status === "pending"
+                  ? "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio."
+                  : "Reinicio de servicio en curso."),
         }
         : await serviceOperationAgent.getStatus();
       respondJson(response, 200, { operation });
@@ -1071,6 +1092,82 @@ const server = createServer(async (request, response) => {
             state: "queued",
             serviceId: service.ID,
             message: "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
+          },
+          serviceName,
+        });
+        return;
+      }
+      const scaleServiceMatch = request.method === "POST"
+        && url.pathname.match(/^\/api\/docker\/services\/([a-f0-9]{12,64})\/scale$/i);
+      if (scaleServiceMatch) {
+        if (!hasSameOrigin(request)) {
+          respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+          return;
+        }
+        let body;
+        try {
+          body = await readJson(request);
+        } catch (error) {
+          if (error instanceof RequestError) {
+            respondJson(response, error.statusCode, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).length !== 1 || !Object.hasOwn(body, "replicas")) {
+          respondJson(response, 400, { error: "Indica únicamente el número deseado de réplicas." });
+          return;
+        }
+
+        let service;
+        let originalReplicas;
+        try {
+          service = findManagedService(await dockerGet("/services"), scaleServiceMatch[1]);
+          originalReplicas = validateServiceScale(service, body.replicas);
+        } catch (error) {
+          const status = {
+            SERVICE_NOT_FOUND: 404,
+            SERVICE_ID_AMBIGUOUS: 409,
+            SERVICE_NOT_MANAGED: 403,
+            INVALID_REPLICA_COUNT: 400,
+            SERVICE_NOT_REPLICATED: 409,
+            PANEL_REPLICA_COUNT: 400,
+          }[error?.code];
+          if (status) {
+            respondJson(response, status, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        if (body.replicas === originalReplicas) {
+          respondJson(response, 409, { error: `El servicio ya tiene ${originalReplicas} réplicas deseadas.` });
+          return;
+        }
+
+        const taskId = randomUUID();
+        const serviceName = service.Spec?.Name ?? "unknown";
+        try {
+          await createServiceScaleTask({
+            id: taskId,
+            serviceId: service.ID,
+            serviceName,
+            desiredReplicas: body.replicas,
+            originalReplicas,
+          });
+        } catch (error) {
+          console.error("Could not persist the service scale task:", error);
+          respondJson(response, 503, { error: "No se pudo guardar la tarea; no se envió el escalado al host." });
+          return;
+        }
+        respondJson(response, 202, {
+          operation: {
+            id: taskId,
+            state: "queued",
+            serviceId: service.ID,
+            operation: "scale-service",
+            replicas: body.replicas,
+            message: `Solicitud aceptada; esperando que el agente escale ${serviceName} a ${body.replicas} réplicas.`,
           },
           serviceName,
         });

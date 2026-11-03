@@ -46,10 +46,10 @@ Estado: **parcial**
 - [x] Crear API (mínima, Node.js).
 - [x] Crear autenticación (un administrador, cookie de sesión).
 - [x] Crear base de datos (PostgreSQL).
-- [x] Crear agente host aislado para reiniciar servicios Swarm etiquetados `vps-manager.managed=true`; el proxy Docker conserva solo lectura.
+- [x] Crear agente host aislado para reiniciar y escalar servicios Swarm etiquetados `vps-manager.managed=true`; el proxy Docker conserva solo lectura.
 - [x] Implementar consulta de Docker.
-- [x] Implementar reinicio autenticado y auditado de servicios administrados con confirmación y estado de resultado.
-- [ ] Implementar otras operaciones permitidas de escritura mediante una lista explícita.
+- [x] Implementar reinicio y escalado autenticados y auditados de servicios administrados con confirmación y estado de resultado.
+- [x] Limitar el escalado a 1–100 réplicas para servicios Swarm administrados en modo replicado; el agente aplica solo una allowlist fija y mantiene el servicio API de VPS Manager en una réplica.
 - [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
 - [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; el reinicio de servicios es el único handler habilitado actualmente.
 

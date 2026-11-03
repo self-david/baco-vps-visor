@@ -3,7 +3,11 @@ import test from "node:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServiceOperationAgent, findManagedService } from "../service-operations.mjs";
+import {
+  createServiceOperationAgent,
+  findManagedService,
+  validateServiceScale,
+} from "../service-operations.mjs";
 
 const requestId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";
 const secondRequestId = "a3f51b09-13bf-4c7a-9b03-9ba000000002";
@@ -20,6 +24,31 @@ test("resolves only one Swarm service explicitly managed by VPS Manager", () => 
   assert.throws(() => findManagedService([
     { ID: serviceId, Spec: { Labels: {} } },
   ], serviceId), { code: "SERVICE_NOT_MANAGED" });
+});
+
+test("validates scale targets for replicated services without allowing panel downtime", () => {
+  const service = {
+    ID: serviceId,
+    Spec: {
+      Labels: { "vps-manager.managed": "true" },
+      Mode: { Replicated: { Replicas: 3 } },
+    },
+  };
+  assert.equal(validateServiceScale(service, 4), 3);
+  assert.throws(() => validateServiceScale(service, 0), { code: "INVALID_REPLICA_COUNT" });
+  assert.throws(() => validateServiceScale(service, 101), { code: "INVALID_REPLICA_COUNT" });
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: { ...service.Spec, Mode: { Global: {} } },
+  }, 4), { code: "SERVICE_NOT_REPLICATED" });
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: { ...service.Spec, Labels: { "vps-manager.component": "api" } },
+  }, 2), { code: "PANEL_REPLICA_COUNT" });
+  assert.equal(validateServiceScale({
+    ...service,
+    Spec: { ...service.Spec, Labels: { "vps-manager.component": "api" } },
+  }, 1), 3);
 });
 
 async function createFixture(createId = () => requestId) {
@@ -49,6 +78,27 @@ test("queues a fixed service restart request without accepting command input", a
   }
 });
 
+test("queues a validated scale request through the fixed service-operation channel", async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await fixture.agent.requestScale(serviceId, 4);
+    assert.equal(result.operation, "scale-service");
+    assert.equal(result.replicas, 4);
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "scale-service",
+      serviceId,
+      replicas: 4,
+    });
+    assert.equal((await fixture.agent.getStatus()).replicas, 4);
+    assert.equal((await fixture.agent.requestScale(serviceId, 4)).replicas, 4);
+    await assert.rejects(fixture.agent.requestScale(serviceId, 5), /different service operation/);
+    await assert.rejects(fixture.agent.requestScale(serviceId, 0), /between 1 and 100/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("rejects malformed service IDs before creating a request", async () => {
   const fixture = await createFixture();
   try {
@@ -64,6 +114,14 @@ test("returns the existing task for duplicate IDs and rejects different active r
   try {
     await fixture.agent.requestRestart(serviceId);
     assert.equal((await fixture.agent.requestRestart(serviceId)).id, requestId);
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "request.json"), JSON.stringify({
+      id: requestId,
+      operation: "scale-service",
+      serviceId,
+      replicas: 101,
+    }));
+    await assert.rejects(fixture.agent.getStatus(), /invalid format/);
     await rm(join(fixture.directory, "request.json"));
     await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
       id: requestId,

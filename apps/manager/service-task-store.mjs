@@ -12,6 +12,14 @@ function mapTask(row, { includePayload = false } = {}) {
     ...(row.type === "service.restart"
       ? { serviceId: row.payload.serviceId, serviceName: row.payload.serviceName }
       : {}),
+    ...(row.type === "service.scale"
+      ? {
+        serviceId: row.payload.serviceId,
+        serviceName: row.payload.serviceName,
+        desiredReplicas: row.payload.desiredReplicas,
+        originalReplicas: row.payload.originalReplicas,
+      }
+      : {}),
     result: typeof row.result?.message === "string" ? { message: row.result.message } : null,
     error: row.error,
     attempts: row.attempts,
@@ -36,6 +44,13 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || typeof payload.serviceName !== "string" || payload.serviceName.length < 1 || payload.serviceName.length > 255)) {
     throw new TypeError("Service restart task fields are invalid.");
   }
+  if (type === "service.scale"
+    && (typeof payload.serviceId !== "string" || !serviceIdPattern.test(payload.serviceId)
+      || typeof payload.serviceName !== "string" || payload.serviceName.length < 1 || payload.serviceName.length > 255
+      || !Number.isInteger(payload.desiredReplicas) || payload.desiredReplicas < 1 || payload.desiredReplicas > 100
+      || !Number.isInteger(payload.originalReplicas) || payload.originalReplicas < 0 || payload.originalReplicas > 10000)) {
+    throw new TypeError("Service scale task fields are invalid.");
+  }
 }
 
 export function createTaskStore({ pool, insertAuditEvent }) {
@@ -56,9 +71,20 @@ export function createTaskStore({ pool, insertAuditEvent }) {
       );
       await insertAuditEvent(client, {
         action: `${type}.requested`,
-        resourceType: "task",
-        resourceId: id,
-        details: { type },
+        resourceType: type.startsWith("service.") ? "service" : "task",
+        resourceId: type.startsWith("service.") ? payload.serviceId : id,
+        details: type.startsWith("service.")
+          ? {
+            serviceName: payload.serviceName,
+            taskId: id,
+            ...(type === "service.scale"
+              ? {
+                originalReplicas: payload.originalReplicas,
+                desiredReplicas: payload.desiredReplicas,
+              }
+              : {}),
+          }
+          : { type },
       });
       await client.query("COMMIT");
     } catch (error) {

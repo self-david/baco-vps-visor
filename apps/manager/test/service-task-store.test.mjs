@@ -155,7 +155,11 @@ test("persists service requests and audit events in one transaction", async () =
   assert.equal(tasks.get(taskId).status, "pending");
   assert.deepEqual(tasks.get(taskId).payload, { serviceId, serviceName: "vps-manager_manager" });
   assert.equal(auditEvents[0].action, "service.restart.requested");
-  assert.deepEqual(auditEvents[0].details, { type: "service.restart" });
+  assert.equal(auditEvents[0].resourceId, serviceId);
+  assert.deepEqual(auditEvents[0].details, {
+    serviceName: "vps-manager_manager",
+    taskId,
+  });
 });
 
 test("stores registered task types while keeping handler payloads out of public history", async () => {
@@ -172,6 +176,34 @@ test("stores registered task types while keeping handler payloads out of public 
   const [historyTask] = await store.listRecentTasks();
   assert.equal(Object.hasOwn(historyTask, "payload"), false);
   assert.equal(Object.hasOwn(historyTask, "serviceId"), false);
+});
+
+test("persists original and desired replica counts for service scale tasks", async () => {
+  const { store } = createFakePool();
+  await store.createTask({
+    id: taskId,
+    type: "service.scale",
+    payload: {
+      serviceId,
+      serviceName: "api",
+      originalReplicas: 2,
+      desiredReplicas: 4,
+    },
+  });
+  const [historyTask] = await store.listRecentTasks();
+  assert.equal(historyTask.originalReplicas, 2);
+  assert.equal(historyTask.desiredReplicas, 4);
+  assert.equal((await store.listRecentTasks())[0].serviceName, "api");
+  await assert.rejects(store.createTask({
+    id: "f3a5e0bb-4911-4d38-8846-04bd9c917134",
+    type: "service.scale",
+    payload: {
+      serviceId,
+      serviceName: "api",
+      originalReplicas: 2,
+      desiredReplicas: 101,
+    },
+  }), /fields are invalid/);
 });
 
 test("claims tasks with a lease, records attempts and recovers expired work", async () => {
