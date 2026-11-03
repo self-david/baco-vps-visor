@@ -1808,3 +1808,7 @@ El flujo ideal será:
 12. Mantener y respaldar toda la infraestructura.
 
 **La meta no es solamente instalar Docker: es crear un centro de administración de infraestructura propio, extensible y completamente controlado por el usuario.**
+
+```bash
+.\reset-test-password.ps1 -PasswordFile .\password-test.txt
+```
