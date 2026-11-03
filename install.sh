@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 readonly INSTALL_DIR="/opt/vps-manager"
 readonly STACK_NAME="vps-manager"
-readonly DEFAULT_REPOSITORY_URL="__CONFIGURE_GIT_REPOSITORY_URL_BEFORE_PUBLISHING__"
+readonly DEFAULT_REPOSITORY_URL="https://github.com/self-david/baco-vps-visor.git"
+readonly DEFAULT_GITHUB_REPOSITORY="self-david/baco-vps-visor"
 readonly RELEASE_REF="v0.1.0"
 
 ADMIN_PASSWORD_INPUT="${VPS_MANAGER_ADMIN_PASSWORD:-}"
@@ -53,6 +54,10 @@ TEST_MODE="${VPS_MANAGER_TEST_MODE:-false}"
 [[ "${TEST_MODE}" == "true" || "${TEST_MODE}" == "false" ]] || fail "VPS_MANAGER_TEST_MODE solo admite true o false."
 DOMAIN="${VPS_MANAGER_DOMAIN:-}"
 EMAIL="${VPS_MANAGER_EMAIL:-}"
+GITHUB_REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-${DEFAULT_GITHUB_REPOSITORY}}"
+if [[ -n "${GITHUB_REPOSITORY}" && ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  fail "VPS_MANAGER_GITHUB_REPOSITORY debe tener el formato owner/repo."
+fi
 
 if [[ "${TEST_MODE}" == "true" ]]; then
   if [[ -z "${DOMAIN}" ]]; then
@@ -111,9 +116,6 @@ for candidate in "${VPS_MANAGER_SOURCE_DIR:-}" "${PWD}" "${SCRIPT_PARENT}"; do
 done
 
 REPOSITORY_URL="${VPS_MANAGER_REPOSITORY_URL:-${DEFAULT_REPOSITORY_URL}}"
-if [[ -z "${SCRIPT_DIR}" && "${REPOSITORY_URL}" == "__CONFIGURE_GIT_REPOSITORY_URL_BEFORE_PUBLISHING__" ]]; then
-  fail "El código aún no está publicado. Configura DEFAULT_REPOSITORY_URL en install.sh antes de publicar el instalador."
-fi
 if [[ -z "${SCRIPT_DIR}" && ! "${REPOSITORY_URL}" =~ ^https:// ]]; then
   fail "La URL del repositorio debe usar HTTPS."
 fi
@@ -241,10 +243,6 @@ docker build --pull -t "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
 umask 077
 install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
-GITHUB_REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-}"
-if [[ -n "${GITHUB_REPOSITORY}" && ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  fail "VPS_MANAGER_GITHUB_REPOSITORY debe tener el formato owner/repo."
-fi
 {
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"
   printf 'VPS_MANAGER_TEST_MODE=%s\n' "${TEST_MODE}"
@@ -308,8 +306,9 @@ if [[ "${panel_ready}" != "true" ]]; then
   fail "No se pudo validar https://${DOMAIN}/api/health. Revisa DNS, firewall TCP 80/443 y los logs mostrados."
 fi
 
-printf '%s\n' "${VPS_MANAGER_VERSION}" > "${INSTALL_DIR}/version"
-chmod 0600 "${INSTALL_DIR}/version"
+printf '%s\n' "${VPS_MANAGER_VERSION}" > "${INSTALL_DIR}/version.tmp"
+chmod 0600 "${INSTALL_DIR}/version.tmp"
+mv -f "${INSTALL_DIR}/version.tmp" "${INSTALL_DIR}/version"
 log "Instalación completada."
 printf 'Panel: %s://%s\n' "${PANEL_SCHEME}" "${DOMAIN}"
 printf 'Diagnóstico: sudo vps-manager-diagnostics\n'

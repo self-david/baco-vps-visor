@@ -7,7 +7,7 @@
 **Arquitectura:** Docker Swarm de un solo nodo  
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de solo lectura de datos del servidor, contenedores, servicios y stacks Docker, métricas históricas de CPU/RAM con retención de siete días en PostgreSQL, alertas operativas, un registro interno de auditoría para cambios de configuración y respaldos cifrados de la base de datos PostgreSQL del panel. Los respaldos admiten creación manual, programación configurable y restauración confirmada; no incluyen volúmenes de aplicaciones ni otros componentes del VPS. Las demás funciones de esta especificación (agente de escritura, tareas persistentes, proyectos Git, catálogo, roles, etc.) siguen pendientes y no se consideran instaladas.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de solo lectura de datos del servidor, contenedores, servicios y stacks Docker, métricas históricas de CPU/RAM con retención de siete días en PostgreSQL, alertas operativas, un registro interno de auditoría, respaldos cifrados de PostgreSQL y comprobación de releases públicas de GitHub para actualizar VPS Manager manualmente desde el VPS. Las demás funciones de esta especificación (agente de escritura, tareas persistentes, proyectos Git, catálogo, roles, etc.) siguen pendientes y no se consideran instaladas.
 
 ---
 
@@ -173,6 +173,7 @@ El instalador:
 - Incluye un modo temporal de prueba por IPv4 privada y HTTP, sin dominio, correo ni certificado TLS.
 - Usa Traefik 3.7.17, cuyo cliente Docker actualizado negocia una API compatible con versiones actuales de Docker Engine.
 - Pide una contraseña administrativa de al menos 16 caracteres; la guarda como secreto Swarm con hash scrypt, no como texto plano.
+- Consulta por defecto las releases públicas de `self-david/baco-vps-visor`; se puede cambiar con `VPS_MANAGER_GITHUB_REPOSITORY=owner/repo`.
 - No configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor.
 - Conserva los secretos y los volúmenes (Traefik y PostgreSQL) durante la desinstalación normal.
 
@@ -208,13 +209,20 @@ sudo bash install.sh
 
 El instalador solicitará dominio, correo de Let's Encrypt y contraseña usando el terminal (`/dev/tty`), aunque el propio script llegue por una tubería `curl | sudo bash`. Para uso no interactivo se pueden definir `VPS_MANAGER_DOMAIN`, `VPS_MANAGER_EMAIL`, `VPS_MANAGER_ADMIN_PASSWORD` y, si la detección automática de red no aplica, `VPS_MANAGER_ADVERTISE_ADDR`. Nunca pases la contraseña como argumento de línea de comandos.
 
-Diagnóstico y desinstalación:
+Diagnóstico, actualización y desinstalación:
 
 ```bash
 sudo vps-manager-diagnostics
+sudo vps-manager-update
 sudo vps-manager-reset-password
 sudo vps-manager-uninstall
 ```
+
+La comprobación de actualizaciones consulta `GET /repos/{owner}/{repo}/releases/latest` de la API pública de GitHub. Solo considera tags estables `vMAJOR.MINOR.PATCH`; el panel compara esa versión con la versión instalada y muestra las notas y el enlace a la release. Cuando hay una actualización utilizable, el panel permite copiar `sudo vps-manager-update`. La acción no se ejecuta en el navegador: el administrador debe abrir una sesión SSH y ejecutar el comando. Así se conserva el proxy Docker de solo lectura y la API web no recibe privilegios de escritura sobre Swarm.
+
+El comando del VPS obtiene la última release estable y requiere que tenga el asset `vps-manager-source.tar.gz` con un digest SHA-256 publicado por GitHub. Verifica ese digest, valida las rutas del archivo y que `apps/manager/VERSION` coincida con el tag antes de ejecutar el instalador. Antes de actualizar crea un respaldo cifrado de PostgreSQL con la clave Swarm ya configurada; después reconstruye la imagen, despliega la nueva versión y valida el endpoint de salud. Ante un fallo intenta solicitar a Swarm rollback del servicio manager. PostgreSQL y los volúmenes/secretos persistentes no se eliminan.
+
+La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto ya está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador descarga el tag inicial `v0.1.0`. Al momento de documentar este flujo, GitHub confirma que el repositorio es público pero aún no tiene tags ni releases: por ello, el actualizador informa que no hay releases publicadas, y la instalación remota desde un checkout vacío todavía requiere crear/publicar primero el tag `v0.1.0`. Una vez publicado el tag inicial, los tags/releases posteriores habilitarán la detección y actualización.
 
 El comando de cambio de contraseña solicita y confirma una nueva contraseña de al menos 16 caracteres. Actualiza el secreto Swarm y reinicia el servicio del panel; no modifica el secreto de sesión ni los datos persistentes.
 
@@ -236,12 +244,11 @@ La desinstalación conserva los secretos y los datos persistentes de Traefik y P
 
 #### Publicación para el comando `curl`
 
-El comando remoto aún requiere publicación: no hay URL de repositorio público ni release configuradas. Para que `https://mipagina.com/install.sh` pueda instalar el proyecto completo:
+El repositorio predeterminado es `https://github.com/self-david/baco-vps-visor.git`. Para habilitar una instalación remota estable con `curl`, primero publica el tag inicial y aloja `install.sh`:
 
-1. Publica el repositorio y crea el tag que coincida con `RELEASE_REF` en `install.sh`.
-2. Sustituye `DEFAULT_REPOSITORY_URL` en `install.sh` por la URL HTTPS real del repositorio.
-3. Publica el `install.sh` de ese tag en la ruta `https://mipagina.com/install.sh`.
-4. Configura el DNS del dominio del panel y permite TCP 80/443 para el modo de producción.
+1. Crea y publica el tag `v0.1.0`, cuyo archivo `apps/manager/VERSION` debe contener `0.1.0`.
+2. Publica el `install.sh` de ese tag en la ruta `https://mipagina.com/install.sh`.
+3. Configura el DNS del dominio del panel y permite TCP 80/443 para el modo de producción.
 
 El servidor remoto descarga el código desde el repositorio configurado; alojar solo `install.sh` no basta. Después de completar esos pasos, los usuarios podrán ejecutar:
 

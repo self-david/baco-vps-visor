@@ -52,6 +52,18 @@ export function createUpdateChecker({
       },
     );
     if (!response.ok) {
+      if (response.status === 404) {
+        return {
+          configured: true,
+          currentVersion,
+          latestVersion: null,
+          updateAvailable: false,
+          updateReady: false,
+          releaseUrl: null,
+          releaseNotes: "",
+          releaseUnavailable: true,
+        };
+      }
       throw new Error(`GitHub returned HTTP ${response.status} while checking releases.`);
     }
     const release = await response.json();
@@ -65,6 +77,7 @@ export function createUpdateChecker({
     );
     const digest = sourceArchive?.digest;
     const expectedUrl = `https://github.com/${normalizedRepository}/releases/download/${encodeURIComponent(tag)}/vps-manager-source.tar.gz`;
+    const expectedReleaseUrl = `https://github.com/${normalizedRepository}/releases/tag/${encodeURIComponent(tag)}`;
     const updateReady = updateAvailable
       && sourceArchive?.browser_download_url === expectedUrl
       && typeof digest === "string"
@@ -76,7 +89,7 @@ export function createUpdateChecker({
       latestVersion: tag.replace(/^v/, ""),
       updateAvailable,
       updateReady,
-      releaseUrl: release.html_url,
+      releaseUrl: release.html_url === expectedReleaseUrl ? release.html_url : null,
       releaseNotes: typeof release.body === "string" ? release.body.slice(0, 5000) : "",
       command: updateReady ? "sudo vps-manager-update" : null,
     };

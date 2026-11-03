@@ -127,3 +127,21 @@ test("fails explicitly when GitHub is unavailable", async () => {
   });
   await assert.rejects(checker.check(), /HTTP 503/);
 });
+
+test("reports a public repository without releases without treating it as an update", async () => {
+  const checker = createUpdateChecker({
+    repository: "self-david/baco-vps-visor",
+    currentVersion: "0.1.0",
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+  });
+  assert.deepEqual(await checker.check(), {
+    configured: true,
+    currentVersion: "0.1.0",
+    latestVersion: null,
+    updateAvailable: false,
+    updateReady: false,
+    releaseUrl: null,
+    releaseNotes: "",
+    releaseUnavailable: true,
+  });
+});

@@ -20,7 +20,7 @@ set -a
 . "${INSTALL_DIR}/install.env"
 set +a
 
-REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-}"
+REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-self-david/baco-vps-visor}"
 [[ "${REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || fail "Configura VPS_MANAGER_GITHUB_REPOSITORY=owner/repo en ${INSTALL_DIR}/install.env."
 CURRENT_VERSION="$(cat "${INSTALL_DIR}/version")"
@@ -101,6 +101,7 @@ docker exec --user 1000:1000 "${MANAGER_CONTAINER}" node --input-type=module -e 
   'import { createBackupManager } from "/app/backup-manager.mjs"; const backup = await createBackupManager().create(); console.log(`Respaldo preventivo: ${backup.id}`);'
 
 curl --fail --silent --show-error --location --retry 2 \
+  --max-filesize 104857600 \
   -H 'User-Agent: VPS-Manager-updater' \
   "${ARCHIVE_URL}" \
   -o "${TEMP_DIRECTORY}/source.tar.gz"
@@ -125,8 +126,12 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
             raise SystemExit("El archivo contiene una ruta no segura.")
         if not member.name.startswith("vps-manager/"):
             raise SystemExit("El archivo no contiene el prefijo esperado.")
-        if member.issym() or member.islnk() or member.isdev():
+        if not (member.isdir() or member.isfile()):
             raise SystemExit("El archivo contiene un tipo de entrada no permitido.")
+        if member.size < 0 or member.size > 512 * 1024 * 1024:
+            raise SystemExit("El archivo contiene una entrada de tamaño no permitido.")
+    if sum(member.size for member in members) > 512 * 1024 * 1024:
+        raise SystemExit("El archivo de release excede el límite de extracción.")
 PY
 
 mkdir "${TEMP_DIRECTORY}/extracted"

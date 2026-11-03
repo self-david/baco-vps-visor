@@ -139,7 +139,7 @@ Estado: **parcial** (métricas, históricos y alertas básicas; aún faltan otro
 
 ## Fase 8 — Seguridad y mantenimiento
 
-Estado: **parcial** (respaldos cifrados/restauración PostgreSQL y auditoría operativa limitada; faltan roles y recuperación)
+Estado: **parcial** (respaldos, auditoría operativa limitada y actualización manual de VPS Manager desde GitHub; faltan roles y recuperación)
 
 - [x] Crear respaldos PostgreSQL cifrados, manuales y programados con retención de siete días.
 - [x] Configurar intervalo automático entre 1 y 168 horas (24 horas por defecto).
@@ -148,7 +148,7 @@ Estado: **parcial** (respaldos cifrados/restauración PostgreSQL y auditoría op
 - [x] Registrar cambios de configuración y respaldos; mostrar los últimos 100 eventos al administrador.
 - [ ] Roles.
 - [ ] MFA.
-- [ ] Actualizaciones.
+- [x] Consultar releases estables de GitHub y ofrecer actualización manual verificada de VPS Manager desde el VPS.
 - [ ] Diagnóstico (desde el panel).
 - [ ] Recuperación automática.
 

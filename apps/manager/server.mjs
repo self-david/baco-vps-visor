@@ -41,7 +41,7 @@ const backupRetentionDays = 7;
 const backupManager = createBackupManager();
 const currentVersion = (await readFile(join(root, "VERSION"), "utf8")).trim();
 const updateChecker = createUpdateChecker({
-  repository: process.env.VPS_MANAGER_GITHUB_REPOSITORY,
+  repository: process.env.VPS_MANAGER_GITHUB_REPOSITORY ?? "self-david/baco-vps-visor",
   currentVersion,
 });
 const contentTypes = {

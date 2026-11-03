@@ -558,6 +558,10 @@ async function checkForUpdates() {
       updatesStatus.textContent = `Versión instalada: ${result.currentVersion}. Configura VPS_MANAGER_GITHUB_REPOSITORY=owner/repo para consultar releases.`;
       return;
     }
+    if (result.releaseUnavailable) {
+      updatesStatus.textContent = `Versión instalada: ${result.currentVersion}. El repositorio configurado aún no tiene releases publicadas.`;
+      return;
+    }
     if (!result.updateAvailable) {
       updatesStatus.textContent = `VPS Manager está actualizado · versión ${result.currentVersion}.`;
       return;
@@ -704,8 +708,8 @@ async function loadResources() {
       loadMetricAlerts(),
       loadBackups(),
       loadAuditLog(),
-      checkForUpdates(),
     ]);
+    void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
   } catch (error) {
     statusMessage.textContent = error.message;
