@@ -1,5 +1,7 @@
 const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
+const dashboardTabs = [...document.querySelectorAll('[role="tab"][aria-controls]')];
+const dashboardPanels = dashboardTabs.map((tab) => document.getElementById(tab.getAttribute("aria-controls")));
 const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
 const logoutButton = document.querySelector("#logout");
@@ -54,6 +56,51 @@ let metricsLoaded = false;
 let metricAlertsRefreshTimer;
 let metricAlertsSignature = "";
 let selectedBackupId;
+
+function activateDashboardTab(tabId, { focus = false, updateHash = true } = {}) {
+  const selectedTab = dashboardTabs.find((tab) => tab.id === `tab-button-${tabId}`);
+  if (!selectedTab) return false;
+
+  for (const tab of dashboardTabs) {
+    const active = tab === selectedTab;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  }
+  for (const panel of dashboardPanels) {
+    const active = panel.id === selectedTab.getAttribute("aria-controls");
+    panel.hidden = !active;
+    panel.classList.toggle("hidden", !active);
+  }
+  if (focus) selectedTab.focus();
+  if (updateHash && location.hash !== `#${selectedTab.getAttribute("aria-controls")}`) {
+    history.replaceState(null, "", `#${selectedTab.getAttribute("aria-controls")}`);
+  }
+  return true;
+}
+
+for (const tab of dashboardTabs) {
+  tab.addEventListener("click", () => activateDashboardTab(tab.id.replace("tab-button-", "")));
+  tab.addEventListener("keydown", (event) => {
+    const currentIndex = dashboardTabs.indexOf(tab);
+    let nextIndex;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % dashboardTabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + dashboardTabs.length) % dashboardTabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = dashboardTabs.length - 1;
+    else return;
+    event.preventDefault();
+    activateDashboardTab(dashboardTabs[nextIndex].id.replace("tab-button-", ""), { focus: true });
+  });
+}
+
+window.addEventListener("hashchange", () => {
+  const panelId = location.hash.slice(1);
+  const tab = dashboardTabs.find((item) => item.getAttribute("aria-controls") === panelId);
+  if (tab) activateDashboardTab(tab.id.replace("tab-button-", ""), { updateHash: false });
+});
+const initialPanelId = location.hash.slice(1);
+const initialTab = dashboardTabs.find((tab) => tab.getAttribute("aria-controls") === initialPanelId);
+if (initialTab) activateDashboardTab(initialTab.id.replace("tab-button-", ""), { updateHash: false });
 
 async function request(path, options = {}) {
   const response = await fetch(path, {

@@ -60,6 +60,7 @@ Estado: **parcial**
 Estado: **parcial** (MVP de solo lectura; no es Astro + React + Tailwind)
 
 - [ ] Diseñar interfaz (Astro + React + Tailwind).
+- [x] Separar el dashboard en pestañas accesibles por categoría e incluir placeholders explícitos para módulos pendientes.
 - [x] Dashboard general.
 - [x] Contenedores.
 - [x] Servicios.
