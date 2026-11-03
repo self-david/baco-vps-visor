@@ -186,10 +186,10 @@ El modo de prueba publica el panel por HTTP y desactiva el atributo `Secure` de 
 Desde la raíz del checkout en Ubuntu 24.04, indica la IPv4 privada del VPS:
 
 ```bash
-sudo env VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.156 bash install.sh
+sudo env VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash install.sh
 ```
 
-La instalación verifica `http://192.168.100.156/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor.
+La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor.
 
 Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proyecto:
 

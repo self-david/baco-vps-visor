@@ -21,7 +21,7 @@ test("discovers HTTP and HTTPS routes from Traefik host rules only", () => {
       "traefik.http.routers.web.tls": "true",
     }),
     service("test-panel", {
-      "traefik.http.routers.test.rule": "Host(`192.168.100.156`)",
+      "traefik.http.routers.test.rule": "Host(`192.168.100.158`)",
       "traefik.http.routers.test.entrypoints": "web",
     }),
     service("unsafe", {
@@ -41,7 +41,7 @@ test("discovers HTTP and HTTPS routes from Traefik host rules only", () => {
   })), [
     { serviceName: "web", url: "https://shop.example.test/", checkCertificate: true },
     { serviceName: "web", url: "https://www.example.test/", checkCertificate: true },
-    { serviceName: "test-panel", url: "http://192.168.100.156/", checkCertificate: false },
+    { serviceName: "test-panel", url: "http://192.168.100.158/", checkCertificate: false },
   ]);
 });
 

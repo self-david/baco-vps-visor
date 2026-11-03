@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$server = "baco@192.168.100.156"
+$server = "baco@192.168.100.158"
 $transferId = [guid]::NewGuid().ToString("N")
 $remoteDirectory = "/tmp/vps-manager-password-reset-$transferId"
 $localStageDirectory = Join-Path $env:TEMP "vps-manager-password-reset-$transferId"

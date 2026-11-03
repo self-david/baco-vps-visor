@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$server = "baco@192.168.100.156"
+$server = "baco@192.168.100.158"
 $projectDirectory = $PSScriptRoot
 $deploymentId = [guid]::NewGuid().ToString("N")
 $localStageDirectory = Join-Path $env:TEMP "vps-manager-deploy-$deploymentId"
@@ -55,7 +55,7 @@ try {
     throw "Falló la copia del proyecto por SCP (código $scpExitCode)."
   }
 
-  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.156 bash '$remoteStageDirectory/install.sh'"
+  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash '$remoteStageDirectory/install.sh'"
   Write-Host "Conectando al VPS, normalizando los scripts y ejecutando la instalación..."
   & ssh -tt $server $remoteCommand
   if ($LASTEXITCODE -ne 0) {
