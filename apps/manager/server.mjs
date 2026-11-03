@@ -10,6 +10,7 @@ import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
 import { createWebUpdater } from "./web-updater.mjs";
 import { createServiceOperationAgent, findManagedService } from "./service-operations.mjs";
+import { createServiceRestartHandler, createTaskQueueWorker } from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
@@ -17,18 +18,21 @@ import {
   getContainerMetricsHistory,
   getContainerMetricAlerts,
   getRecentAuditEvents,
-  getRecentServiceRestartTasks,
+  getRecentTasks,
   getBackupIntervalHours,
   getOperationalAlerts,
   getDatabaseStatus,
   getMetricAlertThresholds,
   getMetricsSamplingIntervalMinutes,
   initDatabase,
+  claimNextTask,
+  completeTask,
+  failTask,
+  renewTaskLease,
   saveContainerRestartSamples,
   saveContainerMetrics,
   recordAuditEvent,
   createServiceRestartTask,
-  updateServiceRestartTask,
   updateMetricAlertThresholds,
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
@@ -57,6 +61,13 @@ const updateChecker = createUpdateChecker({
 });
 const webUpdater = createWebUpdater();
 const serviceOperationAgent = createServiceOperationAgent();
+const taskQueueWorker = createTaskQueueWorker({
+  store: { claimNextTask, completeTask, failTask, renewTaskLease },
+  handlers: {
+    "service.restart": createServiceRestartHandler(serviceOperationAgent),
+  },
+  onError: (...args) => console.error("Task queue worker error:", ...args),
+});
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -661,10 +672,25 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const operation = await serviceOperationAgent.getStatus();
-      if (operation && operation.state !== "queued") {
-        await updateServiceRestartTask(operation.id, operation.state, operation.message);
-      }
+      const recentServiceTask = (await getRecentTasks()).find((task) => task.type === "service.restart");
+      const operation = recentServiceTask
+        ? {
+          id: recentServiceTask.id,
+          state: {
+            pending: "queued",
+            in_progress: "running",
+            completed: "succeeded",
+            failed: "failed",
+          }[recentServiceTask.status],
+          serviceId: recentServiceTask.serviceId,
+          message: recentServiceTask.status === "completed"
+            ? recentServiceTask.result?.message ?? "Servicio reiniciado correctamente."
+            : recentServiceTask.error
+              ?? (recentServiceTask.status === "pending"
+                ? "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio."
+                : "Reinicio de servicio en curso."),
+        }
+        : await serviceOperationAgent.getStatus();
       respondJson(response, 200, { operation });
     } catch (error) {
       console.error("Service operation status request failed:", error);
@@ -679,11 +705,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const operation = await serviceOperationAgent.getStatus();
-      if (operation && operation.state !== "queued") {
-        await updateServiceRestartTask(operation.id, operation.state, operation.message);
-      }
-      respondJson(response, 200, { tasks: await getRecentServiceRestartTasks() });
+      respondJson(response, 200, { tasks: await getRecentTasks() });
     } catch (error) {
       console.error("Task history request failed:", error);
       respondJson(response, 503, { error: "No se pudo consultar o actualizar el historial de tareas." });
@@ -1043,15 +1065,13 @@ const server = createServer(async (request, response) => {
           respondJson(response, 503, { error: "No se pudo guardar la tarea; no se envió el reinicio al host." });
           return;
         }
-        let operation;
-        try {
-          operation = await serviceOperationAgent.requestRestart(service.ID, taskId);
-        } catch (error) {
-          await updateServiceRestartTask(taskId, "failed", error.message);
-          throw error;
-        }
         respondJson(response, 202, {
-          operation,
+          operation: {
+            id: taskId,
+            state: "queued",
+            serviceId: service.ID,
+            message: "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
+          },
           serviceName,
         });
         return;
@@ -1113,6 +1133,7 @@ server.listen(port, "0.0.0.0", () => {
 
 initDatabase()
   .then(async () => {
+    taskQueueWorker.start();
     const intervalMinutes = await getMetricsSamplingIntervalMinutes();
     metricsSampler = createMetricsSampler({
       intervalMinutes,
@@ -1153,6 +1174,7 @@ initDatabase()
   });
 
 server.on("close", () => {
+  void taskQueueWorker.stop();
   metricsSampler?.stop();
   backupScheduler?.stop();
 });

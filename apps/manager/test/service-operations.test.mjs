@@ -59,11 +59,11 @@ test("rejects malformed service IDs before creating a request", async () => {
   }
 });
 
-test("rejects duplicate requests while queued or running", async () => {
+test("returns the existing task for duplicate IDs and rejects different active requests", async () => {
   const fixture = await createFixture();
   try {
     await fixture.agent.requestRestart(serviceId);
-    await assert.rejects(fixture.agent.requestRestart(serviceId), { code: "OPERATION_IN_PROGRESS" });
+    assert.equal((await fixture.agent.requestRestart(serviceId)).id, requestId);
     await rm(join(fixture.directory, "request.json"));
     await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
       id: requestId,
@@ -72,7 +72,29 @@ test("rejects duplicate requests while queued or running", async () => {
       updatedAt: "2026-11-03T18:00:00Z",
       message: "running",
     }));
-    await assert.rejects(fixture.agent.requestRestart(serviceId), { code: "OPERATION_IN_PROGRESS" });
+    assert.equal((await fixture.agent.requestRestart(serviceId)).state, "running");
+    await assert.rejects(
+      fixture.agent.requestRestart(serviceId, secondRequestId),
+      { code: "OPERATION_IN_PROGRESS" },
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("does not requeue an operation whose matching ID is already terminal", async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      state: "succeeded",
+      serviceId,
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "Servicio reiniciado.",
+    }));
+
+    assert.equal((await fixture.agent.requestRestart(serviceId, requestId)).state, "succeeded");
+    await assert.rejects(readFile(join(fixture.directory, "request.json")), { code: "ENOENT" });
   } finally {
     await fixture.cleanup();
   }

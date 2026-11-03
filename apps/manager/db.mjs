@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { evaluateContainerMetricAlerts } from "./metric-alerts.mjs";
 import { evaluateOperationalAlerts } from "./operational-alerts.mjs";
-import { createServiceTaskStore } from "./service-task-store.mjs";
+import { createTaskStore } from "./service-task-store.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(root, "database", "migrations");
@@ -18,7 +18,7 @@ if (!databasePassword) {
 }
 
 let pool;
-let serviceTaskStore;
+let taskStore;
 let databaseReady = false;
 
 function sleep(milliseconds) {
@@ -38,7 +38,7 @@ export async function initDatabase() {
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 5_000,
   });
-  serviceTaskStore = createServiceTaskStore({ pool, insertAuditEvent });
+  taskStore = createTaskStore({ pool, insertAuditEvent });
   pool.on("error", (error) => {
     databaseReady = false;
     console.error("PostgreSQL pool error:", error.message);
@@ -200,16 +200,36 @@ export async function getRecentAuditEvents() {
   }));
 }
 
+export async function createTask(task) {
+  return taskStore.createTask(task);
+}
+
 export async function createServiceRestartTask(task) {
-  return serviceTaskStore.createRestartTask(task);
+  return createTask({
+    id: task.id,
+    type: "service.restart",
+    payload: { serviceId: task.serviceId, serviceName: task.serviceName },
+  });
 }
 
-export async function updateServiceRestartTask(id, state, message) {
-  return serviceTaskStore.updateRestartTask(id, state, message);
+export async function claimNextTask(workerId, leaseSeconds) {
+  return taskStore.claimNextTask(workerId, leaseSeconds);
 }
 
-export async function getRecentServiceRestartTasks(limit = 50) {
-  return serviceTaskStore.listRecentRestartTasks(limit);
+export async function renewTaskLease(id, workerId, leaseSeconds) {
+  return taskStore.renewTaskLease(id, workerId, leaseSeconds);
+}
+
+export async function completeTask(id, workerId, result) {
+  return taskStore.completeTask(id, workerId, result);
+}
+
+export async function failTask(id, workerId, message, retryable) {
+  return taskStore.failTask(id, workerId, message, retryable);
+}
+
+export async function getRecentTasks(limit = 50) {
+  return taskStore.listRecentTasks(limit);
 }
 
 export async function getBackupIntervalHours() {

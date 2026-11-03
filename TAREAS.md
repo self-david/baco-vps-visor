@@ -51,7 +51,7 @@ Estado: **parcial**
 - [x] Implementar reinicio autenticado y auditado de servicios administrados con confirmación y estado de resultado.
 - [ ] Implementar otras operaciones permitidas de escritura mediante una lista explícita.
 - [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
-- [ ] Ampliar el sistema a una cola general con reintentos y recuperación de distintas clases de tareas.
+- [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; el reinicio de servicios es el único handler habilitado actualmente.
 
 **Resultado:** backend capaz de administrar Docker.
 

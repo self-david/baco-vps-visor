@@ -447,7 +447,7 @@ async function loadTaskHistory() {
     const result = await request("/api/system/tasks");
     tasksList.replaceChildren();
     const statusLabels = {
-      pending: "Pendiente",
+      pending: "En cola",
       in_progress: "En curso",
       completed: "Completada",
       failed: "Fallida",
@@ -459,14 +459,20 @@ async function loadTaskHistory() {
       main.className = "resource-main";
       const title = document.createElement("div");
       title.className = "resource-name";
-      title.textContent = `Reinicio de ${task.serviceName}`;
+      title.textContent = task.type === "service.restart"
+        ? `Reinicio de ${task.serviceName}`
+        : `Tarea: ${task.type}`;
       const details = document.createElement("div");
       details.className = "resource-detail task-detail";
       const createdAt = new Date(task.createdAt).toLocaleString("es-MX");
       const finishedAt = task.completedAt
         ? ` · finalizada ${new Date(task.completedAt).toLocaleString("es-MX")}`
         : "";
-      details.textContent = `${statusLabels[task.status] ?? "Estado desconocido"} · ${createdAt}${finishedAt}`;
+      const currentStatus = task.status === "pending" && task.attempts > 0
+        ? "Reintentando"
+        : statusLabels[task.status] ?? "Estado desconocido";
+      const attempts = task.attempts > 0 ? ` · intento ${task.attempts}/${task.maxAttempts}` : "";
+      details.textContent = `${currentStatus} · ${createdAt}${attempts}${finishedAt}`;
       main.append(title, details);
       row.append(main);
       if (task.error || task.result?.message) {

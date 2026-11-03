@@ -109,6 +109,7 @@ export function createServiceOperationAgent({
       throw new Error("The service operation request identifier is invalid.");
     }
     const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) return currentStatus;
     if (activeStates.has(currentStatus?.state)) {
       const error = new Error("Ya hay una operación de servicio en curso.");
       error.code = "OPERATION_IN_PROGRESS";
