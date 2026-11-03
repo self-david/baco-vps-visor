@@ -226,23 +226,15 @@ El comando del VPS obtiene la última release estable y requiere que tenga el as
 
 La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto ya está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador descarga el tag inicial `v0.1.0`. Si todavía no hay tags ni releases, publica primero `v0.1.0`; después, los tags/releases posteriores habilitarán la detección y actualización.
 
-##### Crear y publicar un tag de release
+##### Crear y publicar una release desde PowerShell
 
-En PowerShell, desde la raíz del repositorio, verifica que `apps/manager/VERSION` tenga la versión que se va a publicar y que todos los cambios estén confirmados y subidos a GitHub. El tag apunta al commit actual, por lo que no incluirá cambios sin confirmar:
-
-```powershell
-git status
-Get-Content .\apps\manager\VERSION
-```
-
-Para publicar la versión inicial `0.1.0`, crea un tag anotado y súbelo al remoto:
+Desde la raíz del repositorio, indica solo la versión nueva:
 
 ```powershell
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+.\publish-release.ps1 0.1.2
 ```
 
-Para cada release posterior, actualiza `apps/manager/VERSION` (por ejemplo, a `0.1.1`), confirma y sube ese cambio, y crea y publica el tag correspondiente (`v0.1.1` en este ejemplo). La versión del archivo debe coincidir exactamente con el tag sin la `v`. Al subir el tag, GitHub Actions ejecuta el workflow de release; revisa la pestaña **Actions** para confirmar que terminó correctamente y que publicó la release con el asset `vps-manager-source.tar.gz`. No reutilices un tag ya publicado.
+El script comprueba que la rama sea `main`, que el árbol de trabajo esté limpio, que la versión sea válida y superior a las versiones existentes, y que el tag no esté ya publicado. Actualiza `apps/manager/VERSION`, crea un commit, sube `main`, crea el tag anotado `v<versión>` y lo publica. Después, GitHub Actions valida que el tag coincida con `VERSION` y genera la release con `vps-manager-source.tar.gz`; confirma que el workflow terminó correctamente en la pestaña **Actions**. No reutilices tags, incluso si un workflow de release anterior falló.
 
 El comando de cambio de contraseña solicita y confirma una nueva contraseña de al menos 16 caracteres. Actualiza el secreto Swarm y reinicia el servicio del panel; no modifica el secreto de sesión ni los datos persistentes.
 
