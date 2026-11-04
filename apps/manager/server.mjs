@@ -17,6 +17,7 @@ import {
 } from "./service-operations.mjs";
 import {
   createGiteaInstallHandler,
+  createN8nInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createRegistryConfigureHandler,
@@ -71,6 +72,7 @@ import {
   recordAuditEvent,
   recordGiteaWebhookDelivery,
   createGiteaInstallTask,
+  createN8nInstallTask,
   createRegistryConfigureTask,
   createProjectBuildTask,
   createProjectDeployTask,
@@ -129,6 +131,7 @@ const taskQueueWorker = createTaskQueueWorker({
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
     "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
+    "application.n8n.install": createN8nInstallHandler(serviceOperationAgent),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
     "project.build": createProjectBuildHandler({
       agent: serviceOperationAgent,
@@ -689,6 +692,41 @@ async function getGiteaApplicationState() {
   };
 }
 
+async function getN8nApplicationState() {
+  const [services, domains, latestTask] = await Promise.all([
+    dockerGet("/services"),
+    getProjectDomains(),
+    getLatestTaskByType("application.n8n.install"),
+  ]);
+  const service = services.find((item) => item.Spec?.Name === "vps-manager-n8n");
+  const installed = service?.Spec?.Labels?.["vps-manager.component"] === "n8n"
+    && service.Spec.Labels["vps-manager.managed"] === "true";
+  const nameConflict = Boolean(service && !installed);
+  const domain = domains.find((item) => item.applicationId === "n8n") ?? null;
+  const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
+  return {
+    application: {
+      id: "n8n",
+      domain: domain?.hostname ?? null,
+      url: domain ? `https://${domain.hostname}/` : null,
+      domainConfigured: Boolean(domain),
+      available: Boolean(domain) && !testMode && !installed && !nameConflict && !installing,
+      installed,
+      installing,
+      nameConflict,
+      latestTask: latestTask ? {
+        id: latestTask.id,
+        status: latestTask.status,
+        message: latestTask.status === "completed"
+          ? latestTask.result?.message ?? "n8n está instalado."
+          : latestTask.status === "failed"
+            ? latestTask.error ?? "La instalación de n8n falló."
+            : "Instalación de n8n en curso.",
+      } : null,
+    },
+  };
+}
+
 async function getGiteaApiContext() {
   const { application } = await getGiteaApplicationState();
   if (!application.installed || !application.domain) {
@@ -882,7 +920,10 @@ const server = createServer(async (request, response) => {
           zone: domain.zone,
           hostname: domain.hostname,
           projectId: domain.projectId,
-          projectName: projectNames.get(domain.projectId) ?? "Proyecto eliminado",
+          applicationId: domain.applicationId,
+          projectName: domain.applicationId
+            ? (domain.applicationId === "n8n" ? "n8n" : "Aplicación desconocida")
+            : projectNames.get(domain.projectId) ?? "Proyecto eliminado",
           port: domain.port,
           proxied: domain.proxied,
           tokenConfigured: await hasCloudflareToken(serviceOperationsDirectory, domain.id),
@@ -980,12 +1021,21 @@ const server = createServer(async (request, response) => {
           respondJson(response, 404, { error: "No se encontró el dominio." });
           return;
         }
+        if (existing.applicationId === "n8n") {
+          const n8n = await getN8nApplicationState();
+          if (n8n.application.installed || n8n.application.installing) {
+            respondJson(response, 409, { error: "No se puede quitar el dominio de n8n mientras su servicio está instalado o en instalación." });
+            return;
+          }
+        }
         await deleteProjectDomain(domainId);
-        await saveProjectDomainAssignments(existing.projectId);
+        if (existing.projectId) await saveProjectDomainAssignments(existing.projectId);
         await deleteCloudflareToken(serviceOperationsDirectory, domainId);
         respondJson(response, 200, {
           deleted: true,
-          message: "Se quitó la configuración. El registro A de Cloudflare se conserva; el enrutamiento del servicio se actualiza en su próximo despliegue.",
+          message: existing.applicationId === "n8n"
+            ? "Se quitó la configuración de n8n. El registro A de Cloudflare se conserva."
+            : "Se quitó la configuración. El registro A de Cloudflare se conserva; el enrutamiento del servicio se actualiza en su próximo despliegue.",
         });
       } catch (error) {
         console.error("Could not remove project domain:", error);
@@ -1001,9 +1051,18 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Configura primero la IPv4 pública del VPS manager." });
         return;
       }
-      const project = await getProject(input.projectId);
-      if (!project) {
+      const project = input.projectId ? await getProject(input.projectId) : null;
+      if (input.projectId && !project) {
         respondJson(response, 404, { error: "No se encontró el proyecto seleccionado." });
+        return;
+      }
+      const existing = isUpdate ? await getProjectDomain(domainId) : null;
+      const n8n = input.applicationId === "n8n" || existing?.applicationId === "n8n"
+        ? await getN8nApplicationState()
+        : null;
+      if ((input.applicationId === "n8n" || existing?.applicationId === "n8n")
+        && (n8n?.application.installed || n8n?.application.installing)) {
+        respondJson(response, 409, { error: "No se puede cambiar el dominio de n8n mientras su servicio está instalado o en instalación." });
         return;
       }
       const registryConfiguration = await serviceOperationAgent.getRegistryConfiguration();
@@ -1016,7 +1075,6 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });
         return;
       }
-      const existing = isUpdate ? await getProjectDomain(domainId) : null;
       if (isUpdate && !existing) {
         respondJson(response, 404, { error: "No se encontró el dominio." });
         return;
@@ -1032,11 +1090,18 @@ const server = createServer(async (request, response) => {
         return;
       }
       const currentDomains = await getProjectDomains();
-      const projectDomainCount = currentDomains.filter((domain) =>
-        domain.projectId === input.projectId && domain.id !== existing?.id).length;
-      if (projectDomainCount >= 20) {
-        respondJson(response, 409, { error: "Un proyecto admite como máximo 20 dominios." });
+      if (input.applicationId
+        && currentDomains.some((domain) => domain.applicationId === input.applicationId && domain.id !== existing?.id)) {
+        respondJson(response, 409, { error: "n8n admite un solo dominio conectado desde el panel central." });
         return;
+      }
+      if (input.projectId) {
+        const projectDomainCount = currentDomains.filter((domain) =>
+          domain.projectId === input.projectId && domain.id !== existing?.id).length;
+        if (projectDomainCount >= 20) {
+          respondJson(response, 409, { error: "Un proyecto admite como máximo 20 dominios." });
+          return;
+        }
       }
       let token = input.token;
       if (token === undefined) {
@@ -1064,6 +1129,7 @@ const server = createServer(async (request, response) => {
         zoneId: zone.id,
         hostname: input.hostname,
         projectId: input.projectId,
+        applicationId: input.applicationId,
         port: input.port,
         proxied: input.proxied,
         dnsRecordId: dnsRecord.id,
@@ -1071,10 +1137,11 @@ const server = createServer(async (request, response) => {
       if (input.token !== undefined) {
         await saveCloudflareToken(serviceOperationsDirectory, id, input.token);
       }
-      await saveProjectDomainAssignments(input.projectId);
-      if (existing && existing.projectId !== input.projectId) {
+      if (input.projectId) await saveProjectDomainAssignments(input.projectId);
+      if (existing?.projectId && existing.projectId !== input.projectId) {
         await saveProjectDomainAssignments(existing.projectId);
       }
+      const targetName = project?.name ?? "n8n";
       respondJson(response, isUpdate ? 200 : 201, {
         domain: {
           id: saved.id,
@@ -1082,12 +1149,15 @@ const server = createServer(async (request, response) => {
           zone: saved.zone,
           hostname: saved.hostname,
           projectId: saved.projectId,
-          projectName: project.name,
+          applicationId: saved.applicationId,
+          projectName: targetName,
           port: saved.port,
           proxied: saved.proxied,
           tokenConfigured: true,
         },
-        message: `Se conectó ${saved.hostname} con Cloudflare. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
+        message: saved.applicationId === "n8n"
+          ? `Se conectó ${saved.hostname} con Cloudflare para n8n. Instala n8n para activar el enrutamiento HTTPS.`
+          : `Se conectó ${saved.hostname} con Cloudflare. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
       });
     } catch (error) {
       if (error instanceof RequestError) {
@@ -1927,6 +1997,68 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         console.error("Could not request Gitea installation:", error);
         respondJson(response, 503, { error: "No se pudo iniciar la instalación de Gitea." });
+      }
+      return;
+    }
+    respond(response, 405, "Method not allowed", { Allow: "GET, POST" });
+    return;
+  }
+
+  if (url.pathname === "/api/system/applications/n8n") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        respondJson(response, 200, await getN8nApplicationState());
+      } catch (error) {
+        console.error("n8n application status request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el estado de n8n." });
+      }
+      return;
+    }
+    if (request.method === "POST") {
+      if (!hasSameOrigin(request)) {
+        respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+        return;
+      }
+      try {
+        const { application } = await getN8nApplicationState();
+        if (testMode || !application.domain) {
+          respondJson(response, 409, {
+            error: "n8n requiere HTTPS y un dominio registrado para la aplicación en el panel central de Dominios.",
+          });
+          return;
+        }
+        if (application.installed || application.nameConflict || application.installing) {
+          respondJson(response, 409, {
+            error: application.nameConflict
+              ? "Ya existe un servicio con el nombre reservado para n8n que no pertenece a VPS Manager."
+              : application.installed
+                ? "n8n ya está instalado."
+                : "Ya hay una instalación de n8n en curso.",
+          });
+          return;
+        }
+        const taskId = randomUUID();
+        await createN8nInstallTask({ id: taskId, domain: application.domain });
+        respondJson(response, 202, {
+          task: {
+            id: taskId,
+            type: "application.n8n.install",
+            status: "pending",
+            domain: application.domain,
+            message: `Instalación de n8n solicitada para https://${application.domain}/.`,
+          },
+        });
+      } catch (error) {
+        if (error?.code === "APPLICATION_TASK_IN_PROGRESS") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
+        console.error("Could not request n8n installation:", error);
+        respondJson(response, 503, { error: "No se pudo iniciar la instalación de n8n." });
       }
       return;
     }

@@ -3,7 +3,7 @@ import { applicationCatalog } from "../data/application-catalog.mjs";
 export default function ApplicationCatalog() {
   return (
     <div className="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2" aria-label="Catálogo de aplicaciones">
-      {applicationCatalog.map((application) => (
+      {applicationCatalog.filter((application) => application.id !== "n8n").map((application) => (
         <section className="card application-card" aria-labelledby={`application-${application.id}`} key={application.id}>
           <div className="card-heading">
             <div>
@@ -70,6 +70,30 @@ export default function ApplicationCatalog() {
           </section>
         </section>
       ))}
+      <section className="card application-card" aria-labelledby="application-n8n">
+        <div className="card-heading">
+          <div>
+            <p className="eyebrow">Automatización</p>
+            <h3 id="application-n8n">n8n</h3>
+          </div>
+          <span className="badge roadmap-badge">Aplicación opcional</span>
+        </div>
+        <p className="muted">Automatiza flujos de trabajo con una instancia privada y persistente.</p>
+        <ul className="roadmap-list">
+          <li>Instancia única con SQLite y volumen persistente administrado</li>
+          <li>Acceso HTTPS con dominio registrado como aplicación n8n en Dominios</li>
+          <li>Clave de cifrado generada automáticamente y guardada como secreto Swarm</li>
+        </ul>
+        <p id="n8n-status" className="application-status" role="status" aria-live="polite">
+          Consultando disponibilidad…
+        </p>
+        <p className="application-domain">
+          <a id="n8n-url" href="#" className="update-release-link hidden">Abrir n8n</a>
+        </p>
+        <div className="container-heading-actions application-actions">
+          <button id="install-n8n" className="button resource-action hidden" type="button">Instalar n8n</button>
+        </div>
+      </section>
     </div>
   );
 }

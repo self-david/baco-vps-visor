@@ -61,6 +61,13 @@ test("validates scale targets for replicated services without allowing panel dow
     ...service,
     Spec: {
       ...service.Spec,
+      Labels: { "vps-manager.managed": "true", "vps-manager.component": "n8n" },
+    },
+  }, 2), { code: "APPLICATION_REPLICA_COUNT" });
+  assert.throws(() => validateServiceScale({
+    ...service,
+    Spec: {
+      ...service.Spec,
       Labels: { "vps-manager.managed": "true", "vps-manager.component": "registry" },
     },
   }, 2), { code: "APPLICATION_REPLICA_COUNT" });
@@ -113,6 +120,30 @@ test("stages SSH credentials separately from the Swarm node request", async () =
     });
     await fixture.agent.removeNodeCredentials(requestId);
     await assert.rejects(readFile(join(fixture.directory, `node-ssh-key-${requestId}`)), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("queues n8n installation without including generated encryption material", async () => {
+  const fixture = await createFixture();
+  try {
+    const operation = await fixture.agent.requestN8nInstall("automation.example.com", requestId);
+    const requestContents = await readFile(join(fixture.directory, "request.json"), "utf8");
+
+    assert.deepEqual(operation, {
+      id: requestId,
+      state: "queued",
+      operation: "install-n8n",
+      domain: "automation.example.com",
+      message: "Instalación de n8n aceptada para automation.example.com; el agente del VPS iniciará el servicio.",
+    });
+    assert.deepEqual(JSON.parse(requestContents), {
+      id: requestId,
+      operation: "install-n8n",
+      domain: "automation.example.com",
+    });
+    await assert.rejects(fixture.agent.requestN8nInstall("automation.example.com;id"), /hostname público válido/);
   } finally {
     await fixture.cleanup();
   }

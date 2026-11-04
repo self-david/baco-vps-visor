@@ -23,6 +23,7 @@ function mapTask(row, { includePayload = false } = {}) {
       }
       : {}),
     ...(row.type === "application.gitea.install" ? { domain: row.payload.domain } : {}),
+    ...(row.type === "application.n8n.install" ? { domain: row.payload.domain } : {}),
     ...(row.type === "registry.configure"
       ? { domain: row.payload.domain, username: row.payload.username }
       : {}),
@@ -55,6 +56,9 @@ function mapTask(row, { includePayload = false } = {}) {
             url: row.result.url,
             credentialsAvailable: true,
           }
+          : {}),
+        ...(row.type === "application.n8n.install" && typeof row.result.url === "string"
+          ? { url: row.result.url }
           : {}),
         ...(row.type === "project.build" && typeof row.result.image === "string"
           ? {
@@ -115,6 +119,13 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
     throw new TypeError("Gitea application installation task fields are invalid.");
   }
+  if (type === "application.n8n.install"
+    && (Object.keys(payload).length !== 1
+      || typeof payload.domain !== "string"
+      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
+    throw new TypeError("n8n application installation task fields are invalid.");
+  }
   if (type === "registry.configure"
     && (Object.keys(payload).sort().join(",") !== ["domain", "username"].sort().join(",")
       || typeof payload.domain !== "string"
@@ -169,8 +180,8 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      if (type === "application.gitea.install") {
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["application.gitea.install"]);
+      if (type === "application.gitea.install" || type === "application.n8n.install") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [type]);
         const activeTask = await client.query(
           `SELECT id FROM tasks
            WHERE type = $1 AND status IN ('pending', 'in_progress')

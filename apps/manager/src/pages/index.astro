@@ -274,7 +274,7 @@ import "../styles/tailwind.css";
             <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
               <section class="card roadmap-card">
                 <div class="card-heading"><h3>Dominios y certificados</h3><span class="badge">Cloudflare</span></div>
-                <p class="muted">Conecta dominios de Cloudflare con proyectos. VPS Manager crea registros A y configura HTTPS con Traefik durante el siguiente despliegue.</p>
+                <p class="muted">Conecta dominios de Cloudflare con proyectos o aplicaciones compatibles. VPS Manager crea registros A y configura HTTPS con Traefik al desplegar el proyecto o instalar la aplicación.</p>
                 <form id="domains-ingress-form">
                   <label for="domains-ingress-ip">IPv4 pública de entrada del VPS manager</label>
                   <input id="domains-ingress-ip" name="ipv4" type="text" inputmode="decimal" autocomplete="off" placeholder="203.0.113.10" required>
@@ -292,11 +292,11 @@ import "../styles/tailwind.css";
                   <input id="domain-zone" name="zone" type="text" placeholder="ejemplo.com" autocomplete="off" required>
                   <label for="domain-hostname">Hostname que conectar</label>
                   <input id="domain-hostname" name="hostname" type="text" placeholder="app.ejemplo.com" autocomplete="off" required>
-                  <label for="domain-project">Proyecto</label>
-                  <select id="domain-project" name="projectId" required>
-                    <option value="">Registra primero un proyecto</option>
+                  <label for="domain-project">Proyecto o aplicación</label>
+                  <select id="domain-project" name="target" required>
+                    <option value="">Registra primero un proyecto o selecciona n8n</option>
                   </select>
-                  <label for="domain-port">Puerto HTTP interno de la aplicación</label>
+                  <label for="domain-port">Puerto HTTP interno</label>
                   <input id="domain-port" name="port" type="number" min="1" max="65535" value="3000" required>
                   <label for="domain-token">Token API de Cloudflare <span class="muted">(solo al conectar o cambiarlo)</span></label>
                   <input id="domain-token" name="token" type="password" autocomplete="new-password" placeholder="Token con Zone:Read y DNS:Edit" required>

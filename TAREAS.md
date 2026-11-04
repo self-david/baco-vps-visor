@@ -113,8 +113,8 @@ Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales;
 
 Estado: **pendiente**
 
-- [ ] Crear formato de plantillas.
-- [ ] Instalar n8n.
+- [x] Definir y validar plantillas versionadas de imagen Docker y variables de entorno para aplicaciones de un contenedor; sin puertos ni volúmenes configurables.
+- [x] Instalar n8n como servicio Swarm de una réplica, con volumen persistente administrado, clave de cifrado en secreto Swarm y dominio Cloudflare/HTTPS desde el panel.
 - [ ] Instalar PostgreSQL.
 - [ ] Instalar Redis.
 - [ ] Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.

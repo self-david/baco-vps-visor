@@ -8,6 +8,7 @@ export function validateDomainConfiguration(input) {
       "zone",
       "hostname",
       "projectId",
+      "applicationId",
       "port",
       "token",
       "proxied",
@@ -15,12 +16,14 @@ export function validateDomainConfiguration(input) {
     ].includes(key))
     || typeof input.zone !== "string"
     || typeof input.hostname !== "string"
-    || typeof input.projectId !== "string"
+    || ((input.projectId === undefined) === (input.applicationId === undefined))
+    || (input.projectId !== undefined && typeof input.projectId !== "string")
+    || (input.applicationId !== undefined && input.applicationId !== "n8n")
     || !Number.isInteger(input.port)
     || typeof input.proxied !== "boolean"
     || (input.provider !== undefined && input.provider !== "cloudflare")
     || (input.token !== undefined && typeof input.token !== "string")) {
-    throw new TypeError("Proporciona zona, dominio, proyecto, puerto y estado del proxy válidos.");
+    throw new TypeError("Proporciona zona, dominio, destino, puerto y estado del proxy válidos.");
   }
   const zone = input.zone.trim().toLowerCase().replace(/\.$/, "");
   const hostname = input.hostname.trim().toLowerCase().replace(/\.$/, "");
@@ -28,8 +31,10 @@ export function validateDomainConfiguration(input) {
     || (hostname !== zone && !hostname.endsWith(`.${zone}`))) {
     throw new TypeError("El dominio debe pertenecer a la zona seleccionada.");
   }
-  if (!uuidPattern.test(input.projectId) || input.port < 1 || input.port > 65535) {
-    throw new TypeError("Selecciona un proyecto y puerto válidos.");
+  if ((input.projectId !== undefined && !uuidPattern.test(input.projectId))
+    || input.port < 1 || input.port > 65535
+    || (input.applicationId === "n8n" && input.port !== 5678)) {
+    throw new TypeError("Selecciona un destino y puerto válidos.");
   }
   if (input.token !== undefined
     && (input.token.length < 20 || input.token.length > 512 || /[\u0000-\u001f\u007f]/.test(input.token))) {
@@ -38,7 +43,8 @@ export function validateDomainConfiguration(input) {
   return {
     zone,
     hostname,
-    projectId: input.projectId.toLowerCase(),
+    ...(input.projectId !== undefined ? { projectId: input.projectId.toLowerCase() } : {}),
+    ...(input.applicationId !== undefined ? { applicationId: input.applicationId } : {}),
     port: input.port,
     proxied: input.proxied,
     provider: "cloudflare",

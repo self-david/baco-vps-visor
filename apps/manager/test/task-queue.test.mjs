@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createGiteaInstallHandler,
+  createN8nInstallHandler,
   createProjectBuildHandler,
   createProjectDeployHandler,
   createProjectUndeployHandler,
@@ -166,6 +167,38 @@ test("installs Gitea through the fixed agent operation and stores no credentials
         message: "Gitea instalado.",
       };
     },
+  });
+
+  test("installs n8n through the fixed host-agent operation and returns its HTTPS URL", async () => {
+    const n8nTask = {
+      id: task.id,
+      type: "application.n8n.install",
+      payload: { domain: "automation.example.com" },
+    };
+    const requests = [];
+    const handler = createN8nInstallHandler({
+      async requestN8nInstall(domain, requestId) {
+        requests.push({ domain, requestId });
+      },
+      async getStatus() {
+        return {
+          id: n8nTask.id,
+          operation: "install-n8n",
+          state: "succeeded",
+          domain: n8nTask.payload.domain,
+          message: "n8n ready",
+        };
+      },
+    });
+
+    assert.deepEqual(await handler(n8nTask, new AbortController().signal), {
+      message: "n8n está disponible en https://automation.example.com/.",
+      url: "https://automation.example.com/",
+    });
+    assert.deepEqual(requests, [{
+      domain: n8nTask.payload.domain,
+      requestId: n8nTask.id,
+    }]);
   });
 
   assert.deepEqual(await handler(giteaTask, new AbortController().signal), {

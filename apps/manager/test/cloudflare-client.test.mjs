@@ -26,6 +26,23 @@ test("validates Cloudflare domain-to-project configuration", () => {
   assert.equal(isIpv4Address("not-an-ip"), false);
 });
 
+test("validates a centrally managed n8n domain on its fixed internal port", () => {
+  const applicationDomain = {
+    provider: "cloudflare",
+    zone: "example.com",
+    hostname: "automation.example.com",
+    applicationId: "n8n",
+    port: 5678,
+    proxied: true,
+  };
+  assert.deepEqual(validateDomainConfiguration(applicationDomain), applicationDomain);
+  assert.throws(() => validateDomainConfiguration({ ...applicationDomain, port: 3000 }), /destino y puerto/);
+  assert.throws(() => validateDomainConfiguration({
+    ...applicationDomain,
+    projectId: domainInput.projectId,
+  }), /destino/);
+});
+
 test("creates Cloudflare A records and does not overwrite unrelated records", async () => {
   const calls = [];
   const client = createCloudflareClient({

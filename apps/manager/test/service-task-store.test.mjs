@@ -264,6 +264,28 @@ test("looks up Gitea tasks independently of the truncated task-history list", as
   await assert.rejects(store.getTaskById("invalid"), /identifier is invalid/);
 });
 
+test("serializes n8n installation tasks without persisting encryption secrets", async () => {
+  const { pool, tasks } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async () => {} });
+  const n8nTask = {
+    id: taskId,
+    type: "application.n8n.install",
+    payload: { domain: "automation.example.com" },
+    maxAttempts: 1,
+  };
+  await store.createTask(n8nTask);
+  assert.deepEqual(tasks.get(taskId).payload, n8nTask.payload);
+  assert.equal((await store.getTaskById(taskId)).domain, n8nTask.payload.domain);
+  await assert.rejects(store.createTask({ ...n8nTask, id: workerId }), {
+    code: "APPLICATION_TASK_IN_PROGRESS",
+  });
+  await assert.rejects(store.createTask({
+    ...n8nTask,
+    id: workerId,
+    payload: { ...n8nTask.payload, encryptionKey: "must-not-persist" },
+  }), /fields are invalid/);
+});
+
 test("returns only successful deployment history for selected projects", async () => {
   const { store, tasks } = createFakePool();
   const projectId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";

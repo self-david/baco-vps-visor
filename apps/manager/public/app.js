@@ -64,6 +64,9 @@ const giteaStatus = document.querySelector("#gitea-status");
 const giteaUrl = document.querySelector("#gitea-url");
 const giteaSsh = document.querySelector("#gitea-ssh");
 const installGiteaButton = document.querySelector("#install-gitea");
+const n8nStatus = document.querySelector("#n8n-status");
+const n8nUrl = document.querySelector("#n8n-url");
+const installN8nButton = document.querySelector("#install-n8n");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
 const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
 const giteaTokenForm = document.querySelector("#gitea-token-form");
@@ -126,6 +129,7 @@ const registryStatus = document.querySelector("#registry-status");
 const registryFormStatus = document.querySelector("#registry-form-status");
 const registrySaveButton = document.querySelector("#registry-save");
 let giteaStatusPollTimer;
+let n8nStatusPollTimer;
 let giteaTokenConfigurationPending = false;
 let giteaRepositoriesLoaded = false;
 let giteaRepositoriesLoading = false;
@@ -549,6 +553,8 @@ async function loadTaskHistory() {
       title.className = "resource-name";
       title.textContent = task.type === "application.gitea.install"
         ? "Instalación de Gitea"
+        : task.type === "application.n8n.install"
+          ? "Instalación de n8n"
         : task.type === "swarm.node.enroll"
           ? `Alta del nodo ${task.nodeAddress} · ${task.nodeRole}`
         : task.type === "registry.configure"
@@ -1519,14 +1525,16 @@ function resetDomainForm() {
   domainTokenInput.required = true;
   domainTokenInput.placeholder = "Token con Zone:Read y DNS:Edit";
   domainFormStatus.textContent = "";
+  updateDomainPortForTarget();
 }
 
 function renderDomains(domains, availableProjects) {
   domainProjectSelect.replaceChildren(
-    new Option(availableProjects.length ? "Selecciona un proyecto" : "Registra primero un proyecto", ""),
-    ...availableProjects.map((project) => new Option(project.name, project.id)),
+    new Option(availableProjects.length ? "Selecciona un proyecto o aplicación" : "Selecciona n8n o registra un proyecto", ""),
+    ...availableProjects.map((project) => new Option(project.name, `project:${project.id}`)),
+    new Option("n8n", "application:n8n"),
   );
-  domainProjectSelect.disabled = availableProjects.length === 0;
+  domainProjectSelect.disabled = false;
   domainsList.replaceChildren();
   if (domains.length === 0) {
     domainsStatus.textContent = "Todavía no hay dominios conectados.";
@@ -1557,8 +1565,11 @@ function renderDomains(domains, availableProjects) {
       domainProviderSelect.value = domain.provider;
       domainZoneInput.value = domain.zone;
       domainHostnameInput.value = domain.hostname;
-      domainProjectSelect.value = domain.projectId;
+      domainProjectSelect.value = domain.applicationId
+        ? `application:${domain.applicationId}`
+        : `project:${domain.projectId}`;
       domainPortInput.value = String(domain.port);
+      updateDomainPortForTarget();
       domainProxiedInput.checked = domain.proxied;
       domainTokenInput.value = "";
       domainTokenInput.required = false;
@@ -1577,12 +1588,12 @@ function renderDomains(domains, availableProjects) {
     remove.type = "button";
     remove.textContent = "Quitar";
     remove.addEventListener("click", async () => {
-      if (!confirm(`¿Quitar la configuración de ${domain.hostname}? El registro A de Cloudflare no se eliminará y el servicio actualizará sus rutas en el próximo despliegue.`)) return;
+      if (!confirm(`¿Quitar la configuración de ${domain.hostname}? El registro A de Cloudflare no se eliminará.${domain.applicationId === "n8n" ? " n8n debe estar desinstalado primero." : " El servicio actualizará sus rutas en el próximo despliegue."}`)) return;
       remove.disabled = true;
       try {
         const result = await request(`/api/domains/${encodeURIComponent(domain.id)}`, { method: "DELETE" });
         domainsStatus.textContent = result.message;
-        await Promise.all([loadDomains(), loadProjects()]);
+        await Promise.all([loadDomains(), loadProjects(), loadN8nApplication()]);
       } catch (error) {
         domainsStatus.textContent = error.message;
         remove.disabled = false;
@@ -1603,6 +1614,55 @@ async function loadDomains() {
   } catch (error) {
     domainsList.replaceChildren();
     domainsStatus.textContent = error.message;
+  }
+}
+
+function updateDomainPortForTarget(resetPort = false) {
+  const isN8n = domainProjectSelect.value === "application:n8n";
+  if (isN8n) domainPortInput.value = "5678";
+  else if (resetPort && domainPortInput.disabled) domainPortInput.value = "3000";
+  domainPortInput.disabled = isN8n;
+  domainPortInput.required = !isN8n;
+}
+
+function scheduleN8nStatusPoll() {
+  if (n8nStatusPollTimer !== undefined || dashboardView.classList.contains("hidden")) return;
+  n8nStatusPollTimer = setTimeout(() => {
+    n8nStatusPollTimer = undefined;
+    void loadN8nApplication();
+  }, 3000);
+}
+
+async function loadN8nApplication() {
+  try {
+    const { application } = await request("/api/system/applications/n8n");
+    installN8nButton.classList.toggle("hidden", !application.available);
+    installN8nButton.disabled = application.installing;
+    if (application.domain && application.installed) {
+      n8nUrl.href = application.url;
+      n8nUrl.classList.remove("hidden");
+    } else {
+      n8nUrl.classList.add("hidden");
+    }
+    n8nStatus.textContent = application.latestTask?.message
+      ?? (application.installed
+        ? `n8n está instalado en ${application.domain}.`
+        : application.nameConflict
+          ? "El nombre del servicio de n8n está ocupado por un servicio ajeno a VPS Manager."
+          : application.domain
+            ? `Dominio ${application.domain} listo. Puedes instalar n8n.`
+            : "Conecta primero un dominio en la pestaña Dominios y asígnalo a n8n.");
+    if (application.installing) scheduleN8nStatusPoll();
+    else if (n8nStatusPollTimer !== undefined) {
+      clearTimeout(n8nStatusPollTimer);
+      n8nStatusPollTimer = undefined;
+    }
+  } catch (error) {
+    n8nStatus.textContent = error.message;
+    if (n8nStatusPollTimer !== undefined) {
+      clearTimeout(n8nStatusPollTimer);
+      n8nStatusPollTimer = undefined;
+    }
   }
 }
 
@@ -1857,6 +1917,7 @@ projectEnvironmentForm.addEventListener("submit", async (event) => {
 });
 document.querySelector("#close-project-environment").addEventListener("click", () => projectEnvironmentDialog.close());
 domainCancelEditButton.addEventListener("click", resetDomainForm);
+domainProjectSelect.addEventListener("change", () => updateDomainPortForTarget(true));
 domainForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = domainIdInput.value;
@@ -1865,8 +1926,12 @@ domainForm.addEventListener("submit", async (event) => {
     provider: domainProviderSelect.value,
     zone: domainZoneInput.value.trim(),
     hostname: domainHostnameInput.value.trim(),
-    projectId: domainProjectSelect.value,
-    port: Number(domainPortInput.value),
+    ...(domainProjectSelect.value.startsWith("application:")
+      ? { applicationId: domainProjectSelect.value.slice("application:".length), port: 5678 }
+      : {
+        projectId: domainProjectSelect.value.slice("project:".length),
+        port: Number(domainPortInput.value),
+      }),
     proxied: domainProxiedInput.checked,
     ...(token ? { token } : {}),
   };
@@ -1881,7 +1946,7 @@ domainForm.addEventListener("submit", async (event) => {
     domainTokenInput.value = "";
     resetDomainForm();
     domainsStatus.textContent = result.message;
-    await Promise.all([loadDomains(), loadProjects()]);
+    await Promise.all([loadDomains(), loadProjects(), loadN8nApplication()]);
   } catch (error) {
     domainFormStatus.textContent = error.message;
   } finally {
@@ -1907,7 +1972,7 @@ domainsIngressForm.addEventListener("submit", async (event) => {
     submitButton.disabled = false;
   }
 });
-refreshDomainsButton.addEventListener("click", () => void loadDomains());
+refreshDomainsButton.addEventListener("click", () => void Promise.all([loadDomains(), loadN8nApplication()]));
 giteaBranchRefresh.addEventListener("click", () => {
   if (giteaBranchRepository.value) void loadGiteaBranches();
   else void loadGiteaRepositories(true);
@@ -2010,6 +2075,7 @@ async function loadResources() {
       loadServiceOperationStatus(),
       loadTaskHistory(),
       loadGiteaApplication(),
+      loadN8nApplication(),
       loadProjects(),
       loadDomains(),
       loadRegistryConfiguration(),
@@ -2058,6 +2124,18 @@ document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog)
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
 installGiteaButton.addEventListener("click", installGitea);
+installN8nButton.addEventListener("click", async () => {
+  if (!confirm("n8n se instalará con SQLite y un volumen persistente administrado, HTTPS en el dominio configurado y una clave de cifrado guardada como secreto Swarm. No se publicarán puertos del VPS. ¿Continuar?")) return;
+  installN8nButton.disabled = true;
+  n8nStatus.textContent = "Solicitando la instalación segura de n8n…";
+  try {
+    await request("/api/system/applications/n8n", { method: "POST" });
+    await Promise.all([loadN8nApplication(), loadTaskHistory()]);
+  } catch (error) {
+    n8nStatus.textContent = error.message;
+    installN8nButton.disabled = false;
+  }
+});
 nodeEnrollForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!confirm("El manager se conectará por SSH, instalará Docker y añadirá reglas UFW para el Swarm en los dos VPS. No se habilitará UFW ni se cambiarán reglas SSH. ¿Continuar?")) return;

@@ -9,6 +9,7 @@ const allowedOperations = new Set([
   "restart-service",
   "scale-service",
   "install-gitea",
+  "install-n8n",
   "configure-gitea-token",
   "configure-registry",
   "build-project",
@@ -75,6 +76,11 @@ export function validateServiceScale(service, replicas) {
     error.code = "APPLICATION_REPLICA_COUNT";
     throw error;
   }
+  if (service.Spec.Labels?.["vps-manager.component"] === "n8n" && replicas !== 1) {
+    const error = new Error("n8n usa SQLite y almacenamiento local; debe conservar exactamente una réplica.");
+    error.code = "APPLICATION_REPLICA_COUNT";
+    throw error;
+  }
   if (service.Spec.Labels?.["vps-manager.component"] === "registry" && replicas !== 1) {
     const error = new Error("El registro privado conserva una sola réplica.");
     error.code = "APPLICATION_REPLICA_COUNT";
@@ -101,6 +107,8 @@ function validateStatus(status) {
     || (status.operation !== undefined && !allowedOperations.has(status.operation))
     || (status.operation === "install-gitea"
       ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
+      : status.operation === "install-n8n"
+        ? !isPublicHostname(status.domain)
       : status.operation === "configure-registry"
         ? (!isPublicHostname(status.domain) || !registryUsernamePattern.test(status.username ?? ""))
       : status.operation === "build-project"
@@ -187,7 +195,7 @@ export function createServiceOperationAgent({
         && !Array.isArray(queuedRequest)
         && requestIdPattern.test(queuedRequest.id ?? "")
         && allowedOperations.has(queuedRequest.operation)
-        && (queuedRequest.operation === "install-gitea"
+        && (queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
           ? isPublicHostname(queuedRequest.domain)
           : queuedRequest.operation === "configure-gitea-token"
             ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
@@ -224,7 +232,7 @@ export function createServiceOperationAgent({
       }
       const validScaleRequest = queuedRequest.operation !== "scale-service"
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
-      const expectedFields = queuedRequest.operation === "install-gitea"
+      const expectedFields = queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
         ? ["id", "operation", "domain"]
         : queuedRequest.operation === "configure-gitea-token"
           ? ["id", "operation", "token"]
@@ -250,7 +258,7 @@ export function createServiceOperationAgent({
           id: queuedRequest.id,
           state: "queued",
           operation: queuedRequest.operation,
-          ...(queuedRequest.operation === "install-gitea"
+          ...(queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
             ? { domain: queuedRequest.domain }
             : queuedRequest.operation === "configure-gitea-token"
               ? {}
@@ -276,6 +284,8 @@ export function createServiceOperationAgent({
           replicas: queuedRequest.replicas,
           message: queuedRequest.operation === "install-gitea"
             ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
+            : queuedRequest.operation === "install-n8n"
+              ? `Instalación de n8n aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
             : queuedRequest.operation === "configure-gitea-token"
               ? "Configuración del token de Gitea aceptada; esperando al agente del VPS."
               : queuedRequest.operation === "configure-registry"
@@ -362,16 +372,16 @@ export function createServiceOperationAgent({
     };
   }
 
-  async function requestGiteaInstall(domain, requestId = createId()) {
+  async function requestApplicationInstall(operation, domain, requestId, displayName) {
     if (!isPublicHostname(domain)) {
-      throw new TypeError("El dominio de Gitea debe ser un hostname público válido.");
+      throw new TypeError(`El dominio de ${displayName} debe ser un hostname público válido.`);
     }
     if (!requestIdPattern.test(requestId)) {
       throw new Error("The service operation request identifier is invalid.");
     }
     const currentStatus = await getStatus();
     if (currentStatus?.id === requestId) {
-      if (currentStatus.operation !== "install-gitea" || currentStatus.domain !== domain) {
+      if (currentStatus.operation !== operation || currentStatus.domain !== domain) {
         throw new Error("The task identifier already belongs to a different application operation.");
       }
       return currentStatus;
@@ -381,12 +391,11 @@ export function createServiceOperationAgent({
       error.code = "OPERATION_IN_PROGRESS";
       throw error;
     }
-
     const temporaryPath = join(directory, `.request-${requestId}.tmp`);
     try {
       await writeFile(temporaryPath, `${JSON.stringify({
         id: requestId,
-        operation: "install-gitea",
+        operation,
         domain,
       })}\n`, { flag: "wx", mode: 0o600 });
       await link(temporaryPath, requestPath);
@@ -406,10 +415,18 @@ export function createServiceOperationAgent({
     return {
       id: requestId,
       state: "queued",
-      operation: "install-gitea",
+      operation,
       domain,
-      message: `Instalación de Gitea aceptada para ${domain}; el agente del VPS iniciará el servicio.`,
+      message: `Instalación de ${displayName} aceptada para ${domain}; el agente del VPS iniciará el servicio.`,
     };
+  }
+
+  async function requestGiteaInstall(domain, requestId = createId()) {
+    return requestApplicationInstall("install-gitea", domain, requestId, "Gitea");
+  }
+
+  async function requestN8nInstall(domain, requestId = createId()) {
+    return requestApplicationInstall("install-n8n", domain, requestId, "n8n");
   }
 
   async function requestGiteaApiToken(token, requestId = createId()) {
@@ -827,6 +844,7 @@ export function createServiceOperationAgent({
     requestScale: (serviceId, replicas, requestId = createId()) =>
       requestOperation("scale-service", serviceId, requestId, replicas),
     requestGiteaInstall,
+    requestN8nInstall,
     requestGiteaApiToken,
     requestProjectBuild,
     requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>

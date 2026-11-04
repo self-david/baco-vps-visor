@@ -68,9 +68,9 @@ elif request.get("operation") == "scale-service":
     if not 1 <= request["replicas"] <= 100:
         raise SystemExit("Desired replica count must be between 1 and 100.")
     replicas = request["replicas"]
-elif request.get("operation") == "install-gitea":
+elif request.get("operation") in {"install-gitea", "install-n8n"}:
     if set(request) != {"id", "operation", "domain"}:
-        raise SystemExit("Invalid Gitea installation request fields.")
+        raise SystemExit("Invalid application installation request fields.")
     if not isinstance(request["domain"], str) or not re.fullmatch(
         r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
         request["domain"],
@@ -226,6 +226,9 @@ write_status() {
   if [[ "${operation}" == "install-gitea" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","credentialsAvailable":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${gitea_domain}" "${gitea_credentials_available:-false}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "install-n8n" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${gitea_domain}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "configure-gitea-token" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -275,6 +278,8 @@ write_status() {
 
 if [[ "${operation}" == "install-gitea" ]]; then
   write_status "running" "Preparando la instalación segura de Gitea."
+elif [[ "${operation}" == "install-n8n" ]]; then
+  write_status "running" "Preparando el despliegue persistente y seguro de n8n."
 elif [[ "${operation}" == "configure-gitea-token" ]]; then
   write_status "running" "Actualizando de forma segura el secreto del token de Gitea."
 elif [[ "${operation}" == "configure-registry" ]]; then
@@ -911,6 +916,128 @@ PY
   exit 0
 fi
 
+if [[ "${operation}" == "install-n8n" ]]; then
+  readonly N8N_SERVICE="vps-manager-n8n"
+  readonly N8N_IMAGE="n8nio/n8n:2.46.4"
+  readonly N8N_SECRET="vps-manager-n8n-encryption"
+  readonly N8N_VOLUME="vps-manager-n8n-data"
+  readonly INSTALL_ENV="/opt/vps-manager/install.env"
+  test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' "${INSTALL_ENV}" | head -n 1)"
+  if [[ "${test_mode}" == "true" || ! "${gitea_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+    write_status "failed" "n8n requiere un hostname público y una instalación HTTPS de VPS Manager."
+    exit 1
+  fi
+  if ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
+    write_status "failed" "No se encontró la red HTTPS de Traefik."
+    exit 1
+  fi
+
+  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "traefik.http.routers.vps-manager-n8n.rule"}}' "${N8N_SERVICE}" 2>/dev/null)"; then
+    IFS=' ' read -r _ managed_label component_label router_rule <<< "${service_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "n8n" ]]; then
+      write_status "failed" "Ya existe un servicio con el nombre reservado para n8n y no pertenece a VPS Manager."
+      exit 1
+    fi
+    if [[ "${router_rule}" != "Host(\`${gitea_domain}\`)" ]]; then
+      write_status "failed" "n8n ya está instalado con otro dominio; no se modificó el servicio ni sus datos."
+      exit 1
+    fi
+    write_status "succeeded" "n8n ya estaba instalado; se conservaron el volumen y la clave de cifrado."
+    exit 0
+  fi
+
+  secret_file="$(mktemp "${STATE_DIRECTORY}/n8n-encryption.XXXXXX")"
+  chmod 0600 "${secret_file}"
+  trap 'rm -f -- "${secret_file}"' EXIT
+  if secret_info="$(docker secret inspect --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${N8N_SECRET}" 2>/dev/null)"; then
+    if [[ "${secret_info}" != "true n8n-encryption" ]]; then
+      write_status "failed" "El secreto reservado para el cifrado de n8n existe y no pertenece a VPS Manager."
+      exit 1
+    fi
+  else
+    openssl rand -hex 32 > "${secret_file}" \
+      || { write_status "failed" "No se pudo generar la clave de cifrado de n8n."; exit 1; }
+    docker secret create \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=n8n-encryption \
+      "${N8N_SECRET}" "${secret_file}" >/dev/null \
+      || { write_status "failed" "No se pudo guardar la clave de cifrado como secreto Swarm."; exit 1; }
+  fi
+
+  if volume_info="$(docker volume inspect --format '{{index .Labels "vps-manager.managed"}} {{index .Labels "vps-manager.component"}}' "${N8N_VOLUME}" 2>/dev/null)"; then
+    if [[ "${volume_info}" != "true n8n" ]]; then
+      write_status "failed" "El volumen reservado para n8n existe y no pertenece a VPS Manager."
+      exit 1
+    fi
+  else
+    docker volume create \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=n8n \
+      "${N8N_VOLUME}" >/dev/null \
+      || { write_status "failed" "No se pudo crear el volumen persistente de n8n."; exit 1; }
+  fi
+
+  if ! docker pull "${N8N_IMAGE}"; then
+    write_status "failed" "No se pudo descargar la versión fijada de n8n."
+    exit 1
+  fi
+
+  manager_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null)" \
+    || { write_status "failed" "No se pudo identificar el nodo manager que conservará los datos de n8n."; exit 1; }
+  [[ "${manager_node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] \
+    || { write_status "failed" "Docker devolvió un identificador de manager no válido."; exit 1; }
+
+  if ! docker service create \
+    --name "${N8N_SERVICE}" \
+    --replicas 1 \
+    --constraint "node.id==${manager_node_id}" \
+    --network vps-manager-proxy \
+    --mount "type=volume,source=${N8N_VOLUME},target=/home/node/.n8n" \
+    --secret "source=${N8N_SECRET},target=n8n_encryption_key,uid=1000,gid=1000,mode=0400" \
+    --env "N8N_HOST=${gitea_domain}" \
+    --env N8N_PROTOCOL=https \
+    --env "WEBHOOK_URL=https://${gitea_domain}/" \
+    --env "N8N_EDITOR_BASE_URL=https://${gitea_domain}/" \
+    --env N8N_PROXY_HOPS=1 \
+    --env N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key \
+    --env N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true \
+    --env N8N_DIAGNOSTICS_ENABLED=false \
+    --env N8N_VERSION_NOTIFICATIONS_ENABLED=false \
+    --env GENERIC_TIMEZONE=UTC \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=n8n \
+    --label traefik.enable=true \
+    --label traefik.swarm.network=vps-manager-proxy \
+    --label "traefik.http.routers.vps-manager-n8n.rule=Host(\`${gitea_domain}\`)" \
+    --label traefik.http.routers.vps-manager-n8n.entrypoints=websecure \
+    --label traefik.http.routers.vps-manager-n8n.tls=true \
+    --label traefik.http.routers.vps-manager-n8n.tls.certresolver=vpsmanager \
+    --label traefik.http.services.vps-manager-n8n.loadbalancer.server.port=5678 \
+    --limit-cpu 1 \
+    --limit-memory 1536M \
+    --restart-condition on-failure \
+    "${N8N_IMAGE}" >/dev/null; then
+    write_status "failed" "Swarm no pudo crear el servicio n8n; el secreto y el volumen se conservaron."
+    exit 1
+  fi
+
+  n8n_running=false
+  for _ in $(seq 1 120); do
+    task_states="$(docker service ps --filter desired-state=running --format '{{.CurrentState}}' "${N8N_SERVICE}" 2>/dev/null || true)"
+    if grep -q '^Running' <<< "${task_states}"; then
+      n8n_running=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${n8n_running}" != "true" ]]; then
+    write_status "failed" "n8n no inició a tiempo. El volumen y la clave de cifrado se conservaron; revisa los logs del servicio."
+    exit 1
+  fi
+  write_status "succeeded" "n8n quedó listo en https://${gitea_domain}/ con almacenamiento persistente y clave de cifrado protegida."
+  exit 0
+fi
+
 if [[ "${operation}" == "enroll-swarm-node" ]]; then
   enrollment_error_file="$(mktemp "${STATE_DIRECTORY}/node-enroll-error.XXXXXX")"
   chmod 0600 "${enrollment_error_file}"
@@ -1245,6 +1372,11 @@ if [[ "${operation}" == "scale-service" ]]; then
   if [[ "${component_label}" == "gitea" && "${replicas}" != "1" ]]; then
     write_status "failed" "Gitea usa SQLite y debe conservar exactamente una réplica."
     echo "Rejected scaling the Gitea application away from one replica." >&2
+    exit 1
+  fi
+  if [[ "${component_label}" == "n8n" && "${replicas}" != "1" ]]; then
+    write_status "failed" "n8n usa SQLite y almacenamiento local; debe conservar exactamente una réplica."
+    echo "Rejected scaling n8n away from one replica." >&2
     exit 1
   fi
   if [[ "${component_label}" == "registry" && "${replicas}" != "1" ]]; then

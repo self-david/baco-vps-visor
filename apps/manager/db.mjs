@@ -287,6 +287,7 @@ function mapProjectDomain(row) {
     zoneId: row.zone_id,
     hostname: row.hostname,
     projectId: row.project_id,
+    applicationId: row.application_id,
     port: row.port,
     proxied: row.proxied,
     dnsRecordId: row.dns_record_id,
@@ -297,7 +298,7 @@ function mapProjectDomain(row) {
 
 export async function getProjectDomains() {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, hostname, project_id, port, proxied,
+    SELECT id, provider, zone_name, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     ORDER BY lower(hostname), id
@@ -307,7 +308,7 @@ export async function getProjectDomains() {
 
 export async function getProjectDomain(id) {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, hostname, project_id, port, proxied,
+    SELECT id, provider, zone_name, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     WHERE id = $1
@@ -321,20 +322,21 @@ export async function saveProjectDomain(domain) {
     await client.query("BEGIN");
     const result = await client.query(`
       INSERT INTO project_domains (
-        id, provider, zone_name, zone_id, hostname, project_id, port, proxied, dns_record_id
+        id, provider, zone_name, zone_id, hostname, project_id, application_id, port, proxied, dns_record_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT (id) DO UPDATE
       SET provider = EXCLUDED.provider,
           zone_name = EXCLUDED.zone_name,
           zone_id = EXCLUDED.zone_id,
           hostname = EXCLUDED.hostname,
           project_id = EXCLUDED.project_id,
+          application_id = EXCLUDED.application_id,
           port = EXCLUDED.port,
           proxied = EXCLUDED.proxied,
           dns_record_id = EXCLUDED.dns_record_id,
           updated_at = now()
-      RETURNING id, provider, zone_name, hostname, project_id, port, proxied,
+      RETURNING id, provider, zone_name, hostname, project_id, application_id, port, proxied,
         dns_record_id, created_at, updated_at
     `, [
       domain.id,
@@ -342,18 +344,20 @@ export async function saveProjectDomain(domain) {
       domain.zone,
       domain.zoneId,
       domain.hostname,
-      domain.projectId,
+      domain.projectId ?? null,
+      domain.applicationId ?? null,
       domain.port,
       domain.proxied,
       domain.dnsRecordId,
     ]);
     await insertAuditEvent(client, {
-      action: "project.domain.saved",
+      action: domain.applicationId ? "application.domain.saved" : "project.domain.saved",
       resourceType: "domain",
       resourceId: domain.id,
       details: {
         hostname: domain.hostname,
-        projectId: domain.projectId,
+        ...(domain.projectId ? { projectId: domain.projectId } : {}),
+        ...(domain.applicationId ? { applicationId: domain.applicationId } : {}),
         provider: domain.provider,
       },
     });
@@ -374,14 +378,18 @@ export async function deleteProjectDomain(id) {
     const result = await client.query(`
       DELETE FROM project_domains
       WHERE id = $1
-      RETURNING id, hostname, project_id
+      RETURNING id, hostname, project_id, application_id
     `, [id]);
     if (result.rowCount > 0) {
       await insertAuditEvent(client, {
-        action: "project.domain.deleted",
+        action: result.rows[0].application_id ? "application.domain.deleted" : "project.domain.deleted",
         resourceType: "domain",
         resourceId: result.rows[0].id,
-        details: { hostname: result.rows[0].hostname, projectId: result.rows[0].project_id },
+        details: {
+          hostname: result.rows[0].hostname,
+          ...(result.rows[0].project_id ? { projectId: result.rows[0].project_id } : {}),
+          ...(result.rows[0].application_id ? { applicationId: result.rows[0].application_id } : {}),
+        },
       });
     }
     await client.query("COMMIT");
@@ -523,6 +531,15 @@ export async function createGiteaInstallTask(task) {
     id: task.id,
     type: "application.gitea.install",
     payload: { domain: task.domain },
+  });
+}
+
+export async function createN8nInstallTask(task) {
+  return createTask({
+    id: task.id,
+    type: "application.n8n.install",
+    payload: { domain: task.domain },
+    maxAttempts: 1,
   });
 }
 

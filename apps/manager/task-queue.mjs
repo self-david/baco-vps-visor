@@ -206,6 +206,47 @@ export function createGiteaInstallHandler(agent, { pollIntervalMs = 1000 } = {})
   };
 }
 
+export function createN8nInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
+  if (!agent || typeof agent.requestN8nInstall !== "function" || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+    throw new TypeError("The n8n installation task handler configuration is invalid.");
+  }
+
+  return async (task, signal) => {
+    const domain = task.payload?.domain;
+    if (task.type !== "application.n8n.install"
+      || typeof domain !== "string"
+      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)) {
+      throw new TaskExecutionError("La tarea contiene un dominio de n8n inválido.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+    await agent.requestN8nInstall(domain, task.id);
+
+    while (!signal.aborted) {
+      const operation = await agent.getStatus();
+      if (operation?.id === task.id) {
+        if (operation.operation !== "install-n8n" || operation.domain !== domain) {
+          throw new TaskExecutionError("El agente devolvió un resultado de instalación de n8n inconsistente.", {
+            retryable: false,
+          });
+        }
+        if (operation.state === "succeeded") {
+          return {
+            message: `n8n está disponible en https://${domain}/.`,
+            url: `https://${domain}/`,
+          };
+        }
+        if (operation.state === "failed") {
+          throw new TaskExecutionError(operation.message, { retryable: false });
+        }
+      }
+      await waitForRetry(signal, pollIntervalMs);
+    }
+    throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+  };
+}
+
 export function createRegistryConfigureHandler(agent, {
   pollIntervalMs = 1000,
   maximumDurationMs = 14 * 60 * 1000,
