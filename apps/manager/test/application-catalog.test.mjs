@@ -44,6 +44,13 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectImport, /new File\(\[content\]/);
   assert.match(projectTemplates, /name: "server\.js"/);
   assert.match(projectTemplates, /name: "main\.py"/);
+  const settingsPanel = await readFile(new URL("../src/components/SettingsPanel.astro", import.meta.url), "utf8");
+  assert.match(settingsPanel, /Guía de red: IP pública, privada o local/);
+  assert.match(settingsPanel, /split DNS/);
+  assert.match(settingsPanel, /Resolve-DnsName registry\.midominio\.com/);
+  assert.match(settingsPanel, /no configura HTTPS ni el registro privado/);
+  assert.match(settingsPanel, /CGNAT/);
+  assert.match(settingsPanel, /CA privada no están soportados/);
   const domainsPanel = await readFile(new URL("../src/components/DomainsPanel.astro", import.meta.url), "utf8");
   const dialogs = await readFile(new URL("../src/components/DashboardDialogs.astro", import.meta.url), "utf8");
   const guideDialog = await readFile(new URL("../src/components/GuideDialog.astro", import.meta.url), "utf8");

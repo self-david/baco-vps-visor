@@ -577,6 +577,57 @@ Swarm, con autenticación bcrypt mediante un secreto Docker y almacenamiento
 persistente en `vps-manager-registry-data`. No se publica un puerto
 del registro en el host.
 
+#### DNS del registro según la red del VPS
+
+El formulario siempre requiere un hostname completo, por ejemplo
+`registry.midominio.com`; no admite una IP literal, `localhost` ni nombres
+`.local`. El registro usa HTTPS mediante Traefik y el desafío HTTP de Let's
+Encrypt:
+
+- **IP pública:** crea un registro DNS `A` para `registry` que apunte a la IP
+  pública del VPS. Si usas Cloudflare, déjalo en **Solo DNS** (nube gris).
+  Permite o reenvía TCP 80 y 443 hasta el VPS. Espera la propagación y escribe
+  `registry.midominio.com` en el formulario.
+- **VPS con IP privada de LAN/VPN:** puedes hacer que los nodos Swarm se
+  conecten por su red privada y conservar un certificado público válido usando
+  split DNS. En el DNS público, el hostname debe resolver a una IP pública
+  alcanzable, con proxy de Cloudflare desactivado, y los puertos TCP 80/443
+  deben llegar a Traefik para que Let's Encrypt valide el desafío HTTP. En el
+  DNS interno del router, VPN o red, crea una anulación del mismo hostname a la
+  IP privada del VPS (por ejemplo, `192.168.100.158`). Asegúrate de que el
+  manager y todos los workers usen ese DNS y comprueba desde cada uno que
+  resuelve a la IP privada y que HTTPS por el puerto 443 presenta un
+  certificado válido para el hostname. En el formulario introduce el hostname,
+  nunca la IP privada. No publiques la IP privada en el DNS público.
+- **Solo IP local, sin dominio público ni entrada pública alcanzable:** no es
+  compatible con el registro integrado. El modo de prueba (`VPS_MANAGER_TEST_MODE`)
+  sirve únicamente para abrir el panel por HTTP en la IP privada; no configura
+  HTTPS ni el registro privado, por lo que no se pueden construir y desplegar
+  proyectos con el registro integrado en ese modo. Tampoco permite usar
+  `localhost`, `127.0.0.1` o una IP literal como registro. `localhost` además
+  refiere a cada nodo/contenedor individual, no al manager. El flujo actual
+  tampoco soporta el desafío DNS-01 de Let's Encrypt ni certificados de una CA
+  privada. En una red aislada se necesita primero una IP pública alcanzable,
+  dominio y HTTPS configurados como en el método anterior, o incorporar soporte
+  de CA privada/insecure registry para todos los nodos antes de construir y
+  desplegar. CGNAT sin alternativa de ingreso público tampoco permite la
+  emisión HTTP automática del certificado.
+
+Para verificar un split DNS desde PowerShell en un equipo conectado a la LAN:
+
+```powershell
+Resolve-DnsName registry.midominio.com
+Test-NetConnection registry.midominio.com -Port 443
+curl.exe -i https://registry.midominio.com/v2/
+```
+
+En la red privada, la resolución debe devolver la IP privada del VPS y
+`TcpTestSucceeded` debe ser `True`. La petición `/v2/` puede responder
+`401 Unauthorized`, lo cual es normal sin credenciales y confirma que el
+endpoint HTTPS del registro responde. Repite la comprobación DNS y HTTPS en el
+manager y en cada worker Swarm; editar el archivo `hosts` solo en tu PC no
+configura la resolución de los nodos.
+
 La contraseña nunca se devuelve al navegador ni se guarda en PostgreSQL. El
 agente conserva la credencial (20–72 caracteres) en
 `/var/lib/vps-manager/registry/config.json`, accesible únicamente por root,

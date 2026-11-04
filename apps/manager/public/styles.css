@@ -140,6 +140,14 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-history { display: grid; gap: 8px; margin-top: 12px; padding-left: 20px; color: #aebbd0; font-size: .84rem; }
 .project-upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .project-upload-form input[type="file"] { flex: 1 1 220px; min-width: 0; color: #aebbd0; }
+.registry-network-guide { margin: 14px 0 18px; padding: 14px 16px; border: 1px solid #34435b; border-radius: 10px; background: #101722; }
+.registry-network-guide > summary { color: #cbd8ef; font-weight: 650; cursor: pointer; }
+.registry-network-guide[open] > summary { margin-bottom: 16px; }
+.registry-network-guide .form-stack { gap: 10px; }
+.registry-network-guide h4 { margin: 8px 0 0; color: #e1e9f5; }
+.registry-network-guide p, .registry-network-guide li { font-size: .84rem; line-height: 1.55; }
+.registry-network-guide pre { max-width: 100%; overflow-x: auto; margin: 0; padding: 12px; border: 1px solid #263247; border-radius: 8px; background: #0a0f18; }
+.registry-network-guide pre code { color: #d3deef; font-size: .8rem; }
 @media (max-width: 640px) {
   .project-detail-header .card-heading { align-items: flex-start; }
   .project-release-status { grid-template-columns: 1fr; }

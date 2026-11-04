@@ -6,10 +6,37 @@
                   <span id="registry-state" class="badge">Sin configurar</span>
                 </div>
                 <p id="registry-status" class="muted" aria-live="polite">La configuración se realiza aquí después de instalar VPS Manager.</p>
+                <details class="registry-network-guide">
+                  <summary>Guía de red: IP pública, privada o local</summary>
+                  <div class="form-stack">
+                    <p>En el campo <strong>Dominio del registro</strong> siempre escribe un hostname completo, por ejemplo <code>registry.midominio.com</code>; no admite direcciones IP, <code>localhost</code> ni nombres terminados en <code>.local</code>. El registro sirve imágenes por HTTPS y Traefik obtiene el certificado de Let's Encrypt.</p>
+                    <h4>VPS accesible con IP pública</h4>
+                    <ol class="roadmap-list">
+                      <li>En el proveedor DNS autoritativo de tu dominio, crea un registro <code>A</code>: nombre <code>registry</code>, valor la IPv4 pública del VPS. Si usas Cloudflare, deja el proxy en <strong>Solo DNS</strong> (nube gris) durante la configuración.</li>
+                      <li>Permite y, si hay router/NAT, reenvía TCP <code>80</code> y <code>443</code> al VPS. Estos puertos deben llegar a Traefik desde Internet para que Let's Encrypt emita el certificado.</li>
+                      <li>Espera a que <code>registry.midominio.com</code> resuelva a la IP pública. Escribe ese hostname en el formulario, elige usuario y contraseña, y pulsa <strong>Configurar registro privado</strong>.</li>
+                    </ol>
+                    <h4>VPS con IP privada de LAN o VPN</h4>
+                    <p>Este caso requiere una instalación de producción con HTTPS, un dominio real que controles y una IP pública alcanzable para Let's Encrypt. Mantén separado el DNS público del DNS interno (split DNS). En el DNS público crea <code>registry.midominio.com → IP pública</code> con proxy desactivado; esa IP debe poder recibir TCP 80/443 y llegar al VPS para el desafío HTTP de Let's Encrypt. En el DNS de tu router, VPN o red privada, crea una anulación para el mismo hostname: <code>registry.midominio.com → IP privada del VPS</code>, por ejemplo <code>192.168.100.158</code>.</p>
+                    <ol class="roadmap-list">
+                      <li>Haz que la anulación DNS interna la reciban el manager Swarm y <strong>todos</strong> los nodos que construirán o descargarán imágenes. Si tu PC también accede al registro, configúrala allí.</li>
+                      <li>Verifica desde cada nodo que el hostname resuelve a la IP privada, que TCP <code>443</code> llega al VPS y que el certificado HTTPS es válido para el hostname.</li>
+                      <li>En este formulario introduce el hostname (<code>registry.midominio.com</code>), no la IP privada. Luego configura usuario y contraseña y envía el formulario.</li>
+                    </ol>
+                    <p>Ejemplo de comprobación en PowerShell desde una PC en la LAN (repite la comprobación DNS y HTTPS desde cada nodo Swarm):</p>
+                    <pre><code>Resolve-DnsName registry.midominio.com
+Test-NetConnection registry.midominio.com -Port 443
+curl.exe -i https://registry.midominio.com/v2/</code></pre>
+                    <p>En tu LAN, la primera orden debe mostrar la IP privada del VPS y la segunda <code>TcpTestSucceeded: True</code>. La última puede responder <code>401 Unauthorized</code>: es normal, confirma que HTTPS y el endpoint del registro responden sin autenticar. Un error de certificado indica que el hostname, HTTPS o la emisión de Let's Encrypt aún no están listos. La anulación DNS debe configurarse en el DNS usado por los VPS; editar solo el archivo <code>hosts</code> de tu PC no basta para Swarm.</p>
+                    <p>La IP privada no debe publicarse en el DNS público. Si tu proveedor usa CGNAT o no tienes una IP pública alcanzable para el desafío HTTP, la emisión automática del certificado no funcionará: el modo DNS-01 o una CA privada no están soportados por esta configuración.</p>
+                    <h4>IP local o modo de prueba</h4>
+                    <p>El modo de prueba del instalador permite abrir el <em>panel</em> por HTTP en la IP privada del VPS, por ejemplo <code>http://192.168.100.158</code>. Esa URL solo sirve para el panel: no configura HTTPS ni el registro privado; por eso no permite construir y desplegar proyectos con el registro integrado. Tampoco se admite el registro en <code>localhost</code>, <code>127.0.0.1</code> ni una IP literal. Para proyectos, usa una instalación de producción y el método de IP privada anterior con un hostname real, DNS split-horizon y HTTPS válido. Una red aislada sin dominio/certificado no puede usar el registro integrado actualmente.</p>
+                  </div>
+                </details>
                 <form id="registry-configure-form" class="form-stack">
                   <label for="registry-domain">Dominio del registro</label>
                   <input id="registry-domain" name="domain" type="text" inputmode="url" autocomplete="url" placeholder="registry.ejemplo.com" pattern="(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}" required>
-                  <p class="muted">Configura primero un registro DNS A que apunte al VPS. Traefik emitirá un certificado HTTPS para este dominio.</p>
+                  <p class="muted">Introduce un hostname completo (no una IP). El DNS debe dirigirlo al VPS y TCP 80/443 debe llegar a Traefik para emitir el certificado HTTPS. Abre la guía de red para escenarios con IP privada o modo local.</p>
                   <label for="registry-username">Usuario</label>
                   <input id="registry-username" name="username" type="text" pattern="[A-Za-z0-9._\x2d]{1,64}" maxLength="64" autocomplete="username" required>
                   <label for="registry-password">Contraseña nueva</label>
