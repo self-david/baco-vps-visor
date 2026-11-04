@@ -87,6 +87,8 @@ const manualApplicationForm = document.querySelector("#manual-application-form")
 const manualApplicationStatus = document.querySelector("#manual-app-status");
 const manualApplicationSubmit = document.querySelector("#manual-app-submit");
 const manualApplicationsList = document.querySelector("#manual-applications-list");
+import { createProjectZip, inspectProjectZip } from "/project-archive.mjs";
+
 const manualApplicationsStatus = document.querySelector("#manual-applications-status");
 const manualApplicationServerSelect = document.querySelector("#manual-app-server");
 const projectApplicationsList = document.querySelector("#project-applications-list");
@@ -119,21 +121,26 @@ const projectProductionBranchSelect = document.querySelector("#project-productio
 const projectSaveButton = document.querySelector("#project-save");
 const projectCancelEditButton = document.querySelector("[data-close-project-dialog]");
 const projectDialog = document.querySelector("#project-dialog");
-const projectCreateButton = document.querySelector("#project-create");
-const projectSourceTypeSelect = document.querySelector("#project-source-type");
-const projectGithubFields = document.querySelector("#project-github-fields");
 const projectInstallationSelect = document.querySelector("#project-installation");
 const projectBuildStrategySelect = document.querySelector("#project-build-strategy");
 const projectDockerfileField = document.querySelector("#project-dockerfile-field");
 const githubConfigForm = document.querySelector("#github-config-form");
 const githubStatus = document.querySelector("#github-status");
 const githubInstallButton = document.querySelector("#github-install");
-const githubAppIdInput = document.querySelector("#github-app-id");
-const githubAppSlugInput = document.querySelector("#github-app-slug");
-const githubPrivateKeyInput = document.querySelector("#github-private-key");
+const githubClientIdInput = document.querySelector("#github-client-id");
+const githubClientSecretInput = document.querySelector("#github-client-secret");
 const githubWebhookSecretInput = document.querySelector("#github-webhook-secret");
+const githubCallbackUrl = document.querySelector("#github-callback-url");
+const githubImportForm = document.querySelector("#github-import-form");
+const githubImportButton = document.querySelector("#github-import-project");
+const githubImportStatus = document.querySelector("#github-import-status");
+const projectDropzone = document.querySelector("#project-dropzone");
+const projectZipInput = document.querySelector("#project-zip-input");
+const projectFolderInput = document.querySelector("#project-folder-input");
+const projectUploadStatus = document.querySelector("#project-upload-status");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
+const refreshProjectsButton = document.querySelector("#refresh-projects");
 const projectEnvironmentDialog = document.querySelector("#project-environment-dialog");
 const projectEnvironmentForm = document.querySelector("#project-environment-form");
 const projectEnvironmentId = document.querySelector("#project-environment-id");
@@ -1637,15 +1644,126 @@ async function loadProjects() {
 
 let githubInstallations = [];
 let currentProjectEdit = null;
+let projectImportInProgress = false;
+
+function safeProjectName(root) {
+  const name = root
+    .replace(/[^A-Za-z0-9._ -]/g, "-")
+    .replace(/\.\.+/g, "-")
+    .trim()
+    .replace(/^[^A-Za-z0-9]+|[.-]+$/g, "")
+    .slice(0, 100);
+  return name || "proyecto";
+}
+
+function readDroppedEntry(entry, parentPath = "") {
+  const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+  if (entry.isFile) {
+    return new Promise((resolve, reject) => {
+      entry.file((file) => resolve([{ file, path }]), reject);
+    });
+  }
+  if (!entry.isDirectory) return Promise.resolve([]);
+  const reader = entry.createReader();
+  return new Promise((resolve, reject) => {
+    const files = [];
+    const readBatch = () => reader.readEntries(async (entries) => {
+      if (!entries.length) {
+        resolve(files);
+        return;
+      }
+      try {
+        const batches = await Promise.all(entries.map((child) => readDroppedEntry(child, path)));
+        for (const batch of batches) files.push(...batch);
+        readBatch();
+      } catch (error) {
+        reject(error);
+      }
+    }, reject);
+    readBatch();
+  });
+}
+
+async function uploadProjectImport(files) {
+  if (!files.length || projectImportInProgress) return;
+  projectImportInProgress = true;
+  projectUploadStatus.textContent = "Preparando los archivos…";
+  try {
+    let archive;
+    let root;
+    let hasDockerfile = false;
+    const zipFiles = files.filter(({ file }) => /\.zip$/i.test(file.name));
+    if (zipFiles.length) {
+      if (files.length !== 1 || zipFiles.length !== 1) {
+        throw new Error("Selecciona un único ZIP o una carpeta, no ambos.");
+      }
+      if (zipFiles[0].file.size > 32 * 1024 * 1024) {
+        throw new Error("El ZIP supera el límite de 32 MiB.");
+      }
+      const inspected = await inspectProjectZip(zipFiles[0].file);
+      root = inspected.root;
+      hasDockerfile = inspected.hasDockerfile;
+      archive = zipFiles[0].file;
+    } else {
+      const paths = files.map(({ file, path }) => path || file.webkitRelativePath || file.name);
+      const roots = new Set(paths.map((path) => path.split("/")[0]));
+      if (roots.size !== 1) throw new Error("Arrastra una sola carpeta de proyecto cada vez.");
+      root = [...roots][0];
+      hasDockerfile = paths.some((path) => {
+        const parts = path.split("/");
+        return parts.length === 2 && parts[1] === "Dockerfile";
+      });
+      archive = await createProjectZip(files.map(({ file, path }, index) => ({
+        file,
+        path: path || file.webkitRelativePath || paths[index],
+      })), root);
+    }
+
+    projectUploadStatus.textContent = "Creando el proyecto y guardando sus archivos…";
+    const name = safeProjectName(root);
+    const result = await request("/api/projects/import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/zip",
+        "X-Project-Name": name,
+        "X-Build-Strategy": hasDockerfile ? "dockerfile" : "railpack",
+      },
+      body: archive,
+    });
+    projectUploadStatus.textContent = `${result.project.name} se creó con sus archivos. Configura el puerto y pulsa “Construir” cuando esté listo.`;
+    await loadProjects();
+  } catch (error) {
+    projectUploadStatus.textContent = error.message;
+  } finally {
+    projectImportInProgress = false;
+    projectZipInput.value = "";
+    projectFolderInput.value = "";
+  }
+}
 
 async function loadGithubStatus() {
+  githubCallbackUrl.textContent = new URL("/api/github/callback", window.location.href).href;
   try {
     const result = await request("/api/github/status");
-    githubInstallations = result.installations ?? [];
+    githubInstallations = result.accounts ?? [];
     githubStatus.textContent = result.configured
-      ? `GitHub App ${result.appSlug} configurada · ${githubInstallations.length} cuenta${githubInstallations.length === 1 ? "" : "s"} conectada${githubInstallations.length === 1 ? "" : "s"}.`
-      : "Configura GitHub App para conectar repositorios.";
+      ? `GitHub OAuth configurado · ${githubInstallations.length} cuenta${githubInstallations.length === 1 ? "" : "s"} conectada${githubInstallations.length === 1 ? "" : "s"}.`
+      : "Guarda las credenciales de una GitHub OAuth App para conectar tu cuenta.";
+    githubInstallButton.disabled = !result.configured;
+    githubInstallButton.textContent = githubInstallations.length ? "Conectar otra cuenta" : "Conectar cuenta";
     populateProjectInstallations();
+    const query = new URLSearchParams(window.location.search);
+    const callbackState = query.get("github");
+    if (callbackState) {
+      if (callbackState === "connected") {
+        githubStatus.textContent = "Cuenta de GitHub conectada. Selecciona la cuenta, repositorio y rama para importar.";
+      } else if (callbackState === "denied") {
+        githubStatus.textContent = "Se canceló la autorización de GitHub.";
+      } else {
+        githubStatus.textContent = query.get("message") || "No se pudo completar la conexión con GitHub.";
+      }
+      window.history.replaceState({}, "", window.location.pathname);
+    }
     return result;
   } catch (error) {
     githubStatus.textContent = error.message;
@@ -1656,14 +1774,16 @@ async function loadGithubStatus() {
 }
 
 function populateProjectInstallations(selectedId = "") {
-  projectInstallationSelect.replaceChildren(new Option("Selecciona una cuenta", ""));
+  projectInstallationSelect.replaceChildren(new Option("Selecciona una cuenta conectada", ""));
   for (const installation of githubInstallations) {
     projectInstallationSelect.add(new Option(
-      `${installation.accountLogin} (${installation.accountType})`,
+      installation.accountLogin,
       String(installation.installationId),
     ));
   }
   projectInstallationSelect.value = String(selectedId || "");
+  projectInstallationSelect.disabled = githubInstallations.length === 0;
+  githubImportButton.disabled = true;
 }
 
 async function loadProjectRepositories(preferredRepository = "") {
@@ -1671,12 +1791,13 @@ async function loadProjectRepositories(preferredRepository = "") {
   projectRepositorySelect.replaceChildren(new Option("Consultando repositorios…", ""));
   projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
   projectProductionBranchSelect.disabled = true;
+  githubImportButton.disabled = true;
   if (!Number.isSafeInteger(installationId) || installationId < 1) {
-    projectRepositorySelect.replaceChildren(new Option("Selecciona una cuenta GitHub", ""));
+    projectRepositorySelect.replaceChildren(new Option("Selecciona una cuenta conectada", ""));
     return;
   }
   try {
-    const query = new URLSearchParams({ installationId: String(installationId) });
+    const query = new URLSearchParams({ accountId: String(installationId) });
     const result = await request(`/api/github/repositories?${query}`);
     projectRepositorySelect.replaceChildren(new Option("Selecciona un repositorio", ""));
     for (const repository of result.repositories) {
@@ -1686,13 +1807,13 @@ async function loadProjectRepositories(preferredRepository = "") {
       projectRepositorySelect.value = preferredRepository;
       await loadProjectBranches(currentProjectEdit?.productionBranch ?? "main");
     } else {
-      projectFormStatus.textContent = result.repositories.length
+      githubImportStatus.textContent = result.repositories.length
         ? "Selecciona un repositorio."
         : "La instalación no tiene repositorios autorizados.";
     }
   } catch (error) {
     projectRepositorySelect.replaceChildren(new Option("No se pudieron consultar repositorios", ""));
-    projectFormStatus.textContent = error.message;
+    githubImportStatus.textContent = error.message;
   }
 }
 
@@ -1703,7 +1824,7 @@ async function loadProjectBranches(preferredBranch = "main") {
   projectProductionBranchSelect.disabled = true;
   if (!Number.isSafeInteger(installationId) || installationId < 1 || !repository) return;
   try {
-    const query = new URLSearchParams({ installationId: String(installationId), repository });
+    const query = new URLSearchParams({ accountId: String(installationId), repository });
     const result = await request(`/api/github/branches?${query}`);
     projectProductionBranchSelect.replaceChildren();
     for (const branch of result.branches) {
@@ -1715,55 +1836,33 @@ async function loadProjectBranches(preferredBranch = "main") {
         ? "main"
         : result.branches[0]?.name ?? "";
     projectProductionBranchSelect.disabled = result.branches.length === 0;
-    projectFormStatus.textContent = result.branches.length
+    githubImportButton.disabled = result.branches.length === 0;
+    githubImportStatus.textContent = result.branches.length
       ? `${result.branches.length} ramas disponibles.`
       : "El repositorio no tiene ramas disponibles.";
   } catch (error) {
     projectProductionBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
-    projectFormStatus.textContent = error.message;
+    githubImportButton.disabled = true;
+    githubImportStatus.textContent = error.message;
   }
-}
-
-function updateProjectSourceFields() {
-  const usesGithub = projectSourceTypeSelect.value === "github";
-  projectGithubFields.classList.toggle("hidden", !usesGithub);
-  projectInstallationSelect.required = usesGithub;
-  projectRepositorySelect.required = usesGithub;
-  projectProductionBranchSelect.required = usesGithub;
-  projectInstallationSelect.disabled = !usesGithub;
-  projectRepositorySelect.disabled = !usesGithub || !projectInstallationSelect.value;
-  projectProductionBranchSelect.disabled = !usesGithub || !projectRepositorySelect.value;
 }
 
 function openProjectDialog(project = null) {
   currentProjectEdit = project;
   projectForm.reset();
+  if (!project) return;
   projectIdInput.value = project?.id ?? "";
   projectNameInput.value = project?.name ?? "";
   projectDescriptionInput.value = project?.description ?? "";
-  projectSourceTypeSelect.value = project?.sourceType === "upload" ? "upload" : "github";
   projectBuildStrategySelect.value = project?.buildStrategy ?? "dockerfile";
   document.querySelector("#project-build-context").value = project?.buildContext ?? ".";
   document.querySelector("#project-dockerfile").value = project?.dockerfilePath ?? "Dockerfile";
   document.querySelector("#project-port").value = String(project?.internalPort ?? 3000);
   document.querySelector("#project-auto-deploy").checked = project?.autoDeploy ?? true;
-  projectFormTitle.textContent = project ? "Configuración del proyecto" : "Crear proyecto";
-  projectSaveButton.textContent = project ? "Guardar cambios" : "Crear proyecto";
+  projectFormTitle.textContent = "Configuración del proyecto";
+  projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
-  projectInstallationSelect.disabled = true;
-  projectRepositorySelect.disabled = true;
-  projectProductionBranchSelect.disabled = true;
-  projectRepositorySelect.replaceChildren(new Option("Selecciona una cuenta GitHub", ""));
-  projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
-  populateProjectInstallations(project?.githubInstallationId ?? "");
-  updateProjectSourceFields();
-  if (project?.sourceType === "github" && project.githubInstallationId) {
-    projectInstallationSelect.value = String(project.githubInstallationId);
-    projectInstallationSelect.disabled = false;
-    projectRepositorySelect.disabled = false;
-    void loadProjectRepositories(project.repository);
-  }
   projectDialog.showModal();
 }
 
@@ -1773,7 +1872,7 @@ function renderProjects() {
     projectsStatus.textContent = "Todavía no hay proyectos. Crea uno para empezar.";
     return;
   }
-  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada despliegan automáticamente cuando GitHub App está conectada y el webhook tiene alcance público.`;
+  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada se despliegan automáticamente cuando GitHub OAuth y el webhook público están disponibles.`;
   for (const project of projects) {
     const card = document.createElement("article");
     card.className = "project-item";
@@ -2685,17 +2784,6 @@ async function pollManualApplicationDeployment(taskId, applicationName) {
   }
 }
 
-function resetProjectForm() {
-  projectForm.reset();
-  projectIdInput.value = "";
-  projectFormTitle.textContent = "Registrar proyecto";
-  projectSaveButton.textContent = "Registrar proyecto";
-  projectCancelEditButton.classList.add("hidden");
-  projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
-  projectProductionBranchSelect.disabled = true;
-  projectFormStatus.textContent = "";
-}
-
 async function installGitea() {
   const confirmation = giteaNeedsLocalUpgrade
     ? "Se actualizará el servicio local de Gitea para habilitar la API privada. Se recreará el contenedor conservando el volumen persistente con usuarios y repositorios. El acceso web usará el túnel SSH. ¿Continuar?"
@@ -2718,29 +2806,64 @@ async function installGitea() {
   }
 }
 
-projectCreateButton.addEventListener("click", async () => {
-  await loadGithubStatus();
-  openProjectDialog();
-});
 document.querySelector("#project-dialog-close").addEventListener("click", () => projectDialog.close());
 projectCancelEditButton.addEventListener("click", () => projectDialog.close());
 projectDialog.addEventListener("close", () => {
   currentProjectEdit = null;
 });
-projectSourceTypeSelect.addEventListener("change", updateProjectSourceFields);
 projectInstallationSelect.addEventListener("change", async () => {
-  updateProjectSourceFields();
+  githubImportStatus.textContent = "";
   await loadProjectRepositories();
 });
 projectRepositorySelect.addEventListener("change", () => void loadProjectBranches("main"));
+refreshProjectsButton.addEventListener("click", () => void loadProjects());
+projectZipInput.addEventListener("change", () => {
+  const file = projectZipInput.files?.[0];
+  if (file) void uploadProjectImport([{ file, path: file.name }]);
+});
+projectFolderInput.addEventListener("change", () => {
+  const files = Array.from(projectFolderInput.files ?? []).map((file) => ({
+    file,
+    path: file.webkitRelativePath,
+  }));
+  void uploadProjectImport(files);
+});
+for (const eventName of ["dragenter", "dragover"]) {
+  projectDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    projectDropzone.classList.add("is-dragging");
+  });
+}
+for (const eventName of ["dragleave", "drop"]) {
+  projectDropzone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    projectDropzone.classList.remove("is-dragging");
+  });
+}
+projectDropzone.addEventListener("drop", async (event) => {
+  const items = Array.from(event.dataTransfer?.items ?? []);
+  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  if (entries.length) {
+    try {
+      const groups = await Promise.all(entries.map((entry) => readDroppedEntry(entry)));
+      void uploadProjectImport(groups.flat());
+    } catch (error) {
+      projectUploadStatus.textContent = error.message;
+    }
+    return;
+  }
+  const files = Array.from(event.dataTransfer?.files ?? []).map((file) => ({ file, path: file.name }));
+  void uploadProjectImport(files);
+});
 projectBuildStrategySelect.addEventListener("change", () => {
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
 });
 projectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!currentProjectEdit) return;
   projectSaveButton.disabled = true;
   projectFormStatus.textContent = "Guardando configuración…";
-  const sourceType = projectSourceTypeSelect.value;
+  const sourceType = currentProjectEdit.sourceType;
   const input = {
     name: projectNameInput.value.trim(),
     description: projectDescriptionInput.value.trim(),
@@ -2751,20 +2874,20 @@ projectForm.addEventListener("submit", async (event) => {
     internalPort: Number(document.querySelector("#project-port").value),
     autoDeploy: document.querySelector("#project-auto-deploy").checked,
     ...(sourceType === "github" ? {
-      githubInstallationId: Number(projectInstallationSelect.value),
-      repository: projectRepositorySelect.value,
-      productionBranch: projectProductionBranchSelect.value,
+      githubInstallationId: currentProjectEdit.githubInstallationId,
+      repository: currentProjectEdit.repository,
+      productionBranch: currentProjectEdit.productionBranch,
     } : {}),
   };
   try {
     const projectId = projectIdInput.value;
-    await request(projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "/api/projects", {
-      method: projectId ? "PATCH" : "POST",
+    await request(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
       body: JSON.stringify(input),
     });
     projectDialog.close();
     await Promise.all([loadProjects(), loadGithubStatus()]);
-    projectsStatus.textContent = projectId ? "Configuración del proyecto guardada." : "Proyecto creado.";
+    projectsStatus.textContent = "Configuración del proyecto guardada.";
   } catch (error) {
     projectFormStatus.textContent = error.message;
   } finally {
@@ -2781,14 +2904,16 @@ githubConfigForm.addEventListener("submit", async (event) => {
     await request("/api/github/config", {
       method: "POST",
       body: JSON.stringify({
-        appId: githubAppIdInput.value.trim(),
-        appSlug: githubAppSlugInput.value.trim(),
-        privateKey: githubPrivateKeyInput.value,
+        clientId: githubClientIdInput.value.trim(),
+        clientSecret: githubClientSecretInput.value,
         webhookSecret: githubWebhookSecretInput.value,
       }),
     });
     githubConfigForm.reset();
-    await loadGithubStatus();
+    const result = await loadGithubStatus();
+    githubStatus.textContent = result?.configured
+      ? "Configuración OAuth guardada cifrada. Ya puedes conectar tu cuenta."
+      : "No se pudo confirmar la configuración OAuth.";
   } catch (error) {
     githubStatus.textContent = error.message;
   } finally {
@@ -2799,11 +2924,44 @@ githubConfigForm.addEventListener("submit", async (event) => {
 githubInstallButton.addEventListener("click", async () => {
   githubInstallButton.disabled = true;
   try {
-    const result = await request("/api/github/install", { method: "POST" });
+    const result = await request("/api/github/connect", { method: "POST" });
     window.location.assign(result.url);
   } catch (error) {
     githubStatus.textContent = error.message;
     githubInstallButton.disabled = false;
+  }
+});
+
+githubImportForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const accountId = Number(projectInstallationSelect.value);
+  const repository = projectRepositorySelect.value;
+  const productionBranch = projectProductionBranchSelect.value;
+  if (!Number.isSafeInteger(accountId) || !repository || !productionBranch) return;
+  githubImportButton.disabled = true;
+  githubImportStatus.textContent = "Conectando el webhook y encolando el primer despliegue…";
+  try {
+    const result = await request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: repository.split("/")[1],
+        sourceType: "github",
+        githubInstallationId: accountId,
+        repository,
+        productionBranch,
+        buildStrategy: "railpack",
+        autoDeploy: true,
+      }),
+    });
+    githubImportStatus.textContent = result.deploymentQueued
+      ? `${repository} importado. Se inició el primer despliegue y los siguientes pushes se desplegarán automáticamente.`
+      : result.warning ?? `${repository} importado.`;
+    await Promise.all([loadProjects(), loadTaskHistory()]);
+  } catch (error) {
+    githubImportStatus.textContent = error.message;
+    githubImportButton.disabled = false;
+  } finally {
+    if (projectProductionBranchSelect.value) githubImportButton.disabled = false;
   }
 });
 

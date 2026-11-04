@@ -168,44 +168,64 @@ import "../styles/tailwind.css";
                     <p class="eyebrow">DESPLIEGUE DE CÓDIGO</p>
                     <h3 id="projects-title">Proyectos</h3>
                   </div>
-                  <button id="project-create" class="button" type="button">Crear proyecto</button>
+                  <button id="refresh-projects" class="button secondary" type="button">Actualizar</button>
                 </div>
-                <p class="muted">Despliega desde GitHub o desde un archivo ZIP. Los builds usan Dockerfile o Railpack; los despliegues se registran para poder volver a una versión anterior.</p>
+                <p class="muted">Conecta GitHub para elegir un repositorio y desplegar sus cambios automáticamente, o arrastra un ZIP/carpeta para crear un proyecto con sus archivos.</p>
                 <p id="projects-status" class="muted" role="status" aria-live="polite">Cargando proyectos…</p>
                 <div id="projects-list" class="project-list"></div>
+                <section class="project-import" aria-labelledby="project-upload-title">
+                  <h4 id="project-upload-title">Crear proyecto desde archivos</h4>
+                  <div id="project-dropzone" class="project-dropzone" tabindex="0">
+                    <strong>Arrastra aquí un archivo ZIP o una carpeta</strong>
+                    <span class="muted">También puedes elegir archivos desde tu dispositivo. Máximo 32 MiB; el ZIP debe contener una sola carpeta raíz.</span>
+                    <div class="project-actions">
+                      <label class="button secondary project-file-button" for="project-zip-input">Elegir ZIP</label>
+                      <input id="project-zip-input" class="visually-hidden" type="file" accept=".zip,application/zip">
+                      <label class="button secondary project-file-button" for="project-folder-input">Elegir carpeta</label>
+                      <input id="project-folder-input" class="visually-hidden" type="file" webkitdirectory directory multiple>
+                    </div>
+                  </div>
+                  <p id="project-upload-status" class="muted" role="status" aria-live="polite"></p>
+                </section>
               </section>
 
               <section class="card" aria-labelledby="github-settings-title">
                 <details id="github-settings">
-                  <summary id="github-settings-title">Configuración de GitHub App</summary>
+                  <summary id="github-settings-title">Configuración de GitHub OAuth</summary>
                   <p id="github-status" class="muted" role="status" aria-live="polite">Consultando conexión…</p>
                   <form id="github-config-form" class="form-stack">
-                    <label for="github-app-id">App ID</label>
-                    <input id="github-app-id" name="appId" inputmode="numeric" autocomplete="off" required>
-                    <label for="github-app-slug">Slug de la GitHub App</label>
-                    <input id="github-app-slug" name="appSlug" pattern="[a-z0-9](?:[a-z0-9\x2d]{0,37}[a-z0-9])?" autocomplete="off" required>
-                    <label for="github-private-key">Llave privada PEM</label>
-                    <textarea id="github-private-key" name="privateKey" rows="6" spellcheck="false" autocomplete="off" required></textarea>
+                    <label for="github-client-id">Client ID</label>
+                    <input id="github-client-id" name="clientId" autocomplete="off" required>
+                    <label for="github-client-secret">Client Secret</label>
+                    <input id="github-client-secret" name="clientSecret" type="password" autocomplete="new-password" required>
                     <label for="github-webhook-secret">Webhook secret</label>
                     <input id="github-webhook-secret" name="webhookSecret" type="password" minlength="20" autocomplete="new-password" required>
-                    <p class="muted">Las credenciales se cifran con la llave de respaldos y no se guardan en PostgreSQL. Reemplazar la configuración requiere volver a proporcionar los cuatro campos.</p>
-                    <div class="project-actions">
-                      <button class="button" type="submit">Guardar configuración</button>
-                      <button id="github-install" class="button secondary" type="button">Instalar en una cuenta</button>
-                    </div>
+                    <p class="muted">Crea una OAuth App en GitHub. URL de callback: <code id="github-callback-url"></code>. El panel solicitará los permisos <code>repo</code> y <code>admin:repo_hook</code> para leer código privado y configurar actualizaciones automáticas. Los secretos se cifran en este VPS; los webhooks requieren una URL pública HTTPS y los despliegues requieren configurar el registro privado.</p>
+                    <button class="button" type="submit">Guardar configuración OAuth</button>
                   </form>
-                  <ol class="roadmap-list">
-                    <li>En GitHub, crea una App con callback de instalación <code>/api/github/callback</code> y webhook <code>/api/webhooks/github</code> usando la URL pública del panel.</li>
-                    <li>Permisos del repositorio: Contents: Read-only y Metadata: Read-only. Suscribe el evento Push.</li>
-                    <li>Genera una llave privada y webhook secret, guarda aquí la configuración y luego instala la App en la cuenta que contiene los repositorios.</li>
-                  </ol>
                 </details>
+                <div class="project-import">
+                  <div class="card-heading">
+                    <h4>Importar desde GitHub</h4>
+                    <button id="github-install" class="button secondary" type="button">Conectar cuenta</button>
+                  </div>
+                  <form id="github-import-form" class="form-stack">
+                    <label for="project-installation">Cuenta conectada</label>
+                    <select id="project-installation" name="accountId" required></select>
+                    <label for="project-repository">Repositorio</label>
+                    <select id="project-repository" name="repository" required></select>
+                    <label for="project-production-branch">Rama de producción</label>
+                    <select id="project-production-branch" name="productionBranch" required></select>
+                    <button id="github-import-project" class="button" type="submit">Importar y desplegar</button>
+                    <p id="github-import-status" class="muted" role="status" aria-live="polite"></p>
+                  </form>
+                </div>
               </section>
             </div>
 
             <dialog id="project-dialog" class="logs-dialog project-dialog">
               <div class="card-heading">
-                <h3 id="project-dialog-title">Crear proyecto</h3>
+                <h3 id="project-dialog-title">Configuración del proyecto</h3>
                 <button id="project-dialog-close" class="button secondary" type="button" aria-label="Cerrar">Cerrar</button>
               </div>
               <form id="project-form" class="form-stack">
@@ -214,19 +234,6 @@ import "../styles/tailwind.css";
                 <input id="project-name" name="name" maxlength="100" required>
                 <label for="project-description">Descripción</label>
                 <textarea id="project-description" name="description" rows="2" maxlength="500"></textarea>
-                <label for="project-source-type">Fuente</label>
-                <select id="project-source-type" name="sourceType">
-                  <option value="github">GitHub</option>
-                  <option value="upload">Archivo ZIP</option>
-                </select>
-                <div id="project-github-fields" class="project-fields">
-                  <label for="project-installation">Cuenta GitHub instalada</label>
-                  <select id="project-installation" name="githubInstallationId" required></select>
-                  <label for="project-repository">Repositorio</label>
-                  <select id="project-repository" name="repository" required></select>
-                  <label for="project-production-branch">Rama de producción</label>
-                  <select id="project-production-branch" name="productionBranch" required></select>
-                </div>
                 <label for="project-build-strategy">Método de build</label>
                 <select id="project-build-strategy" name="buildStrategy">
                   <option value="dockerfile">Dockerfile</option>

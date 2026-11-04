@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub App o cargar archivos ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. La integración debe validarse en un VPS antes de considerarse lista para producción.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. La integración debe validarse en un VPS antes de considerarse lista para producción.
 
 ---
 
@@ -456,18 +456,23 @@ variables, dominios, estado y despliegues anteriores.
 
 Se admiten dos fuentes:
 
-- **GitHub:** una GitHub App instalada en la cuenta que contiene el repositorio.
-  Se seleccionan repositorio y rama de producción; `main` es la rama inicial
-  sugerida y puede cambiarse. La aplicación necesita permisos de solo lectura
-  para Contents y Metadata y debe suscribirse al evento Push.
-- **Archivo ZIP:** se carga una copia del código del proyecto y se construye
-  manualmente. El límite de carga es 32 MiB.
+- **GitHub:** configura una GitHub OAuth App con el callback que muestra el
+  panel, autoriza la cuenta y selecciona repositorio y rama de producción.
+  `main` se sugiere inicialmente y puede cambiarse. Se solicitan los scopes
+  `repo` y `admin:repo_hook` para leer repositorios privados y crear webhooks.
+- **Archivos:** arrastra una carpeta o un ZIP para crear un proyecto con los
+  archivos incluidos. Las carpetas se convierten en ZIP en el navegador; el
+  límite del archivo resultante es 32 MiB. El ZIP debe contener una sola carpeta
+  raíz.
 
-La llave privada de GitHub App y el secreto de webhook se cifran con AES-256-GCM
+El Client Secret de OAuth y el secreto de webhook se cifran con AES-256-GCM
 usando la llave de respaldos del VPS Manager y se guardan fuera de PostgreSQL.
-El callback de instalación es `/api/github/callback` y el webhook público es
-`/api/webhooks/github`. El endpoint de webhook valida la firma antes de encolar
-un despliegue.
+El callback de OAuth es `/api/github/callback` y el endpoint público de
+webhooks es `/api/webhooks/github`. Los webhooks requieren que el panel sea
+accesible públicamente por HTTPS; el endpoint valida su firma antes de encolar
+un despliegue. Los despliegues requieren que el registro privado esté
+configurado. Los proyectos subidos se crean sin desplegar y pueden construirse
+desde su tarjeta una vez configurados.
 
 ## 5.2. Builds y despliegues
 
@@ -511,7 +516,7 @@ descomprimidos que excedan los límites definidos. Los builds requieren que el
 registro privado esté configurado y accesible por los nodos.
 
 La implementación tiene pruebas automatizadas, pero aún debe validarse en un
-VPS de pruebas con GitHub App, recepción de webhook, build, despliegue,
+VPS de pruebas con GitHub OAuth, recepción de webhook, build, despliegue,
 actualización y rollback antes de usarse en producción.
 
 En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar.
@@ -1569,7 +1574,7 @@ Preparar:
 
 ## 19.3. Pruebas de proyectos
 
-- Configurar e instalar GitHub App y comprobar que la llave y el secreto quedan cifrados.
+- Configurar GitHub OAuth y comprobar que el secreto y el webhook quedan cifrados.
 - Crear un proyecto GitHub con rama `main`, cambiar la rama y verificar selección de repositorio.
 - Cargar ZIPs válidos y rechazar archivos demasiado grandes o rutas de extracción inseguras.
 - Construir con Dockerfile y Railpack; desplegar desde GitHub y ZIP.
@@ -1689,7 +1694,7 @@ El desarrollo debe ser incremental.
 ## Fase 4 — Proyectos
 
 - [x] Crear la pestaña de configuración de proyectos.
-- [x] Conectar repositorios GitHub mediante una GitHub App.
+- [x] Conectar repositorios GitHub mediante una GitHub OAuth App.
 - [x] Admitir carga de archivos ZIP con límites y extracción segura.
 - [x] Configurar Dockerfile/Railpack, rama, variables, dominios e historial.
 - [ ] Validar en un VPS la conexión GitHub y el flujo de ZIP de extremo a extremo.

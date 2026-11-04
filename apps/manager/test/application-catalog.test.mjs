@@ -13,21 +13,24 @@ test("project deployment configuration parser imports its fingerprint dependency
   assert.match(parser[1], /^import hashlib$/m);
 });
 
-test("projects tab exposes GitHub and ZIP deployment configuration", async () => {
+test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => {
   const page = await readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8");
 
   assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
-  assert.match(page, /Despliega desde GitHub o desde un archivo ZIP/);
-  assert.match(page, /Configuración de GitHub App/);
-  assert.match(page, /<option value="github">GitHub<\/option>/);
-  assert.match(page, /<option value="upload">Archivo ZIP<\/option>/);
+  assert.match(page, /Conecta GitHub para elegir un repositorio/);
+  assert.match(page, /Configuración de GitHub OAuth/);
+  assert.match(page, /id="github-config-form"/);
+  assert.match(page, /id="github-import-form"/);
+  assert.match(page, /id="project-dropzone"/);
+  assert.match(page, /id="project-zip-input"/);
+  assert.match(page, /webkitdirectory directory multiple/);
   assert.match(page, /<option value="dockerfile">Dockerfile<\/option>/);
   assert.match(page, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
   assert.match(page, /name="productionBranch"/);
   assert.match(page, /name="autoDeploy"/);
 });
 
-test("manager image includes the GitHub modules imported by the API", async () => {
+test("manager image includes the GitHub and project-archive modules imported by the API", async () => {
   const [dockerfile, server] = await Promise.all([
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
     readFile(new URL("../server.mjs", import.meta.url), "utf8"),
@@ -41,6 +44,7 @@ test("manager image includes the GitHub modules imported by the API", async () =
   for (const moduleName of githubImports) {
     assert.ok(runtimeCopy.split(/\s+/).includes(moduleName), `${moduleName} must be copied into the runtime image`);
   }
+  assert.ok(runtimeCopy.split(/\s+/).includes("project-archive-validation.mjs"));
 });
 
 test("browser application script has no duplicate function declarations", async () => {
