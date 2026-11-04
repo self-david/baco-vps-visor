@@ -56,8 +56,12 @@ if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
 try {
   Copy-ProjectFiles -Source $projectDirectory -Destination $localStageDirectory
 
-  Write-Host "Copiando el proyecto (sin .git ni node_modules) a ${server}:${remoteStageDirectory} ..."
-  & scp -r $localStageDirectory "${server}:/tmp/"
+  $stagedFiles = Get-ChildItem -LiteralPath $localStageDirectory -Recurse -File -Force
+  $stagedSize = ($stagedFiles | Measure-Object -Property Length -Sum).Sum
+  $stagedSizeMb = [math]::Round($stagedSize / 1MB, 2)
+  Write-Host "Copiando $($stagedFiles.Count) archivos ($stagedSizeMb MB) a ${server}:${remoteStageDirectory} ..."
+  Write-Host "Si SSH solicita la contraseña, escríbela aunque no aparezcan caracteres y pulsa Enter."
+  & scp -v -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -r $localStageDirectory "${server}:/tmp/"
   if ($LASTEXITCODE -ne 0) {
     $scpExitCode = $LASTEXITCODE
     try {
