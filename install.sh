@@ -176,7 +176,11 @@ fi
 VPS_MANAGER_VERSION="$(tr -d '\r\n' < "${SOURCE_DIR}/apps/manager/VERSION")"
 [[ "${VPS_MANAGER_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
   || fail "La versión del panel debe tener formato semver estable (por ejemplo 1.2.3)."
-readonly IMAGE_NAME="vps-manager:${VPS_MANAGER_VERSION}"
+VPS_MANAGER_IMAGE_TAG="${VPS_MANAGER_IMAGE_TAG:-${VPS_MANAGER_VERSION}}"
+[[ "${VPS_MANAGER_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+  || fail "La etiqueta de imagen de VPS Manager no es válida."
+readonly IMAGE_NAME="vps-manager:${VPS_MANAGER_IMAGE_TAG}"
+log "Construyendo imagen del panel ${IMAGE_NAME}."
 if [[ "${TEST_MODE}" == "true" ]]; then
   [[ -f "${SOURCE_DIR}/installer/stack.test.yml" ]] || fail "No se encontró la configuración del modo de prueba."
 fi
@@ -304,7 +308,7 @@ systemctl enable --now vps-manager-web-update.path
 systemctl enable --now vps-manager-service-agent.path
 systemctl enable --now vps-manager-container-cleanup.timer
 
-export VPS_MANAGER_VERSION VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
+export VPS_MANAGER_VERSION VPS_MANAGER_IMAGE_TAG VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
 if [[ "${TEST_MODE}" == "true" ]]; then
   STACK_FILE="${SOURCE_DIR}/installer/stack.test.yml"
   PANEL_SCHEME="http"
@@ -315,6 +319,20 @@ else
   export VPS_MANAGER_DOMAIN="${DOMAIN}" VPS_MANAGER_EMAIL="${EMAIL}" VPS_MANAGER_TEST_MODE=false
 fi
 docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
+manager_image_ready=false
+for attempt in $(seq 1 90); do
+  running_manager_images="$(docker service ps "${STACK_NAME}_manager" \
+    --filter desired-state=running --format '{{.Image}}' 2>/dev/null | sort -u)"
+  if [[ "${running_manager_images}" == "${IMAGE_NAME}" ]]; then
+    manager_image_ready=true
+    break
+  fi
+  sleep 2
+done
+if [[ "${manager_image_ready}" != "true" ]]; then
+  docker service ps "${STACK_NAME}_manager" --no-trunc || true
+  fail "El servicio del panel no inició la imagen esperada ${IMAGE_NAME}."
+fi
 
 managed_service_names="$(docker service ls --filter label=vps-manager.managed=true --format '{{.Name}}')" \
   || fail "No se pudieron consultar los servicios administrados para activar su recuperación automática."
@@ -394,6 +412,7 @@ printf '%s\n' "${VPS_MANAGER_VERSION}" > "${INSTALL_DIR}/version.tmp"
 chmod 0600 "${INSTALL_DIR}/version.tmp"
 mv -f "${INSTALL_DIR}/version.tmp" "${INSTALL_DIR}/version"
 log "Instalación completada."
+printf 'Imagen del panel: %s\n' "${IMAGE_NAME}"
 printf 'Panel: %s://%s\n' "${PANEL_SCHEME}" "${DOMAIN}"
 printf 'Diagnóstico: sudo vps-manager-diagnostics\n'
 printf 'Desinstalación (conserva secretos y datos): sudo vps-manager-uninstall\n'

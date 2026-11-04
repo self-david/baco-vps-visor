@@ -68,7 +68,8 @@ try {
     throw "Falló la copia del proyecto por SCP (código $scpExitCode)."
   }
 
-  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN='$Domain' bash '$remoteStageDirectory/install.sh'"
+  $imageTag = "test-$deploymentId"
+  $remoteCommand = "set -Eeuo pipefail; trap 'rm -rf -- `"$remoteStageDirectory`"' EXIT; python3 '$remoteStageDirectory/installer/normalize-shell-scripts.py'; sudo env VPS_MANAGER_SOURCE_DIR='$remoteStageDirectory' VPS_MANAGER_TEST_MODE=true VPS_MANAGER_IMAGE_TAG='$imageTag' VPS_MANAGER_DOMAIN='$Domain' bash '$remoteStageDirectory/install.sh'"
   Write-Host "Conectando al VPS, normalizando los scripts y ejecutando la instalación..."
   & ssh -tt $server $remoteCommand
   if ($LASTEXITCODE -ne 0) {
