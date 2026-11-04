@@ -100,6 +100,12 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .resource-name { max-width: 100%; overflow: hidden; color: #e1e9f5; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .resource-detail { max-width: 100%; overflow: hidden; margin-top: 4px; color: #8f9db3; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
 .resource-state { flex: 0 0 auto; color: #9fe2b5; font-size: .82rem; }
+.domain-zone-status { display: inline-flex; margin-top: 6px; padding: 3px 8px; border: 1px solid; border-radius: 999px; font-size: .76rem; font-weight: 650; }
+.domain-zone-status-connected { border-color: #356348; color: #9fe2b5; background: #14251c; }
+.domain-zone-status-connecting { border-color: #665832; color: #ffcb75; background: #292316; }
+.domain-zone-status-failed { border-color: #704146; color: #ff9a9a; background: #2a171b; }
+.domain-zone-detail { white-space: normal; overflow-wrap: anywhere; }
+.domain-zone-error { margin-top: 6px; color: #ffaaaa; font-size: .8rem; line-height: 1.5; overflow-wrap: anywhere; }
 .resource-action { flex: 0 0 auto; padding: 6px 9px; font-size: .78rem; }
 .resource-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
 .operation-status { min-height: 1.2em; margin: 10px 0 0; font-size: .8rem; }
@@ -176,7 +182,7 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .stack-service-name { overflow: hidden; color: #cbd6e7; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
 .stack-service-info { overflow: hidden; color: #8f9db3; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .footnote { margin: 18px 0 0; font-size: .82rem; }
-.logs-dialog { position: fixed; inset: 0; width: min(900px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: auto; overscroll-behavior: contain; margin: auto; padding: clamp(16px, 4vw, 22px); border: 1px solid #34435b; border-radius: 14px; color: #e8edf5; background: #131b29; box-shadow: 0 24px 80px rgb(0 0 0 / 55%); }
+.logs-dialog { position: fixed; inset: 0; width: min(900px, calc(100% - 24px)); max-width: calc(100% - 24px); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: auto; overscroll-behavior: contain; margin: auto; padding: clamp(16px, 4vw, 22px); border: 1px solid #34435b; border-radius: 14px; color: #e8edf5; background: #131b29; box-shadow: 0 24px 80px rgb(0 0 0 / 55%); }
 .logs-dialog::backdrop { background: rgb(3 7 13 / 75%); }
 .logs-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .logs-heading > * { min-width: 0; }

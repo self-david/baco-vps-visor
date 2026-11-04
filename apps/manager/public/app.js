@@ -1641,8 +1641,20 @@ function renderDomainZones(zones) {
     domainZonesStatus.textContent = "Todavía no hay dominios raíz conectados.";
     return;
   }
-  domainZonesStatus.textContent = `${zones.length} dominio${zones.length === 1 ? "" : "s"} conectado${zones.length === 1 ? "" : "s"}.`;
+  const connectedCount = zones.filter((zone) =>
+    zone.tokenConfigured && zone.connectionStatus === "connected").length;
+  const connectingCount = zones.filter((zone) =>
+    zone.connectionStatus === "connecting").length;
+  const failedCount = zones.length - connectedCount - connectingCount;
+  domainZonesStatus.textContent = [
+    `${connectedCount} conectado${connectedCount === 1 ? "" : "s"}`,
+    ...(connectingCount ? [`${connectingCount} conectando`] : []),
+    ...(failedCount ? [`${failedCount} con error`] : []),
+  ].join(" · ");
   for (const zone of zones) {
+    const connectionStatus = zone.tokenConfigured
+      ? zone.connectionStatus
+      : "failed";
     const row = document.createElement("div");
     row.className = "resource";
     const main = document.createElement("div");
@@ -1650,32 +1662,80 @@ function renderDomainZones(zones) {
     const name = document.createElement("div");
     name.className = "resource-name";
     name.textContent = zone.zone;
+    const status = document.createElement("span");
+    status.className = `domain-zone-status domain-zone-status-${connectionStatus}`;
+    status.setAttribute("role", "status");
+    status.textContent = {
+      connected: "Conectado",
+      connecting: "Conectando…",
+      failed: "Falló la conexión",
+    }[connectionStatus] ?? "Estado desconocido";
     const details = document.createElement("div");
-    details.className = "resource-detail";
-    details.textContent = `Cloudflare · zona activa · token ${zone.tokenConfigured ? "guardado" : "faltante"} · proxy ${zone.proxied ? "activo" : "inactivo"} por defecto`;
-    main.append(name, details);
+    details.className = "resource-detail domain-zone-detail";
+    details.textContent = `Cloudflare · token ${zone.tokenConfigured ? "guardado" : "faltante"} · proxy ${zone.proxied ? "activo" : "inactivo"} por defecto`;
+    main.append(name, status, details);
+    if (zone.connectionError) {
+      const error = document.createElement("div");
+      error.className = "domain-zone-error";
+      error.textContent = zone.connectionError;
+      main.append(error);
+    }
+    if (zone.lastCheckedAt) {
+      const checkedAt = document.createElement("div");
+      checkedAt.className = "resource-detail domain-zone-detail";
+      checkedAt.textContent = `Última verificación: ${new Date(zone.lastCheckedAt).toLocaleString("es-MX")}`;
+      main.append(checkedAt);
+    }
 
     const actions = document.createElement("div");
     actions.className = "resource-actions";
     const edit = document.createElement("button");
     edit.className = "button secondary resource-action";
     edit.type = "button";
-    edit.textContent = "Editar";
+    edit.textContent = connectionStatus === "connected" ? "Editar" : "Reconectar";
     edit.addEventListener("click", () => {
       domainZoneIdInput.value = zone.id;
       domainZoneNameInput.value = zone.zone;
       domainZoneNameInput.disabled = true;
       domainZoneProxied = zone.proxied;
       domainZoneTokenInput.value = "";
-      domainZoneTokenInput.required = false;
+      domainZoneTokenInput.required = !zone.tokenConfigured;
       domainZoneTokenInput.placeholder = zone.tokenConfigured
         ? "Deja vacío para conservar el token actual"
         : "Token de Cloudflare";
-      domainZoneDialogTitle.textContent = `Editar ${zone.zone}`;
-      domainZoneSaveButton.textContent = "Guardar cambios";
+      domainZoneDialogTitle.textContent = connectionStatus === "connected"
+        ? `Editar ${zone.zone}`
+        : `Reconectar ${zone.zone}`;
+      domainZoneSaveButton.textContent = connectionStatus === "connected"
+        ? "Guardar cambios"
+        : "Reintentar conexión";
       domainZoneFormStatus.textContent = "";
       domainZoneDialog.showModal();
-      domainZoneNameInput.focus();
+      domainZoneTokenInput.focus();
+    });
+
+    const verify = document.createElement("button");
+    verify.className = "button secondary resource-action";
+    verify.type = "button";
+    verify.textContent = "Verificar";
+    verify.disabled = connectionStatus === "connecting" || !zone.tokenConfigured;
+    verify.addEventListener("click", async () => {
+      verify.disabled = true;
+      verify.textContent = "Verificando…";
+      status.className = "domain-zone-status domain-zone-status-connecting";
+      status.textContent = "Verificando…";
+      domainZonesStatus.textContent = `Comprobando la conexión de ${zone.zone} en Cloudflare…`;
+      try {
+        const result = await request(
+          `/api/domain-zones/${encodeURIComponent(zone.id)}/verify`,
+          { method: "POST" },
+        );
+        await Promise.all([loadDomains(), loadN8nApplication()]);
+        domainZonesStatus.textContent = result.message;
+      } catch (error) {
+        await loadDomains();
+        domainZonesStatus.textContent = error.message;
+      }
     });
 
     const remove = document.createElement("button");
@@ -1694,7 +1754,7 @@ function renderDomainZones(zones) {
         remove.disabled = false;
       }
     });
-    actions.append(edit, remove);
+    actions.append(edit, verify, remove);
     row.append(main, actions);
     domainZonesList.append(row);
   }
@@ -2430,6 +2490,7 @@ domainZoneForm.addEventListener("submit", async (event) => {
     await Promise.all([loadDomains(), loadN8nApplication()]);
   } catch (error) {
     domainZoneFormStatus.textContent = error.message;
+    void loadDomains();
   } finally {
     domainZoneSaveButton.disabled = false;
   }

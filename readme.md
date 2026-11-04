@@ -536,10 +536,14 @@ más adelante. La página incluye instrucciones para delegar nameservers a
 Cloudflare y crear un token con permisos `Zone:Read` y `DNS:Edit`. La conexión
 comprueba que Cloudflare exponga la zona como activa y guarda el token en el VPS
 con permisos restringidos; no lo guarda en PostgreSQL ni en el historial de
-tareas. El dominio puede haberse comprado en Namecheap u otro registrador si
-sus nameservers están delegados a Cloudflare. Esta vista no crea subdominios,
-registros DNS ni asignaciones a proyectos. La selección de dominio para
-aplicaciones se realiza desde el flujo de cada aplicación cuando está disponible.
+tareas. La vista conserva el estado de conexión, el último error y la fecha de
+verificación; permite volver a conectar una zona fallida o comprobar de nuevo el
+token y que la zona siga activa en Cloudflare. Esto no comprueba la propagación
+DNS pública ni HTTPS. El dominio puede haberse comprado en Namecheap u otro
+registrador si sus nameservers están delegados a Cloudflare. Esta vista no crea
+subdominios, registros DNS ni asignaciones a proyectos. La selección de dominio
+para aplicaciones se realiza desde el flujo de cada aplicación cuando está
+disponible.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de

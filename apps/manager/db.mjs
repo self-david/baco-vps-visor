@@ -299,6 +299,9 @@ function mapDomainZone(row) {
     zoneId: row.zone_id,
     credentialId: row.credential_id,
     proxied: row.proxied,
+    connectionStatus: row.connection_status,
+    connectionError: row.connection_error,
+    lastCheckedAt: row.last_checked_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -306,7 +309,8 @@ function mapDomainZone(row) {
 
 export async function getDomainZones() {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied,
+           connection_status, connection_error, last_checked_at, created_at, updated_at
     FROM domain_zones
     ORDER BY lower(zone_name), id
   `);
@@ -315,7 +319,8 @@ export async function getDomainZones() {
 
 export async function getDomainZone(id) {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied,
+           connection_status, connection_error, last_checked_at, created_at, updated_at
     FROM domain_zones
     WHERE id = $1
   `, [id]);
@@ -324,7 +329,8 @@ export async function getDomainZone(id) {
 
 export async function getDomainZoneByName(zone) {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied,
+           connection_status, connection_error, last_checked_at, created_at, updated_at
     FROM domain_zones
     WHERE lower(zone_name) = lower($1)
   `, [zone]);
@@ -336,14 +342,28 @@ export async function saveDomainZone(domainZone) {
   try {
     await client.query("BEGIN");
     const result = await client.query(`
-      INSERT INTO domain_zones (id, provider, zone_name, zone_id, credential_id, proxied)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO domain_zones (
+        id, provider, zone_name, zone_id, credential_id, proxied,
+        connection_status, connection_error, last_checked_at
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        CASE WHEN $7 = 'connecting' THEN NULL ELSE now() END
+      )
       ON CONFLICT (id) DO UPDATE
       SET zone_id = EXCLUDED.zone_id,
           credential_id = EXCLUDED.credential_id,
           proxied = EXCLUDED.proxied,
+          connection_status = EXCLUDED.connection_status,
+          connection_error = EXCLUDED.connection_error,
+          last_checked_at = CASE
+            WHEN EXCLUDED.connection_status = 'connecting'
+              THEN domain_zones.last_checked_at
+            ELSE now()
+          END,
           updated_at = now()
-      RETURNING id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+      RETURNING id, provider, zone_name, zone_id, credential_id, proxied,
+                connection_status, connection_error, last_checked_at, created_at, updated_at
     `, [
       domainZone.id,
       domainZone.provider,
@@ -351,12 +371,20 @@ export async function saveDomainZone(domainZone) {
       domainZone.zoneId,
       domainZone.credentialId,
       domainZone.proxied,
+      domainZone.connectionStatus,
+      domainZone.connectionError ?? null,
     ]);
     await insertAuditEvent(client, {
-      action: "domain.zone.saved",
+      action: domainZone.connectionStatus === "connected"
+        ? "domain.zone.saved"
+        : `domain.zone.connection_${domainZone.connectionStatus}`,
       resourceType: "domain_zone",
       resourceId: domainZone.id,
-      details: { zone: domainZone.zone, provider: domainZone.provider },
+      details: {
+        zone: domainZone.zone,
+        provider: domainZone.provider,
+        ...(domainZone.connectionError ? { error: domainZone.connectionError } : {}),
+      },
     });
     await client.query("COMMIT");
     return mapDomainZone(result.rows[0]);
