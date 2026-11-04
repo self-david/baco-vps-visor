@@ -206,13 +206,22 @@ let giteaNeedsLocalUpgrade = false;
 let giteaNeedsDomainMigration = false;
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers,
-    },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+      },
+    });
+  } catch {
+    throw new Error(
+      `No se pudo conectar con VPS Manager en ${window.location.origin}. ` +
+      "El panel o Traefik puede estar reiniciándose o no tener tareas activas; " +
+      "espera a que termine la instalación y comprueba el estado de los servicios Swarm.",
+    );
+  }
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error ?? `Error HTTP ${response.status}`);
   return result;

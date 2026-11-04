@@ -364,21 +364,38 @@ done <<< "${managed_service_names}"
 log "Esperando que los servicios de Swarm inicien."
 service_total=0
 service_count=0
+service_status=""
 for attempt in $(seq 1 90); do
-  service_total="$(docker stack services "${STACK_NAME}" --format '{{.Name}}' 2>/dev/null | wc -l)"
-  service_total="${service_total//[[:space:]]/}"
-  service_count="$(docker stack services "${STACK_NAME}" --format '{{.Replicas}}' 2>/dev/null \
-    | awk -F/ '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 == $2 { count++ } END { print count + 0 }')"
+  service_status="$(docker stack services "${STACK_NAME}" --format '{{.Name}} {{.Replicas}}' 2>/dev/null || true)"
+  service_total="$(awk 'NF >= 2 { count++ } END { print count + 0 }' <<< "${service_status}")"
+  service_count="$(awk '$2 ~ /^[0-9]+\/[0-9]+$/ { split($2, replicas, "/"); if (replicas[1] == replicas[2]) count++ } END { print count + 0 }' \
+    <<< "${service_status}")"
   if [[ "${service_total}" -ge 4 && "${service_count}" == "${service_total}" ]]; then
     break
+  fi
+  if (( attempt % 10 == 0 )); then
+    log "Servicios Swarm listos: ${service_count}/${service_total} (${attempt}/90). Estado actual:"
+    if [[ -n "${service_status}" ]]; then
+      while IFS= read -r service_line; do
+        [[ -n "${service_line}" ]] && printf '  %s\n' "${service_line}"
+      done <<< "${service_status}"
+    else
+      printf '  (Swarm todavía no informa servicios para el stack %s)\n' "${STACK_NAME}"
+    fi
   fi
   sleep 2
 done
 
 docker stack services "${STACK_NAME}"
 if [[ "${service_total}" -lt 4 || "${service_count}" != "${service_total}" ]]; then
+  log "El stack no alcanzó el estado esperado. Tareas y errores de Swarm:"
   docker stack ps "${STACK_NAME}" --no-trunc || true
-  fail "No todos los servicios llegaron al número deseado de réplicas. Ejecuta: sudo vps-manager-diagnostics"
+  while read -r service_name _; do
+    [[ "${service_name}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$ ]] || continue
+    log "Últimos logs de ${service_name}:"
+    docker service logs --tail 80 "${service_name}" 2>&1 || true
+  done <<< "${service_status}"
+  fail "Solo ${service_count} de ${service_total} servicios están listos tras 180 segundos. Revisa los estados y logs anteriores; también puedes ejecutar: sudo vps-manager-diagnostics"
 fi
 
 log "Esperando que el panel responda por ${PANEL_SCHEME^^}."
