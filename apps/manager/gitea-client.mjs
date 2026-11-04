@@ -46,14 +46,17 @@ function validateBranchName(branch) {
   return branch;
 }
 
-export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
-  if (typeof domain !== "string"
-    || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
-    || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)
+export function createGiteaClient({ domain, baseUrl, fetchImpl = fetch } = {}) {
+  const validDomain = typeof domain === "string"
+    && /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
+    && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain);
+  const validInternalUrl = baseUrl === "http://vps-manager-gitea:3000";
+  if ((!validDomain && !validInternalUrl) || (domain !== undefined && baseUrl !== undefined)
     || typeof fetchImpl !== "function") {
     throw new TypeError("Gitea client configuration is invalid.");
   }
-  const apiUrl = `https://${domain}/api/v1`;
+  const apiUrl = `${validInternalUrl ? baseUrl : `https://${domain}`}/api/v1`;
+  const expectedPublicOrigin = validInternalUrl ? "http://localhost:3001" : `https://${domain}`;
 
   async function request(path, token, options = {}) {
     let response;
@@ -68,7 +71,7 @@ export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
         signal: AbortSignal.timeout(10_000),
       });
     } catch (error) {
-      const unavailable = new Error("No se pudo conectar con la API HTTPS de Gitea.");
+      const unavailable = new Error("No se pudo conectar con la API de Gitea.");
       unavailable.code = "GITEA_UNAVAILABLE";
       throw unavailable;
     }
@@ -150,8 +153,8 @@ export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
     }
 
     const archiveUrl = new URL(response.url);
-    if (archiveUrl.protocol !== "https:" || archiveUrl.hostname !== domain) {
-      const invalid = new Error("Gitea devolvió una descarga fuera de su dominio HTTPS.");
+    if (archiveUrl.origin !== new URL(apiUrl).origin) {
+      const invalid = new Error("Gitea devolvió una descarga desde un origen no permitido.");
       invalid.code = "GITEA_INVALID_RESPONSE";
       throw invalid;
     }
@@ -348,8 +351,8 @@ export function createGiteaClient({ domain, fetchImpl = fetch } = {}) {
         invalid.code = "GITEA_INVALID_RESPONSE";
         throw invalid;
       }
-      if (htmlUrl.protocol !== "https:" || htmlUrl.hostname !== domain || htmlUrl.username || htmlUrl.password) {
-        const invalid = new Error("Gitea devolvió una URL fuera de su dominio HTTPS.");
+      if (htmlUrl.origin !== expectedPublicOrigin || htmlUrl.username || htmlUrl.password) {
+        const invalid = new Error("Gitea devolvió una URL fuera del origen público configurado.");
         invalid.code = "GITEA_INVALID_RESPONSE";
         throw invalid;
       }

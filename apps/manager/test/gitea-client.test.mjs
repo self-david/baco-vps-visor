@@ -44,6 +44,23 @@ test("verifies API credentials without returning or storing the token", async ()
   assert.equal(calls[0].options.headers.Authorization, `token ${token}`);
 });
 
+test("supports the fixed private Swarm URL for local-mode Gitea API calls", async () => {
+  const calls = [];
+  const client = createGiteaClient({
+    baseUrl: "http://vps-manager-gitea:3000",
+    async fetchImpl(url, options) {
+      calls.push({ url, options });
+      return Response.json({ login: "vpsadmin" });
+    },
+  });
+
+  assert.deepEqual(await client.verifyToken(token), { login: "vpsadmin" });
+  assert.equal(calls[0].url, "http://vps-manager-gitea:3000/api/v1/user");
+  assert.equal(calls[0].options.headers.Authorization, `token ${token}`);
+  assert.throws(() => createGiteaClient({ baseUrl: "http://example.com" }), /configuration is invalid/);
+  assert.throws(() => createGiteaClient({ domain: "localhost" }), /configuration is invalid/);
+});
+
 test("creates private repositories with automatic initialization and safe clone URLs", async () => {
   const calls = [];
   const client = createGiteaClient({
@@ -79,6 +96,28 @@ test("creates private repositories with automatic initialization and safe clone 
   assert.equal(calls[0].options.headers.Authorization, `token ${token}`);
 });
 
+test("accepts local-mode repository links only at the SSH-tunneled Gitea URL", async () => {
+  const client = createGiteaClient({
+    baseUrl: "http://vps-manager-gitea:3000",
+    async fetchImpl() {
+      return Response.json({
+        full_name: "vpsadmin/project",
+        html_url: "http://localhost:3001/gitea/vpsadmin/project",
+        clone_url: "http://localhost:3001/gitea/vpsadmin/project.git",
+        ssh_url: "ssh://git@localhost:22/vpsadmin/project.git",
+      });
+    },
+  });
+
+  assert.deepEqual(await client.createRepository(token, { name: "project" }), {
+    name: "project",
+    fullName: "vpsadmin/project",
+    url: "http://localhost:3001/gitea/vpsadmin/project",
+    cloneUrl: "http://localhost:3001/gitea/vpsadmin/project.git",
+    sshUrl: "ssh://git@localhost:22/vpsadmin/project.git",
+  });
+});
+
 test("returns non-sensitive errors for invalid tokens, duplicate repositories, and outages", async () => {
   const client = createGiteaClient({
     domain,
@@ -98,7 +137,7 @@ test("returns non-sensitive errors for invalid tokens, duplicate repositories, a
   });
   await assert.rejects(unavailable.verifyToken(token), {
     code: "GITEA_UNAVAILABLE",
-    message: "No se pudo conectar con la API HTTPS de Gitea.",
+    message: "No se pudo conectar con la API de Gitea.",
   });
 });
 

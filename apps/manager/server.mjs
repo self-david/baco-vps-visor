@@ -661,9 +661,22 @@ async function getGiteaApplicationState() {
   const installed = service?.Spec?.Labels?.["vps-manager.component"] === "gitea"
     && service.Spec.Labels["vps-manager.managed"] === "true";
   const nameConflict = Boolean(service && !installed);
-  const localOnly = testMode;
-  const domain = !localOnly && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
-  const url = localOnly ? "http://127.0.0.1:3001/" : domain ? `https://${domain}/` : null;
+  const testModeLocal = testMode;
+  const domain = !testModeLocal && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
+  const localRouteRule = "Host(`localhost`)&&PathPrefix(`/gitea`)";
+  const isLocalService = installed
+    && service.Spec.Labels["traefik.http.routers.vps-manager-gitea-local.rule"] === localRouteRule;
+  const localOnly = testModeLocal || isLocalService;
+  const needsLocalUpgrade = testModeLocal && installed && !isLocalService;
+  const needsDomainMigration = !testModeLocal && installed && isLocalService;
+  const url = isLocalService || testModeLocal
+    ? "http://localhost:3001/gitea/"
+    : domain ? `https://${domain}/` : null;
+  const serviceTasks = installed
+    ? await dockerGet(`/tasks?filters=${encodeURIComponent(JSON.stringify({ service: [service.ID] }))}`)
+    : [];
+  const runningTasks = serviceTasks.filter((task) => task.DesiredState === "running" && task.Status?.State === "running").length;
+  const replicas = service?.Spec?.Mode?.Replicated?.Replicas ?? 1;
   const latestTask = await getLatestTaskByType("application.gitea.install");
   const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
   const apiTokenConfigured = installed && await serviceOperationAgent.hasGiteaApiToken();
@@ -681,9 +694,17 @@ async function getGiteaApplicationState() {
       domain,
       url,
       localOnly,
-      installDomain: localOnly ? "localhost" : domain,
+      needsLocalUpgrade,
+      needsDomainMigration,
+      privateApiReady: installed && !needsLocalUpgrade,
+      installDomain: testModeLocal ? "localhost" : domain,
       sshPort: 2222,
-      available: Boolean(localOnly || domain) && !installed && !nameConflict && !installing,
+      serviceId: installed ? service.ID : null,
+      serviceState: installed ? `${runningTasks}/${replicas} tareas activas` : null,
+      replicas,
+      available: Boolean(testModeLocal || domain)
+        && (!installed || needsLocalUpgrade || needsDomainMigration)
+        && !nameConflict && !installing,
       installed,
       installing,
       nameConflict,
@@ -777,8 +798,11 @@ async function getPostgresqlApplicationState() {
 
 async function getGiteaApiContext() {
   const { application } = await getGiteaApplicationState();
-  if (!application.installed || !application.domain) {
-    throw new RequestError(409, "Gitea no está instalado con un dominio público.");
+  if (!application.installed || (!application.domain && !application.localOnly)) {
+    throw new RequestError(409, "Gitea no está instalado con un dominio válido.");
+  }
+  if (application.localOnly && !application.privateApiReady) {
+    throw new RequestError(409, "Actualiza el acceso local de Gitea antes de administrar proyectos.");
   }
   if (!application.apiTokenConfigured) {
     throw new RequestError(409, "Conecta primero un token válido de Gitea.");
@@ -787,7 +811,10 @@ async function getGiteaApiContext() {
     process.env.GITEA_API_TOKEN_FILE ?? "/run/secrets/gitea_api_token",
     "utf8",
   );
-  return { application, client: createGiteaClient({ domain: application.domain }), token };
+  const client = application.localOnly
+    ? createGiteaClient({ baseUrl: "http://vps-manager-gitea:3000" })
+    : createGiteaClient({ domain: application.domain });
+  return { application, client, token };
 }
 
 async function validateProjectSource(client, token, project) {
@@ -2010,7 +2037,8 @@ const server = createServer(async (request, response) => {
           });
           return;
         }
-        if (application.installed || application.nameConflict) {
+        if ((application.installed && !application.needsLocalUpgrade && !application.needsDomainMigration)
+          || application.nameConflict) {
           respondJson(response, 409, {
             error: application.nameConflict
               ? "Ya existe un servicio con el nombre reservado para Gitea que no pertenece a VPS Manager."
@@ -2040,7 +2068,9 @@ const server = createServer(async (request, response) => {
             status: "pending",
             domain: application.installDomain,
             message: application.localOnly
-              ? "Instalación local de Gitea solicitada. Solo escuchará en 127.0.0.1:3001 y se accede mediante un túnel SSH."
+              ? application.needsLocalUpgrade
+                ? "Actualización local de Gitea solicitada. Se conservará el volumen con repositorios, usuarios y credenciales."
+                : "Instalación local de Gitea solicitada. La interfaz se abrirá mediante un túnel SSH y la API quedará en la red privada de Swarm."
               : `Instalación de Gitea solicitada para https://${application.domain}/.`,
           },
         });
@@ -2205,11 +2235,17 @@ const server = createServer(async (request, response) => {
         return;
       }
       const { application } = await getGiteaApplicationState();
-      if (!application.installed || !application.domain) {
-        respondJson(response, 409, { error: "Instala Gitea con un dominio público antes de conectarlo." });
+      if (!application.installed || (!application.domain && !application.localOnly)) {
+        respondJson(response, 409, { error: "Instala Gitea antes de conectarlo." });
         return;
       }
-      const client = createGiteaClient({ domain: application.domain });
+      if (application.localOnly && !application.privateApiReady) {
+        respondJson(response, 409, { error: "Actualiza el acceso local de Gitea antes de conectar un token." });
+        return;
+      }
+      const client = application.localOnly
+        ? createGiteaClient({ baseUrl: "http://vps-manager-gitea:3000" })
+        : createGiteaClient({ domain: application.domain });
       try {
         await client.verifyToken(body.token);
       } catch (error) {
@@ -2296,8 +2332,8 @@ const server = createServer(async (request, response) => {
     try {
       const repositoryInput = validateRepositoryInput(await readJson(request));
       const { application } = await getGiteaApplicationState();
-      if (!application.installed || !application.domain) {
-        respondJson(response, 409, { error: "Gitea no está instalado con un dominio público." });
+      if (!application.installed || (!application.domain && !application.localOnly)) {
+        respondJson(response, 409, { error: "Gitea no está instalado." });
         return;
       }
       if (!application.apiTokenConfigured) {
@@ -2308,7 +2344,9 @@ const server = createServer(async (request, response) => {
         process.env.GITEA_API_TOKEN_FILE ?? "/run/secrets/gitea_api_token",
         "utf8",
       );
-      const client = createGiteaClient({ domain: application.domain });
+      const client = application.localOnly
+        ? createGiteaClient({ baseUrl: "http://vps-manager-gitea:3000" })
+        : createGiteaClient({ domain: application.domain });
       let repository;
       try {
         repository = await client.createRepository(token, repositoryInput);

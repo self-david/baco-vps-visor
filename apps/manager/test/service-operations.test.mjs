@@ -297,8 +297,8 @@ test("accepts only the local Gitea target for the loopback test installation", a
     assert.deepEqual(await fixture.agent.consumeGiteaCredentials(requestId), {
       username: "vpsadmin",
       password: "b".repeat(64),
-      url: "http://127.0.0.1:3001/",
-      sshCommand: "ssh -L 3001:127.0.0.1:3001 usuario@VPS; abre http://127.0.0.1:3001/",
+      url: "http://localhost:3001/gitea/",
+      sshCommand: "ssh -L 3001:127.0.0.1:80 usuario@IP_DEL_VPS; abre http://localhost:3001/gitea/",
     });
   } finally {
     await fixture.cleanup();

@@ -768,21 +768,23 @@ if [[ "${operation}" == "install-gitea" ]]; then
   readonly GITEA_SERVICE="vps-manager-gitea"
   readonly GITEA_IMAGE="gitea/gitea:1.25.3"
   readonly CREDENTIALS_FILE="${STATE_DIRECTORY}/gitea-credentials-${request_id}.json"
+  gitea_image_pulled=false
   base_domain="$(sed -n 's/^VPS_MANAGER_DOMAIN=//p' "${INSTALL_ENV}" | head -n 1)"
   test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' "${INSTALL_ENV}" | head -n 1)"
   local_gitea=false
+  gitea_migrating=false
+  gitea_migration_type=""
   if [[ "${test_mode}" == "true" && "${gitea_domain}" == "localhost" ]]; then
     local_gitea=true
-    if ss -H -ltn '( sport = :3001 )' | grep -q .; then
-      gitea_credentials_available=false
-      write_status "failed" "El puerto local 3001 ya está ocupado."
-      exit 1
-    fi
   elif [[ "${test_mode}" == "true" || ! "${base_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ \
     || "${gitea_domain,,}" != "git.${base_domain,,}" ]]; then
     gitea_credentials_available=false
     write_status "failed" "Gitea requiere una instalación HTTPS con un dominio público; el modo de prueba no es compatible."
     exit 1
+  fi
+  gitea_admin_email="vpsadmin@${base_domain}"
+  if [[ "${local_gitea}" == "true" ]]; then
+    gitea_admin_email="vpsadmin@localhost.local"
   fi
   if [[ "${local_gitea}" != "true" ]] && ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
     gitea_credentials_available=false
@@ -790,19 +792,57 @@ if [[ "${operation}" == "install-gitea" ]]; then
     exit 1
   fi
 
-  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${GITEA_SERVICE}" 2>/dev/null)"; then
-    IFS=' ' read -r _ managed_label component_label <<< "${service_info}"
+  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "traefik.http.routers.vps-manager-gitea-local.rule"}}' "${GITEA_SERVICE}" 2>/dev/null)"; then
+    IFS=' ' read -r _ managed_label component_label local_router_rule <<< "${service_info}"
     if [[ "${managed_label}" != "true" || "${component_label}" != "gitea" ]]; then
       gitea_credentials_available=false
       write_status "failed" "Ya existe un servicio con el nombre reservado para Gitea y no pertenece a VPS Manager."
       exit 1
     fi
-    gitea_credentials_available=false
-    write_status "succeeded" "Gitea ya estaba instalado. No se generaron credenciales nuevas."
-    exit 0
+    if { [[ "${local_gitea}" == "true" && "${local_router_rule}" != 'Host(`localhost`)&&PathPrefix(`/gitea`)' ]]; } \
+      || { [[ "${local_gitea}" != "true" && "${local_router_rule}" == 'Host(`localhost`)&&PathPrefix(`/gitea`)' ]]; }; then
+      mounts="$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Source}} {{end}}' "${GITEA_SERVICE}" 2>/dev/null || true)"
+      if [[ " ${mounts} " != *" vps-manager-gitea-data "* ]]; then
+        gitea_credentials_available=false
+        write_status "failed" "No se pudo verificar el volumen persistente de Gitea; no se modificó el servicio existente."
+        exit 1
+      fi
+      if ! docker pull "${GITEA_IMAGE}"; then
+        gitea_credentials_available=false
+        write_status "failed" "No se pudo descargar la imagen de Gitea; el servicio existente no se modificó."
+        exit 1
+      fi
+      gitea_image_pulled=true
+      gitea_migrating=true
+      if [[ "${local_gitea}" == "true" ]]; then
+        gitea_migration_type="local-upgrade"
+      else
+        gitea_migration_type="domain"
+      fi
+      if ! docker service rm "${GITEA_SERVICE}" >/dev/null; then
+        gitea_credentials_available=false
+        write_status "failed" "No se pudo detener el servicio Gitea para cambiar su acceso."
+        exit 1
+      fi
+      for attempt in $(seq 1 30); do
+        if ! docker service inspect "${GITEA_SERVICE}" >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      if docker service inspect "${GITEA_SERVICE}" >/dev/null 2>&1; then
+        gitea_credentials_available=false
+        write_status "failed" "Gitea se detuvo, pero Swarm no liberó el nombre del servicio para la actualización."
+        exit 1
+      fi
+    else
+      gitea_credentials_available=false
+      write_status "succeeded" "Gitea ya estaba instalado. No se generaron credenciales nuevas."
+      exit 0
+    fi
   fi
 
-  if [[ ! -e "${CREDENTIALS_FILE}" ]]; then
+  if [[ "${gitea_migrating}" == "true" ]]; then
+    gitea_password=""
+  elif [[ ! -e "${CREDENTIALS_FILE}" ]]; then
     if ! gitea_password="$(python3 - "${CREDENTIALS_FILE}" "${request_id}" "${gitea_domain}" <<'PY'
 import json
 import os
@@ -849,7 +889,7 @@ PY
     }
   fi
 
-  if ! systemd-run --quiet --on-active=30m \
+  if [[ "${gitea_migrating}" != "true" ]] && ! systemd-run --quiet --on-active=30m \
     --unit="vps-manager-gitea-credentials-expire-${request_id}" \
     /usr/bin/find "${STATE_DIRECTORY}" -maxdepth 1 -type f \
       -name "gitea-credentials-${request_id}.json*" -delete; then
@@ -859,7 +899,7 @@ PY
     exit 1
   fi
 
-  if ! docker pull "${GITEA_IMAGE}"; then
+  if [[ "${gitea_image_pulled}" != "true" ]] && ! docker pull "${GITEA_IMAGE}"; then
     gitea_credentials_available=true
     write_status "failed" "No se pudo descargar la imagen fijada de Gitea."
     exit 1
@@ -883,21 +923,22 @@ PY
     --restart-condition on-failure
   )
   if [[ "${local_gitea}" == "true" ]]; then
-    local_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null || true)"
-    if [[ ! "${local_node_id}" =~ ^[a-f0-9]{25,64}$ ]]; then
-      gitea_credentials_available=false
-      write_status "failed" "No se pudo determinar el nodo Swarm local para fijar Gitea a este VPS."
-      exit 1
-    fi
     gitea_service_args+=(
-      --network host
-      --constraint "node.id==${local_node_id}"
+      --network vps-manager-proxy
       --env GITEA__server__DOMAIN=localhost
-      --env GITEA__server__ROOT_URL=http://127.0.0.1:3001/
-      --env GITEA__server__HTTP_ADDR=127.0.0.1
-      --env GITEA__server__HTTP_PORT=3001
+      --env GITEA__server__ROOT_URL=http://localhost:3001/gitea/
+      --env GITEA__server__LOCAL_ROOT_URL=http://vps-manager-gitea:3000/
       --env GITEA__server__SSH_DOMAIN=localhost
       --env GITEA__server__START_SSH_SERVER=false
+      --label traefik.enable=true
+      --label traefik.swarm.network=vps-manager-proxy
+      --label 'traefik.http.routers.vps-manager-gitea-local.rule=Host(`localhost`)&&PathPrefix(`/gitea`)'
+      --label traefik.http.routers.vps-manager-gitea-local.entrypoints=web
+      --label traefik.http.routers.vps-manager-gitea-local.middlewares=vps-manager-gitea-local-chain
+      --label traefik.http.middlewares.vps-manager-gitea-local-chain.chain.middlewares=vps-manager-gitea-local-ip,vps-manager-gitea-local-strip
+      --label traefik.http.middlewares.vps-manager-gitea-local-ip.ipallowlist.sourcerange=127.0.0.1/32,::1/128
+      --label traefik.http.middlewares.vps-manager-gitea-local-strip.stripprefix.prefixes=/gitea
+      --label traefik.http.services.vps-manager-gitea-local.loadbalancer.server.port=3000
     )
   else
     gitea_service_args+=(
@@ -922,7 +963,7 @@ PY
   if ! docker service create "${gitea_service_args[@]}" \
     "${GITEA_IMAGE}" >/dev/null; then
     gitea_credentials_available=true
-    write_status "failed" "Swarm no pudo crear el servicio Gitea. Verifica si el puerto TCP 2222 está disponible."
+    write_status "failed" "Swarm no pudo crear el servicio Gitea. Verifica la red privada y la disponibilidad de recursos."
     exit 1
   fi
 
@@ -945,11 +986,12 @@ PY
     exit 1
   fi
 
-  if ! awk '{ for (i = 1; i <= NF; i++) if ($i == "vpsadmin") found = 1 } END { exit !found }' <<< "${admin_list}"; then
+  if [[ "${gitea_migrating}" != "true" ]] \
+    && ! awk '{ for (i = 1; i <= NF; i++) if ($i == "vpsadmin") found = 1 } END { exit !found }' <<< "${admin_list}"; then
     if ! docker exec "${container_id}" gitea admin user create \
       --username vpsadmin \
       --password "${gitea_password}" \
-      --email "vpsadmin@${base_domain}" \
+      --email "${gitea_admin_email}" \
       --admin; then
       gitea_credentials_available=true
       write_status "failed" "No se pudo crear el administrador inicial de Gitea; los datos persistentes se conservaron."
@@ -957,8 +999,15 @@ PY
     fi
   fi
   gitea_credentials_available=true
-  if [[ "${local_gitea}" == "true" ]]; then
-    write_status "succeeded" "Gitea está disponible solo en este VPS en http://127.0.0.1:3001/. Accede mediante un túnel SSH. Las credenciales están disponibles una sola vez durante 30 minutos."
+  if [[ "${gitea_migrating}" == "true" ]]; then
+    gitea_credentials_available=false
+    if [[ "${gitea_migration_type}" == "domain" ]]; then
+      write_status "succeeded" "Gitea migró a https://${gitea_domain}/. Se conservaron el volumen, los repositorios, los usuarios y las credenciales existentes; no se generaron credenciales nuevas."
+    else
+      write_status "succeeded" "Se actualizó el servicio local de Gitea. Se conservaron la base SQLite, los repositorios y las credenciales existentes; accede mediante http://localhost:3001/gitea/ usando un túnel SSH."
+    fi
+  elif [[ "${local_gitea}" == "true" ]]; then
+    write_status "succeeded" "Gitea está disponible por túnel SSH en http://localhost:3001/gitea/. Las credenciales están disponibles una sola vez durante 30 minutos."
   else
     write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
   fi

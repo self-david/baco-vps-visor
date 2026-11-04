@@ -19,6 +19,7 @@ export default function ApplicationCatalog() {
           <p id="gitea-status" className="application-status" role="status" aria-live="polite">
             Consultando disponibilidad…
           </p>
+          <p id="gitea-container-status" className="muted" role="status" aria-live="polite"></p>
           <p id="gitea-api-token-status" className="application-status hidden" role="status" aria-live="polite"></p>
           <p className="application-domain">
             <a id="gitea-url" href="#" className="update-release-link hidden">Abrir Gitea</a>
@@ -27,6 +28,9 @@ export default function ApplicationCatalog() {
           <div className="container-heading-actions application-actions">
             <button id="install-gitea" className="button resource-action hidden" type="button" disabled={!application.installation.enabled}>
               Instalar Gitea
+            </button>
+            <button id="restart-gitea" className="button secondary resource-action hidden" type="button">
+              Reiniciar contenedor
             </button>
             <button id="reveal-gitea-credentials" className="button secondary resource-action hidden" type="button">
               Mostrar credenciales una vez

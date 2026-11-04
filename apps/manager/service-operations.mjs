@@ -883,9 +883,9 @@ export function createServiceOperationAgent({
       return {
         username: credentials.username,
         password: credentials.password,
-        url: credentials.domain === "localhost" ? "http://127.0.0.1:3001/" : `https://${credentials.domain}/`,
+        url: credentials.domain === "localhost" ? "http://localhost:3001/gitea/" : `https://${credentials.domain}/`,
         sshCommand: credentials.domain === "localhost"
-          ? "ssh -L 3001:127.0.0.1:3001 usuario@VPS; abre http://127.0.0.1:3001/"
+          ? "ssh -L 3001:127.0.0.1:80 usuario@IP_DEL_VPS; abre http://localhost:3001/gitea/"
           : `ssh -p 2222 git@${credentials.domain}`,
       };
     } finally {

@@ -61,9 +61,11 @@ const refreshNodesButton = document.querySelector("#refresh-nodes");
 const tasksList = document.querySelector("#tasks-list");
 const tasksStatus = document.querySelector("#tasks-status");
 const giteaStatus = document.querySelector("#gitea-status");
+const giteaContainerStatus = document.querySelector("#gitea-container-status");
 const giteaUrl = document.querySelector("#gitea-url");
 const giteaSsh = document.querySelector("#gitea-ssh");
 const installGiteaButton = document.querySelector("#install-gitea");
+const restartGiteaButton = document.querySelector("#restart-gitea");
 const n8nStatus = document.querySelector("#n8n-status");
 const n8nUrl = document.querySelector("#n8n-url");
 const installN8nButton = document.querySelector("#install-n8n");
@@ -167,6 +169,8 @@ let registryConfigurationPollTimer;
 let nodeEnrollmentPollTimer;
 let supabaseApplicationData;
 let giteaLocalOnly = false;
+let giteaNeedsLocalUpgrade = false;
+let giteaNeedsDomainMigration = false;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -1158,17 +1162,29 @@ async function loadGiteaApplication() {
   try {
     const { application } = await request("/api/system/applications/gitea");
     giteaLocalOnly = application.localOnly;
+    giteaNeedsLocalUpgrade = application.needsLocalUpgrade;
+    giteaNeedsDomainMigration = application.needsDomainMigration;
     installGiteaButton.classList.toggle("hidden", !application.available);
+    installGiteaButton.textContent = application.needsLocalUpgrade
+      ? "Actualizar acceso local de Gitea"
+      : application.needsDomainMigration
+        ? "Migrar Gitea a HTTPS"
+        : "Instalar Gitea";
     installGiteaButton.disabled = application.installing;
+    restartGiteaButton.classList.toggle("hidden", !application.installed);
+    restartGiteaButton.disabled = serviceOperationPending;
     revealGiteaCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
-    giteaTokenForm.classList.toggle("hidden", !application.installed || application.localOnly);
-    giteaApiTokenStatus.classList.toggle("hidden", !application.installed || application.localOnly);
-    const canUseGiteaApi = application.installed && !application.localOnly && application.apiTokenConfigured;
+    giteaTokenForm.classList.toggle("hidden", !application.installed || !application.privateApiReady);
+    giteaApiTokenStatus.classList.toggle("hidden", !application.installed || !application.privateApiReady);
+    const canUseGiteaApi = application.installed && application.privateApiReady && application.apiTokenConfigured;
     giteaRepositoryForm.classList.toggle("hidden", !canUseGiteaApi);
     giteaBranchManagement.classList.toggle("hidden", !canUseGiteaApi);
     projectForm.classList.toggle("hidden", !canUseGiteaApi);
     giteaCanManageProjects = canUseGiteaApi;
     renderProjects();
+    giteaContainerStatus.textContent = application.installed
+      ? `Servicio Swarm ${application.serviceState ?? "activo"} · ${application.replicas ?? 1} réplica${application.replicas === 1 ? "" : "s"} · ${application.needsLocalUpgrade ? "actualización local pendiente" : application.needsDomainMigration ? "migración HTTPS pendiente" : application.localOnly ? "API privada y acceso web por túnel SSH" : "acceso HTTPS"}`
+      : "";
     if (application.apiTokenConfigured && !giteaRepositoriesLoaded && !giteaRepositoriesLoading) {
       void loadGiteaRepositories();
     }
@@ -1180,23 +1196,31 @@ async function loadGiteaApplication() {
         ?? (giteaTokenConfigurationPending ? "Esperando que el agente del VPS actualice el secreto…" : "");
       if (application.tokenOperation?.state === "failed") giteaTokenConfigurationPending = false;
     }
-    giteaStatus.textContent = application.latestTask?.message
-      ?? (application.installed
-        ? application.localOnly
-          ? "Gitea solo escucha en este VPS en http://127.0.0.1:3001. Desde tu equipo, abre un túnel SSH (ssh -L 3001:127.0.0.1:3001 usuario@VPS) y visita http://127.0.0.1:3001."
-          : "Gitea está instalado."
-        : application.nameConflict
-          ? "El nombre del servicio de Gitea está ocupado por un servicio ajeno a VPS Manager."
-          : application.domain
-            ? `Listo para instalar en ${application.domain}. Confirma que el DNS apunte al VPS y que TCP 80/443 estén disponibles.`
-            : application.localOnly
-              ? "Modo de prueba local: puedes instalar Gitea en 127.0.0.1:3001 sin dominio. Solo será accesible dentro del VPS o mediante un túnel SSH."
-              : "Conecta un dominio público con HTTPS para instalar Gitea.");
+    giteaStatus.textContent = application.needsLocalUpgrade
+      ? "Actualiza el servicio Gitea existente para habilitar la API privada y la administración de proyectos. Se conservarán repositorios, usuarios y credenciales."
+      : application.needsDomainMigration
+        ? application.installing
+          ? "Migración de Gitea a HTTPS en curso. El volumen persistente y las credenciales existentes se conservarán."
+          : application.latestTask?.status === "failed"
+            ? application.latestTask.message
+            : `Migra Gitea a https://${application.domain}/. Se conservarán el volumen, los repositorios, los usuarios y sus credenciales. Configura el DNS de ${application.domain} hacia este VPS antes de continuar.`
+        : application.latestTask?.message
+          ?? (application.installed
+            ? application.localOnly
+              ? "Gitea se sirve en http://localhost:3001/gitea/. Desde tu equipo, abre el túnel SSH indicado abajo y visita esa dirección."
+              : "Gitea está instalado."
+            : application.nameConflict
+              ? "El nombre del servicio de Gitea está ocupado por un servicio ajeno a VPS Manager."
+              : application.domain
+                ? `Listo para instalar en ${application.domain}. Confirma que el DNS apunte al VPS y que TCP 80/443 estén disponibles.`
+                : application.localOnly
+                  ? "Modo local: instala Gitea sin dominio. La interfaz solo acepta conexiones loopback; el panel se conecta a su API por la red privada de Swarm."
+                  : "Conecta un dominio público con HTTPS para instalar Gitea.");
     if (application.url && application.installed) {
       giteaUrl.href = application.url;
       giteaUrl.classList.remove("hidden");
       giteaSsh.textContent = application.localOnly
-        ? "Acceso web local; Git SSH se habilitará al conectar un dominio HTTPS."
+        ? "Acceso por túnel: ssh -L 3001:127.0.0.1:80 usuario@IP_DEL_VPS"
         : `Git SSH: puerto ${application.sshPort}`;
       giteaSsh.classList.remove("hidden");
     } else {
@@ -2020,8 +2044,12 @@ function resetProjectForm() {
 }
 
 async function installGitea() {
-  const confirmation = giteaLocalOnly
-    ? "Gitea se instalará solo en 127.0.0.1:3001, sin publicación a Internet ni Git SSH. Para abrirlo desde tu equipo, usa un túnel SSH. ¿Continuar?"
+  const confirmation = giteaNeedsLocalUpgrade
+    ? "Se actualizará el servicio local de Gitea para habilitar la API privada. Se recreará el contenedor conservando el volumen persistente con usuarios y repositorios. El acceso web usará el túnel SSH. ¿Continuar?"
+    : giteaNeedsDomainMigration
+      ? "Gitea se migrará a HTTPS. Se recreará el servicio conservando el volumen persistente, repositorios, usuarios y credenciales actuales; no se generará una contraseña nueva. Asegúrate de que el DNS git.<dominio> apunte a este VPS, Traefik ya tenga HTTPS funcional y el puerto TCP 2222 esté libre para Git SSH. ¿Continuar?"
+    : giteaLocalOnly
+    ? "Gitea se instalará sin puertos propios publicados. Su interfaz web se limitará a conexiones loopback de Traefik y el panel accederá a la API por la red privada de Swarm. ¿Continuar?"
     : "Gitea se instalará con almacenamiento persistente, HTTPS en git.<dominio> y Git SSH en el puerto TCP 2222. Asegúrate de que el DNS apunte a este VPS y que el puerto 2222 esté libre. ¿Continuar?";
   if (!confirm(confirmation)) {
     return;
@@ -2036,6 +2064,26 @@ async function installGitea() {
     installGiteaButton.disabled = false;
   }
 }
+
+restartGiteaButton.addEventListener("click", async () => {
+  if (giteaLocalOnly && !confirm("¿Reiniciar el servicio Gitea? Las sesiones web activas se interrumpirán brevemente.")) return;
+  restartGiteaButton.disabled = true;
+  try {
+    const { application } = await request("/api/system/applications/gitea");
+    if (!application.serviceId) throw new Error("No se encontró el servicio administrado de Gitea.");
+    serviceOperationPending = true;
+    giteaContainerStatus.textContent = "Enviando reinicio al servicio Gitea…";
+    const result = await request(`/api/docker/services/${encodeURIComponent(application.serviceId)}/restart`, {
+      method: "POST",
+    });
+    giteaContainerStatus.textContent = result.operation.message;
+    scheduleServiceOperationPoll();
+  } catch (error) {
+    serviceOperationPending = false;
+    giteaContainerStatus.textContent = error.message;
+    restartGiteaButton.disabled = false;
+  }
+});
 
 giteaTokenForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2081,11 +2129,14 @@ giteaRepositoryForm.addEventListener("submit", async (event) => {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.textContent = repository.url;
-    const httpsClone = document.createElement("p");
-    httpsClone.textContent = `HTTPS: ${repository.cloneUrl}`;
-    const sshClone = document.createElement("p");
-    sshClone.textContent = `SSH: ${repository.sshUrl}`;
-    giteaRepositoryResult.append(heading, link, httpsClone, sshClone);
+    const clone = document.createElement("p");
+    clone.textContent = `${giteaLocalOnly ? "HTTP (usa el túnel SSH)" : "HTTPS"}: ${repository.cloneUrl}`;
+    giteaRepositoryResult.append(heading, link, clone);
+    if (!giteaLocalOnly) {
+      const sshClone = document.createElement("p");
+      sshClone.textContent = `SSH: ${repository.sshUrl}`;
+      giteaRepositoryResult.append(sshClone);
+    }
     giteaRepositoryResult.classList.remove("hidden");
     giteaRepositoryStatus.textContent = "Repositorio creado correctamente.";
     giteaRepositoryForm.reset();

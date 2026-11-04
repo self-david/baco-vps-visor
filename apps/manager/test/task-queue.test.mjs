@@ -231,9 +231,37 @@ test("installs local Gitea on the loopback-only test URL", async () => {
   });
 
   assert.deepEqual(await handler(giteaTask, new AbortController().signal), {
-    message: "Gitea está disponible solo en este VPS en http://127.0.0.1:3001/. Accede mediante un túnel SSH; las credenciales están disponibles una sola vez.",
-    url: "http://127.0.0.1:3001/",
+    message: "Gitea está disponible por túnel SSH en http://localhost:3001/gitea/. Las credenciales están disponibles una sola vez.",
+    url: "http://localhost:3001/gitea/",
     credentialsAvailable: true,
+  });
+});
+
+test("returns Gitea HTTPS migration success without exposing new credentials", async () => {
+  const migrationTask = {
+    id: task.id,
+    type: "application.gitea.install",
+    payload: { domain: "git.example.com" },
+  };
+  const message = "Gitea migró a HTTPS; se conservaron los datos y las credenciales existentes.";
+  const handler = createGiteaInstallHandler({
+    async requestGiteaInstall() {},
+    async getStatus() {
+      return {
+        id: migrationTask.id,
+        operation: "install-gitea",
+        state: "succeeded",
+        domain: migrationTask.payload.domain,
+        credentialsAvailable: false,
+        message,
+      };
+    },
+  });
+
+  assert.deepEqual(await handler(migrationTask, new AbortController().signal), {
+    message,
+    url: "https://git.example.com/",
+    credentialsAvailable: false,
   });
 });
 

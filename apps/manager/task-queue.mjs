@@ -187,15 +187,15 @@ export function createGiteaInstallHandler(agent, { pollIntervalMs = 1000 } = {})
           if (!operation.credentialsAvailable) {
             return {
               message: operation.message,
-              url: domain === "localhost" ? "http://127.0.0.1:3001/" : `https://${domain}/`,
+              url: domain === "localhost" ? "http://localhost:3001/gitea/" : `https://${domain}/`,
               credentialsAvailable: false,
             };
           }
           return {
             message: domain === "localhost"
-              ? "Gitea está disponible solo en este VPS en http://127.0.0.1:3001/. Accede mediante un túnel SSH; las credenciales están disponibles una sola vez."
+              ? "Gitea está disponible por túnel SSH en http://localhost:3001/gitea/. Las credenciales están disponibles una sola vez."
               : `Gitea está disponible en https://${domain}/. Las credenciales de administrador están disponibles una sola vez.`,
-            url: domain === "localhost" ? "http://127.0.0.1:3001/" : `https://${domain}/`,
+            url: domain === "localhost" ? "http://localhost:3001/gitea/" : `https://${domain}/`,
             credentialsAvailable: true,
           };
         }

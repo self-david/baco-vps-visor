@@ -196,13 +196,15 @@ Desde la raíz del checkout en Ubuntu 24.04, indica la IPv4 privada del VPS:
 sudo env VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash install.sh
 ```
 
-La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor. En este modo puedes instalar Gitea sin dominio: escucha únicamente en `127.0.0.1:3001` dentro del VPS y no abre puertos web ni Git SSH a la red. Desde tu equipo, crea un túnel SSH:
+La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor. En este modo puedes instalar Gitea sin dominio ni puertos públicos propios. La API solo es accesible para el panel mediante la red privada de Swarm. Para abrir la interfaz web desde tu equipo, crea este túnel SSH:
 
 ```bash
-ssh -L 3001:127.0.0.1:3001 usuario@IP_DEL_VPS
+ssh -L 3001:127.0.0.1:80 usuario@IP_DEL_VPS
 ```
 
-Reemplaza `usuario` con tu usuario SSH y `IP_DEL_VPS` con la dirección IP del servidor. Mientras el túnel esté activo, visita `http://127.0.0.1:3001`. Este modo HTTP es solo para pruebas locales; las funciones de integración de Gitea con proyectos se habilitan con una instalación HTTPS y dominio público. La migración automática de una instancia local ya creada a un dominio HTTPS, conservando sus datos, aún está pendiente.
+Reemplaza `usuario` con tu usuario SSH y `IP_DEL_VPS` con la dirección IP del servidor. Mientras el túnel esté activo, visita `http://localhost:3001/gitea/`. La ruta de Gitea en Traefik solo acepta conexiones loopback; el panel puede validar tokens, administrar repositorios y crear proyectos a través de la API privada de Swarm. El puerto 80 del modo de prueba no debe exponerse a Internet. Una instalación local anterior se actualiza al nuevo acceso conservando su volumen y sus credenciales.
+
+Para pasar Gitea del modo local a HTTPS, primero configura el dominio público del panel y apunta `git.<dominio-del-panel>` a la IP del VPS. Ejecuta de nuevo `install.sh` en modo producción con ese dominio y un correo válido para Let's Encrypt; la instalación conserva los secretos Swarm y volúmenes existentes. Cuando el panel vuelva a estar disponible por HTTPS, abre la ficha de Gitea y selecciona **Migrar Gitea a HTTPS**. El servicio se recreará en Traefik con el mismo volumen persistente: no se crean cuentas ni contraseñas nuevas. El DNS debe resolver antes de migrar y el puerto TCP 2222 debe estar libre para Git SSH.
 
 Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proyecto:
 
