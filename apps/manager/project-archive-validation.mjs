@@ -39,7 +39,6 @@ export function validateProjectArchive(archive) {
 
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let offset = directoryOffset;
-  let rootName = "";
   let fileCount = 0;
   let uncompressedBytes = 0;
   const paths = new Set();
@@ -68,10 +67,6 @@ export function validateProjectArchive(archive) {
       rejectArchive(400, "El ZIP contiene una ruta no válida o duplicada.");
     }
     paths.add(path);
-    if (!rootName) rootName = parts[0];
-    if (parts[0] !== rootName || (parts.length === 1 && !isDirectory)) {
-      rejectArchive(400, "El ZIP debe contener una sola carpeta raíz.");
-    }
     const externalAttributes = archive.readUInt32LE(offset + 38);
     const mode = (externalAttributes >>> 16) & 0xf000;
     if (madeBy === 3 && mode !== 0

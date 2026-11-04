@@ -55,8 +55,7 @@ export async function inspectProjectZip(file) {
 
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let offset = centralDirectoryOffset;
-  let root = "";
-  let hasDockerfile = false;
+  const entries = [];
   for (let index = 0; index < entryCount; index += 1) {
     if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
       throw new TypeError("El ZIP está incompleto o no es válido.");
@@ -72,17 +71,28 @@ export async function inspectProjectZip(file) {
     } catch {
       throw new TypeError("El ZIP debe usar nombres de archivo UTF-8.");
     }
+    const directory = path.endsWith("/") || Boolean(view.getUint32(offset + 38, true) & 0x10);
     if (path.endsWith("/")) path = path.slice(0, -1);
-    const parts = validateArchivePath(path);
-    if (!root) root = parts[0];
-    if (parts[0] !== root) {
-      throw new TypeError("El ZIP debe contener una sola carpeta raíz.");
-    }
-    if (parts.length === 2 && parts[1] === "Dockerfile") hasDockerfile = true;
+    validateArchivePath(path);
+    entries.push({ path, directory });
     offset = end;
   }
-  if (!root) throw new TypeError("El ZIP no contiene archivos de proyecto.");
-  return { root, hasDockerfile };
+  const topLevelDirectories = new Set(entries
+    .filter((entry) => entry.directory && !entry.path.includes("/"))
+    .map((entry) => entry.path));
+  const root = topLevelDirectories.values().next().value ?? entries[0]?.path.split("/")[0] ?? "";
+  const hasRootContents = entries.some((entry) => entry.path.startsWith(`${root}/`));
+  const stripRoot = entries.every((entry) => entry.path === root || entry.path.startsWith(`${root}/`))
+    && (topLevelDirectories.size === 1 || hasRootContents);
+  const paths = entries
+    .filter((entry) => !entry.directory)
+    .map(({ path }) => stripRoot ? path.split("/").slice(1).join("/") : path);
+  if (!paths.length) throw new TypeError("El ZIP no contiene archivos de proyecto.");
+  return {
+    root,
+    paths,
+    hasDockerfile: paths.includes("Dockerfile"),
+  };
 }
 
 export async function createProjectZip(files, rootName) {
@@ -93,11 +103,16 @@ export async function createProjectZip(files, rootName) {
   if (rootParts.length !== 1) throw new TypeError("El nombre de la carpeta no es válido.");
   const root = rootParts[0];
   const entries = [{ name: `${root}/`, bytes: new Uint8Array(), directory: true }];
+  const filePaths = files.map(({ file, path }) => path || file.name);
+  const firstParts = filePaths.map((path) => validateArchivePath(path));
+  const commonDirectory = firstParts.length > 0
+    && firstParts.every((parts) => parts.length > 1 && parts[0] === firstParts[0][0])
+    ? firstParts[0][0]
+    : null;
   let contentBytes = 0;
-  for (const item of files) {
-    const parts = validateArchivePath(item.path);
-    const relativePath = parts[0] === root ? parts.slice(1) : parts;
-    if (!relativePath.length) continue;
+  for (const [index, item] of files.entries()) {
+    const parts = firstParts[index];
+    const relativePath = commonDirectory ? parts.slice(1) : parts;
     contentBytes += item.file.size;
     if (contentBytes > maximumArchiveBytes) {
       throw new RangeError("La carpeta supera el límite de 32 MiB.");

@@ -21,7 +21,7 @@ test("creates a ZIP with one project root and UTF-8 filenames", async () => {
   assert.equal(archive.type, "application/zip");
   assert.ok(archive.size < 1024);
   const result = await inspectProjectZip(archive);
-  assert.deepEqual(result, { root: "mi-app", hasDockerfile: true });
+  assert.deepEqual(result, { root: "mi-app", paths: ["index.html", "Dockerfile"], hasDockerfile: true });
   validateProjectArchive(Buffer.from(await archive.arrayBuffer()));
 
   const bytes = new Uint8Array(await archive.arrayBuffer());
@@ -31,7 +31,7 @@ test("creates a ZIP with one project root and UTF-8 filenames", async () => {
   assert.equal(new TextDecoder().decode(bytes.subarray(30, 30 + nameLength)), "mi-app/");
 });
 
-test("rejects invalid archives, multiple roots, and unsafe folder paths", async () => {
+test("accepts root-level files and multiple ZIP roots while rejecting unsafe folder paths", async () => {
   const blob = new Blob(["not a zip"], { type: "application/zip" });
   await assert.rejects(inspectProjectZip(blob), /incompleto o no es válido/);
 
@@ -51,7 +51,18 @@ test("rejects invalid archives, multiple roots, and unsafe folder paths", async 
     multipleRoots.write("bravo/index.html", offset, "utf8");
     offset = multipleRoots.indexOf(entryName, offset + entryName.length);
   }
-  assert.throws(() => validateProjectArchive(multipleRoots), /una sola carpeta raíz/);
+  assert.doesNotThrow(() => validateProjectArchive(multipleRoots));
+  assert.deepEqual((await inspectProjectZip(new Blob([multipleRoots]))).paths, ["bravo/index.html"]);
+  const rootFile = await createProjectZip([
+    { file: fileWithPath("index.html", "<h1>Solo</h1>", "index.html"), path: "index.html" },
+  ], "sitio");
+  assert.deepEqual(await inspectProjectZip(rootFile), {
+    root: "sitio",
+    paths: ["index.html"],
+    hasDockerfile: false,
+  });
+  const rootFileArchive = Buffer.from(await rootFile.arrayBuffer());
+  assert.doesNotThrow(() => validateProjectArchive(rootFileArchive));
 
   const unsafePath = Buffer.from(await archive.arrayBuffer());
   const unsafeName = Buffer.from("alpha/index.html");

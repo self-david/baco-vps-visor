@@ -499,9 +499,20 @@ try:
         entries = source.infolist()
         if not entries or len(entries) > maximum_files:
             raise ValueError("archive entry count is invalid")
-        root_name = None
         total_size = 0
         file_count = 0
+        top_level_directories = {
+            entry.filename.rstrip("/")
+            for entry in entries
+            if entry.is_dir() and "/" not in entry.filename.rstrip("/")
+        }
+        first_root = entries[0].filename.rstrip("/").split("/", 1)[0]
+        has_root_contents = any(entry.filename.startswith(first_root + "/") for entry in entries)
+        strip_root = all(
+            entry.filename.rstrip("/") == first_root or entry.filename.startswith(first_root + "/")
+            for entry in entries
+        ) and (len(top_level_directories) == 1 or has_root_contents)
+        root_name = None
         for entry in entries:
             name = entry.filename
             if not name or "\\" in name or name.startswith("/"):
@@ -511,16 +522,12 @@ try:
                 raise ValueError("archive path traversal rejected")
             if root_name is None:
                 root_name = parts[0]
-            if parts[0] != root_name:
-                raise ValueError("archive must contain one root directory")
-            if len(parts) == 1:
-                if not entry.is_dir():
-                    raise ValueError("archive root must be a directory")
-                continue
             mode = (entry.external_attr >> 16) & 0o170000
             if mode == stat.S_IFLNK or mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
                 raise ValueError("archive contains a non-regular file")
-            relative_parts = parts[1:]
+            relative_parts = parts[1:] if strip_root else parts
+            if not relative_parts:
+                continue
             target = destination.joinpath(*relative_parts)
             if not target.resolve().is_relative_to(destination):
                 raise ValueError("archive path escaped the build context")

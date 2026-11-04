@@ -21,15 +21,20 @@ const githubClientIdInput = document.querySelector("#github-client-id");
 const dropzone = document.querySelector("#project-dropzone");
 const zipInput = document.querySelector("#project-zip-input");
 const folderInput = document.querySelector("#project-folder-input");
+const filesInput = document.querySelector("#project-files-input");
 const uploadStatus = document.querySelector("#project-upload-status");
 const selection = document.querySelector("#project-selection");
 const selectionName = document.querySelector("#project-selection-name");
 const selectionDetails = document.querySelector("#project-selection-details");
+const selectionTree = document.querySelector("#project-selection-tree");
 const importButton = document.querySelector("#project-import-files");
 
 let selectedFiles = [];
 let importing = false;
 let githubConfigured = false;
+let selectedProjectName = "";
+let selectedArchiveInfo;
+let selectedPaths = [];
 
 function openGithubSetup() {
   githubSettings.open = true;
@@ -38,29 +43,103 @@ function openGithubSetup() {
   githubConnectStatus.textContent = "Para conectar GitHub una sola vez, crea una OAuth App, pega su Client ID y Client Secret, y pulsa “Guardar y continuar”.";
 }
 
-function showSelection(files) {
+function renderFileTree(paths) {
+  const tree = new Map();
+  for (const path of paths) {
+    const parts = path.split("/").filter(Boolean);
+    let children = tree;
+    for (const [index, part] of parts.entries()) {
+      const current = children.get(part) ?? { children: new Map(), file: index === parts.length - 1 };
+      if (index < parts.length - 1) current.file = false;
+      children.set(part, current);
+      children = current.children;
+    }
+  }
+  const appendEntries = (parent, entries) => {
+    for (const [name, entry] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
+      const item = document.createElement("li");
+      item.textContent = name;
+      if (entry.children.size) {
+        item.className = "project-file-directory";
+        const nested = document.createElement("ul");
+        appendEntries(nested, entry.children);
+        item.append(nested);
+      }
+      parent.append(item);
+    }
+  };
+  selectionTree.replaceChildren();
+  appendEntries(selectionTree, tree);
+}
+
+async function showSelection(files, projectName = "") {
   selectedFiles = files.filter(({ file }) => file && Number.isFinite(file.size));
+  selectedArchiveInfo = undefined;
+  selectedPaths = [];
   if (!selectedFiles.length) {
     selection.classList.add("hidden");
     importButton.disabled = true;
     return;
   }
   const archives = selectedFiles.filter(({ file }) => /\.zip$/i.test(file.name));
-  const paths = selectedFiles.map(({ file, path }) => path || file.webkitRelativePath || file.name);
-  const root = archives.length
+  const sourcePaths = selectedFiles.map(({ file, path }) => path || file.webkitRelativePath || file.name);
+  if (archives.length && (selectedFiles.length !== 1 || archives.length !== 1)) {
+    selectedFiles = [];
+    selection.classList.add("hidden");
+    uploadStatus.textContent = "Selecciona un ZIP a la vez; no lo combines con archivos o carpetas.";
+    importButton.disabled = true;
+    return;
+  }
+  const paths = [];
+  if (archives.length) {
+    if (archives[0].file.size > 32 * 1024 * 1024) {
+      selectedFiles = [];
+      selection.classList.add("hidden");
+      uploadStatus.textContent = "El ZIP supera el límite de 32 MiB.";
+      importButton.disabled = true;
+      return;
+    }
+    try {
+      selectedArchiveInfo = await inspectProjectZip(archives[0].file);
+      paths.push(...selectedArchiveInfo.paths);
+    } catch (error) {
+      selectedFiles = [];
+      selection.classList.add("hidden");
+      uploadStatus.textContent = error.message;
+      importButton.disabled = true;
+      return;
+    }
+  } else {
+    const commonRoot = sourcePaths.length > 0
+      && sourcePaths.every((path) => path.includes("/") && path.split("/")[0] === sourcePaths[0].split("/")[0])
+      ? sourcePaths[0].split("/")[0]
+      : "";
+    paths.push(...sourcePaths.map((path) => commonRoot ? path.slice(commonRoot.length + 1) : path));
+  }
+  const inferredName = archives.length
     ? archives[0].file.name.replace(/\.zip$/i, "")
-    : paths[0].split("/")[0];
+    : selectedFiles.length === 1 && !sourcePaths[0].includes("/")
+      ? selectedFiles[0].file.name.replace(/\.[^.]+$/, "")
+      : sourcePaths[0].includes("/") ? sourcePaths[0].split("/")[0] : sourcePathsRoot(selectedFiles);
+  selectedProjectName = projectName || inferredName;
+  selectedPaths = paths;
   const totalBytes = selectedFiles.reduce((sum, { file }) => sum + file.size, 0);
   const size = totalBytes < 1024 * 1024
     ? `${Math.max(1, Math.ceil(totalBytes / 1024))} KiB`
     : `${(totalBytes / (1024 * 1024)).toFixed(1)} MiB`;
-  selectionName.textContent = root;
+  selectionName.textContent = selectedProjectName;
   selectionDetails.textContent = archives.length
     ? `${archives[0].file.name} · ${size}`
     : `${selectedFiles.length} archivos · ${size}`;
+  renderFileTree(paths);
   selection.classList.remove("hidden");
   importButton.disabled = importing;
   uploadStatus.textContent = "";
+}
+
+function sourcePathsRoot(files) {
+  const roots = new Set(files.map(({ file, path }) => (path || file.webkitRelativePath || file.name).split("/")[0]));
+  return roots.size === 1 ? [...roots][0] : "proyecto";
 }
 
 function readDroppedEntry(entry, parentPath = "") {
@@ -107,32 +186,15 @@ async function importSelectedFiles() {
   uploadStatus.textContent = "Preparando los archivos…";
   try {
     let archive;
-    let root;
-    let hasDockerfile = false;
+    const root = selectedProjectName;
+    const hasDockerfile = selectedArchiveInfo?.hasDockerfile ?? selectedPaths.includes("Dockerfile");
     const zipFiles = selectedFiles.filter(({ file }) => /\.zip$/i.test(file.name));
     if (zipFiles.length) {
-      if (selectedFiles.length !== 1 || zipFiles.length !== 1) {
-        throw new Error("Selecciona un único ZIP o una carpeta, no ambos.");
-      }
-      if (zipFiles[0].file.size > 32 * 1024 * 1024) {
-        throw new Error("El ZIP supera el límite de 32 MiB.");
-      }
-      const inspected = await inspectProjectZip(zipFiles[0].file);
-      root = inspected.root;
-      hasDockerfile = inspected.hasDockerfile;
       archive = zipFiles[0].file;
     } else {
-      const paths = selectedFiles.map(({ file, path }) => path || file.webkitRelativePath || file.name);
-      const roots = new Set(paths.map((path) => path.split("/")[0]));
-      if (roots.size !== 1) throw new Error("Arrastra una sola carpeta de proyecto cada vez.");
-      root = [...roots][0];
-      hasDockerfile = paths.some((path) => {
-        const parts = path.split("/");
-        return parts.length === 2 && parts[1] === "Dockerfile";
-      });
       archive = await createProjectZip(selectedFiles.map(({ file, path }, index) => ({
         file,
-        path: path || file.webkitRelativePath || paths[index],
+        path: path || file.webkitRelativePath || selectedPaths[index],
       })), root);
     }
 
@@ -148,9 +210,12 @@ async function importSelectedFiles() {
     });
     uploadStatus.textContent = `${result.project.name} se creó con sus archivos. Configura el puerto y pulsa “Construir” cuando esté listo.`;
     selectedFiles = [];
+    selectedPaths = [];
+    selectedArchiveInfo = undefined;
     selection.classList.add("hidden");
     zipInput.value = "";
     folderInput.value = "";
+    filesInput.value = "";
     window.dispatchEvent(new CustomEvent("vps-manager:projects-updated"));
   } catch (error) {
     uploadStatus.textContent = error.message;
@@ -222,13 +287,16 @@ window.addEventListener("vps-manager:github-config-updated", async () => {
 
 zipInput.addEventListener("change", () => {
   const file = zipInput.files?.[0];
-  showSelection(file ? [{ file, path: file.name }] : []);
+  void showSelection(file ? [{ file, path: file.name }] : []);
 });
 folderInput.addEventListener("change", () => {
-  showSelection(Array.from(folderInput.files ?? []).map((file) => ({
+  void showSelection(Array.from(folderInput.files ?? []).map((file) => ({
     file,
     path: file.webkitRelativePath,
   })));
+});
+filesInput.addEventListener("change", () => {
+  void showSelection(Array.from(filesInput.files ?? []).map((file) => ({ file, path: file.name })));
 });
 importButton.addEventListener("click", () => void importSelectedFiles());
 
@@ -251,13 +319,13 @@ dropzone.addEventListener("drop", async (event) => {
     uploadStatus.textContent = "Leyendo los archivos seleccionados…";
     try {
       const groups = await Promise.all(entries.map((entry) => readDroppedEntry(entry)));
-      showSelection(groups.flat());
+      await showSelection(groups.flat());
     } catch (error) {
       uploadStatus.textContent = error.message;
     }
     return;
   }
-  showSelection(Array.from(event.dataTransfer?.files ?? []).map((file) => ({ file, path: file.name })));
+  void showSelection(Array.from(event.dataTransfer?.files ?? []).map((file) => ({ file, path: file.name })));
 });
 
 importButton.disabled = true;

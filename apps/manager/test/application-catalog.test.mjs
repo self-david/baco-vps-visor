@@ -31,6 +31,8 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectsPanel, /id="project-selection"/);
   assert.match(projectsPanel, /id="project-import-files"/);
   assert.match(projectsPanel, /id="project-zip-input"/);
+  assert.match(projectsPanel, /id="project-files-input"/);
+  assert.match(projectsPanel, /id="project-selection-tree"/);
   assert.match(projectsPanel, /id="github-connect-status"/);
   assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
@@ -48,6 +50,28 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectSettingsDialog, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
   assert.match(projectsPanel, /name="productionBranch"/);
   assert.match(projectSettingsDialog, /name="autoDeploy"/);
+  assert.match(projectSettingsDialog, /id="project-dialog-content"/);
+});
+
+test("project file selection displays a nested filename tree and keeps project settings in its dialog", async () => {
+  const [importer, application, dialog, serviceAgent] = await Promise.all([
+    readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ProjectSettingsDialog.astro", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+  ]);
+  const rendererStart = application.indexOf("function renderProjects() {");
+  const rendererEnd = application.indexOf("function resetDomainZoneForm()", rendererStart);
+  const renderer = application.slice(rendererStart, rendererEnd);
+
+  assert.match(importer, /function renderFileTree\(paths\)/);
+  assert.match(importer, /filesInput\.addEventListener\("change"/);
+  assert.match(importer, /selectedArchiveInfo\.paths/);
+  assert.match(renderer, /projectDialogContent\.append\(projectDetails\)/);
+  assert.match(renderer, /card\.append\(makeButton\("Administrar"/);
+  assert.match(dialog, /id="project-dialog-content"/);
+  assert.match(serviceAgent, /has_root_contents/);
+  assert.doesNotMatch(serviceAgent, /archive must contain one root directory/);
 });
 
 test("uploaded projects render assigned domains and provide root/subdomain assignment", async () => {

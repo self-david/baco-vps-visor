@@ -115,6 +115,8 @@ const projectProductionBranchSelect = document.querySelector("#project-productio
 const projectSaveButton = document.querySelector("#project-save");
 const projectCancelEditButton = document.querySelector("[data-close-project-dialog]");
 const projectDialog = document.querySelector("#project-dialog");
+const projectDialogSummary = document.querySelector("#project-dialog-summary");
+const projectDialogContent = document.querySelector("#project-dialog-content");
 const projectInstallationSelect = document.querySelector("#project-installation");
 const projectBuildStrategySelect = document.querySelector("#project-build-strategy");
 const projectDockerfileField = document.querySelector("#project-dockerfile-field");
@@ -1746,15 +1748,21 @@ function openProjectDialog(project = null) {
   document.querySelector("#project-dockerfile").value = project?.dockerfilePath ?? "Dockerfile";
   document.querySelector("#project-port").value = String(project?.internalPort ?? 3000);
   document.querySelector("#project-auto-deploy").checked = project?.autoDeploy ?? true;
-  projectFormTitle.textContent = "Configuración del proyecto";
+  projectFormTitle.textContent = project.name;
   projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
+  projectDialogSummary.textContent = `${project.sourceType === "upload" ? "Proyecto desde archivos" : `GitHub · ${project.repository}`} · ${project.deployment ? "Desplegado" : project.latestBuild ? "Build disponible" : "Sin build"}`;
+  for (const section of projectDialogContent.children) {
+    section.hidden = section.dataset.projectId !== project.id;
+  }
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
   projectDialog.showModal();
 }
 
 function renderProjects() {
+  const openProjectId = projectDialog.open ? currentProjectEdit?.id : null;
   projectsList.replaceChildren();
+  projectDialogContent.replaceChildren();
   if (projects.length === 0) {
     projectsStatus.textContent = "Todavía no hay proyectos. Crea uno para empezar.";
     return;
@@ -1764,6 +1772,23 @@ function renderProjects() {
     const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     const card = document.createElement("article");
     card.className = "project-item";
+    const projectDetails = document.createElement("section");
+    projectDetails.className = "project-detail-section";
+    projectDetails.dataset.projectId = project.id;
+    projectDetails.hidden = true;
+    const buildInfo = document.createElement("p");
+    buildInfo.className = "muted";
+    buildInfo.textContent = project.latestBuild
+      ? `Último build: ${project.latestBuild.commitSha.slice(0, 12)}${project.latestBuild.branch ? ` · ${project.latestBuild.branch}` : ""}`
+      : project.sourceType === "upload" && project.latestSource
+        ? `Archivos cargados · ${project.latestSource.sourceDigest.slice(0, 12)}`
+        : "Aún no hay un build exitoso.";
+    const deploymentInfo = document.createElement("p");
+    deploymentInfo.className = "muted";
+    deploymentInfo.textContent = project.deployment
+      ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} réplicas · ${project.deployment.image}`
+      : "No hay un servicio desplegado.";
+    projectDetails.append(buildInfo, deploymentInfo);
     const heading = document.createElement("div");
     heading.className = "card-heading";
     const title = document.createElement("h4");
@@ -1776,20 +1801,10 @@ function renderProjects() {
     heading.append(title, state);
     const details = document.createElement("p");
     details.className = "muted";
-    details.textContent = `${project.sourceType === "upload" ? "Archivo ZIP" : project.repository ?? "GitHub"} · ${project.sourceType === "github" ? project.productionBranch : project.buildStrategy} · ${project.buildStrategy}${project.description ? ` · ${project.description}` : ""}`;
-    const buildDetails = document.createElement("p");
-    buildDetails.className = "muted";
-    buildDetails.textContent = project.latestBuild
-      ? `Último build: ${project.latestBuild.commitSha.slice(0, 12)}${project.latestBuild.branch ? ` · ${project.latestBuild.branch}` : ""}`
-      : project.sourceType === "upload" && project.latestSource
-        ? `ZIP cargado: ${project.latestSource.sourceDigest.slice(0, 12)}`
-        : "Aún no hay un build exitoso.";
-    const serviceDetails = document.createElement("p");
-    serviceDetails.className = "muted";
-    serviceDetails.textContent = project.deployment
-      ? `Servicio ${project.deployment.serviceName} · ${project.deployment.image}`
-      : "No hay un servicio desplegado.";
-    card.append(heading, details, buildDetails, serviceDetails);
+    details.textContent = project.sourceType === "upload"
+      ? "Subido desde ZIP o archivos"
+      : `GitHub · ${project.repository} · ${project.productionBranch}`;
+    card.append(heading, details);
 
     const actions = document.createElement("div");
     actions.className = "project-actions";
@@ -1802,12 +1817,16 @@ function renderProjects() {
       button.addEventListener("click", handler);
       return button;
     };
-    actions.append(makeButton("Configurar", () => openProjectDialog(project)));
+    card.append(makeButton("Administrar", () => openProjectDialog(project)));
 
     if (project.sourceType === "upload") {
       const uploadForm = document.createElement("form");
       uploadForm.className = "project-upload-form";
+      const uploadLabel = document.createElement("label");
       const file = document.createElement("input");
+      file.id = `project-archive-${project.id}`;
+      uploadLabel.textContent = "Reemplazar archivos ZIP";
+      uploadLabel.htmlFor = file.id;
       file.type = "file";
       file.accept = ".zip,application/zip";
       file.required = true;
@@ -1816,7 +1835,7 @@ function renderProjects() {
       upload.className = "button secondary";
       upload.type = "submit";
       upload.textContent = "Subir ZIP";
-      uploadForm.append(file, upload);
+      uploadForm.append(uploadLabel, file, upload);
       uploadForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const archive = file.files?.[0];
@@ -1840,7 +1859,7 @@ function renderProjects() {
           upload.disabled = false;
         }
       });
-      card.append(uploadForm);
+      projectDetails.append(uploadForm);
     }
 
     actions.append(makeButton("Construir", async () => {
@@ -1917,12 +1936,13 @@ function renderProjects() {
       if (!confirm(`¿Eliminar la configuración de ${project.name}?`)) return;
       try {
         await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+        projectDialog.close();
         await loadProjects();
       } catch (error) {
         projectsStatus.textContent = error.message;
       }
     }, Boolean(currentDeployment || assignedDomains.length)));
-    card.append(actions);
+    projectDetails.append(actions);
 
     const history = document.createElement("details");
     const summary = document.createElement("summary");
@@ -1938,7 +1958,7 @@ function renderProjects() {
       }
       history.append(list);
     }
-    card.append(history);
+    projectDetails.append(history);
 
     const domainsDetails = document.createElement("details");
     const domainsSummary = document.createElement("summary");
@@ -2046,7 +2066,7 @@ function renderProjects() {
       }
     });
     domainsDetails.append(domainForm);
-    card.append(domainsDetails);
+    projectDetails.append(domainsDetails);
 
     const environmentDetails = document.createElement("details");
     const environmentSummary = document.createElement("summary");
@@ -2096,8 +2116,14 @@ function renderProjects() {
         saveEnvironment.disabled = false;
       }
     });
-    card.append(environmentDetails);
+    projectDetails.append(environmentDetails);
+    projectDialogContent.append(projectDetails);
     projectsList.append(card);
+  }
+  if (openProjectId) {
+    for (const section of projectDialogContent.children) {
+      section.hidden = section.dataset.projectId !== openProjectId;
+    }
   }
 }
 
