@@ -222,8 +222,29 @@ async function request(path, options = {}) {
       "espera a que termine la instalación y comprueba el estado de los servicios Swarm.",
     );
   }
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error ?? `Error HTTP ${response.status}`);
+  const responseText = await response.text();
+  let result;
+  try {
+    const payload = responseText ? JSON.parse(responseText) : {};
+    result = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  } catch {
+    result = {};
+  }
+  if (!response.ok) {
+    const responseMessage = typeof result.error === "string"
+      ? result.error
+      : typeof result.message === "string"
+        ? result.message
+        : typeof result.detail === "string"
+          ? result.detail
+          : !/^\s*</.test(responseText)
+            ? responseText.trim().slice(0, 1000)
+            : "";
+    throw new Error(responseMessage || `Error HTTP ${response.status}: el servidor no devolvió detalles.`);
+  }
+  if (!responseText || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("El servidor devolvió una respuesta inválida.");
+  }
   return result;
 }
 

@@ -21,16 +21,24 @@
               </section>
               <section class="card">
                 <h3>Cloudflare Tunnel</h3>
-                <p class="muted">Publica tus servicios sin abrir puertos en el router. VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Para este API Token concede <code>Account → Cloudflare Tunnel → Edit</code> en la cuenta indicada. Los tokens por zona conectada se siguen usando para editar DNS.</p>
+                <p class="muted">Publica tus servicios sin abrir puertos en el router. VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Los tokens por zona conectada se siguen usando para editar DNS.</p>
+                <ol class="roadmap-list">
+                  <li>En Cloudflare, abre tu perfil y ve a <strong>API Tokens → Create Token → Create Custom Token → Get started</strong>.</li>
+                  <li>Asigna un nombre, por ejemplo <code>VPS Manager Tunnel</code>.</li>
+                  <li>En <strong>Permissions</strong>, selecciona <code>Account</code>, <code>Cloudflare Tunnel</code> y <code>Edit</code>.</li>
+                  <li>En <strong>Account Resources</strong>, incluye únicamente la cuenta donde crearás el túnel, en lugar de todas las cuentas.</li>
+                  <li>Elige una caducidad (por ejemplo, <strong>1 año</strong>). Deja vacío el filtro de IP del cliente, salvo que quieras restringir deliberadamente desde qué IP se usa el token.</li>
+                  <li>Revisa el resumen y crea el token. Cópialo directamente en el formulario de abajo; Cloudflare solo lo muestra una vez.</li>
+                </ol>
                 <p id="cloudflare-tunnel-status" class="muted" role="status" aria-live="polite">No hay un túnel configurado.</p>
                 <form id="cloudflare-tunnel-form" class="form-stack">
                   <label for="cloudflare-tunnel-account">Account ID</label>
-                  <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" pattern="[A-Fa-f0-9]{32}" required>
+                  <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" required>
                   <label for="cloudflare-tunnel-name">Nombre del túnel</label>
                   <input id="cloudflare-tunnel-name" name="name" type="text" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_\x2d]{0,62}" required>
                   <label for="cloudflare-tunnel-token">API Token de Cloudflare</label>
                   <input id="cloudflare-tunnel-token" name="token" type="password" autocomplete="new-password" required>
-                  <p class="muted">Usa un API Token con permiso <code>Account → Cloudflare Tunnel → Edit</code>. No uses el token del conector que aparece en el comando <code>docker run … tunnel … --token</code>; ese token solo sirve para ejecutar un túnel ya creado.</p>
+                  <p class="muted">Usa el API Token que acabas de crear. No uses el token del conector que aparece en el comando <code>docker run … tunnel … --token</code>; ese token solo sirve para ejecutar un túnel ya creado.</p>
                   <div class="container-heading-actions">
                     <button id="cloudflare-tunnel-save" class="button" type="submit">Crear y conectar túnel</button>
                   </div>

@@ -40,6 +40,9 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /id="domain-zones-list"/);
   assert.match(domainsPanel, /id="assigned-domains-list"/);
   assert.match(domainsPanel, /id="cloudflare-tunnel-status"/);
+  assert.match(domainsPanel, /Create Custom Token/);
+  assert.match(domainsPanel, /<code>Cloudflare Tunnel<\/code> y <code>Edit<\/code>/);
+  assert.match(domainsPanel, /Account Resources/);
   assert.match(domainsPanel, /No uses el token del conector/);
   assert.match(domainsPanel, /solo sirve para ejecutar un túnel ya creado/);
   assert.match(projectsPanel, /id="github-connect-status"/);
