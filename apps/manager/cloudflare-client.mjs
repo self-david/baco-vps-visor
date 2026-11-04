@@ -209,21 +209,29 @@ export function createCloudflareClient({
     return tunnelToken;
   }
 
-  async function updateTunnelConfiguration(token, accountId, tunnelId, hostnames) {
+  async function updateTunnelConfiguration(
+    token,
+    accountId,
+    tunnelId,
+    hostnames,
+    { originProtocol = "https" } = {},
+  ) {
     if (!/^[a-f0-9]{32}$/i.test(accountId ?? "")
       || !/^[a-f0-9-]{36}$/i.test(tunnelId ?? "")
       || !Array.isArray(hostnames)
       || hostnames.length > 100
-      || hostnames.some((hostname) => !hostnamePattern.test(hostname))) {
+      || hostnames.some((hostname) => !hostnamePattern.test(hostname))
+      || !["http", "https"].includes(originProtocol)) {
       throw new TypeError("La configuración de hostnames del túnel no es válida.");
     }
+    const originPort = originProtocol === "https" ? 443 : 80;
     const ingress = [
       ...hostnames.map((hostname) => ({
         hostname,
-        service: "https://vps-manager_traefik:443",
+        service: `${originProtocol}://vps-manager_traefik:${originPort}`,
         originRequest: {
           httpHostHeader: hostname,
-          noTLSVerify: true,
+          ...(originProtocol === "https" ? { noTLSVerify: true } : {}),
         },
       })),
       { service: "http_status:404" },

@@ -40,6 +40,10 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /id="domain-zones-list"/);
   assert.match(domainsPanel, /id="assigned-domains-list"/);
   assert.match(domainsPanel, /id="cloudflare-tunnel-status"/);
+  assert.match(domainsPanel, /id="cloudflare-tunnel-origin"/);
+  assert.match(domainsPanel, /Local: HTTP interno de Swarm/);
+  assert.match(domainsPanel, /HTTPS al origen/);
+  assert.match(domainsPanel, /Elige cómo Cloudflare Tunnel se conecta a Traefik/);
   assert.match(domainsPanel, /Create Custom Token/);
   assert.match(domainsPanel, /<code>Cloudflare Tunnel<\/code> y <code>Edit<\/code>/);
   assert.match(domainsPanel, /Account Resources/);
@@ -97,6 +101,13 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(application, /function renderAssignedDomains\(domains\)/);
   assert.match(application, /Conectado correctamente\./);
   assert.match(application, /Falló la conexión\. Motivo:/);
+  assert.match(server, /defaultTunnelOriginProtocol: testMode \? "http" : "https"/);
+  assert.match(server, /\/api\/cloudflare\/tunnel\/origin/);
+  assert.match(server, /originProtocol: getCloudflareTunnelOriginProtocol\(settings\)/);
+  assert.match(server, /localTunnelOriginAvailable: testMode/);
+  assert.match(application, /request\("\/api\/cloudflare\/tunnel\/origin"/);
+  assert.match(serviceAgent, /project_http_router="\$\{project_router\}-http"/);
+  assert.match(serviceAgent, /application_http_router="\$\{application_router\}-http"/);
   assert.match(application, /HTTP \$\{response\.status\}: \$\{responseMessage\}/);
   assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
   assert.match(application, /function updateProjectDeploymentFields\(\)/);

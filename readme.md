@@ -530,16 +530,32 @@ propagación DNS pública ni HTTPS. El dominio puede haberse comprado en
 Namecheap u otro registrador si sus nameservers están delegados a Cloudflare.
 
 Para una VPS doméstica o sin IPv4 pública, se puede administrar **Cloudflare
-Tunnel** desde esta misma pestaña. Crea un API Token adicional con permiso
-`Account: Cloudflare Tunnel: Edit`, introduce el Account ID y el nombre del
-túnel; VPS Manager crea el túnel, guarda el token de cuenta en un archivo
-protegido, almacena el token del conector como secreto Swarm y configura las
-rutas hacia Traefik. Las zonas conectadas siguen usando sus propios tokens
-`Zone:Read` y `DNS:Edit`; al activar Tunnel, los registros A que ya administra
-VPS Manager se convierten en CNAME proxied. Al asignar o quitar hostnames,
-también se actualiza la configuración de ingreso del túnel. Sin Tunnel, el
-panel usa la IPv4 pública configurada para crear registros A. La asignación de
-dominios a proyectos y aplicaciones se realiza desde sus respectivos flujos.
+Tunnel** desde esta misma pestaña, también en la instalación de prueba de una
+red privada. Crea un API Token adicional con permiso
+`Account: Cloudflare Tunnel: Edit`, limitado a la cuenta correspondiente;
+introduce el Account ID y el nombre del túnel. VPS Manager crea el túnel,
+guarda el token de cuenta en un archivo protegido, almacena el token del
+conector como secreto Swarm y configura las rutas hacia Traefik. En modo de
+prueba, el conector llega a Traefik mediante HTTP por la red privada de Swarm
+(`vps-manager_traefik:80`); no se añade otro puerto publicado y el acceso de
+los usuarios al hostname del túnel sigue siendo HTTPS. El panel local por
+`http://IP-PRIVADA` continúa siendo HTTP y debe usarse solo en una red privada.
+En la configuración del túnel puedes cambiar el origen entre HTTP local y
+HTTPS al origen. En la instalación de prueba Traefik escucha ambos protocolos
+solo dentro de Swarm, y los servicios con dominios tienen routers para ambos;
+en producción se conserva el ingreso HTTPS y la opción HTTP local no está
+disponible. Después de actualizar una instalación local, vuelve a desplegar los
+proyectos existentes para que el agente agregue sus routers HTTP internos.
+
+Las zonas conectadas siguen usando sus propios tokens `Zone:Read` y
+`DNS:Edit`; no es necesario volver a conectarlas si ya aparecen como
+conectadas. Al activar Tunnel, los registros A que ya administra VPS Manager
+se convierten en CNAME proxied. Al asignar o quitar hostnames, también se
+actualiza la configuración de ingreso del túnel. El túnel solo enruta los
+hostnames asignados a proyectos o aplicaciones; las zonas raíz conectadas no
+se publican automáticamente. Sin Tunnel, el panel usa la IPv4 pública
+configurada para crear registros A. La asignación de dominios a proyectos y
+aplicaciones se realiza desde sus respectivos flujos.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de

@@ -151,6 +151,30 @@ test("creates Cloudflare Tunnels, retrieves connector tokens, and configures ing
   assert.equal(calls[2].options.method, "PUT");
   assert.match(calls[2].options.body, /"hostname":"app\.example\.com"/);
   assert.match(calls[2].options.body, /"service":"https:\/\/vps-manager_traefik:443"/);
+  assert.match(calls[2].options.body, /"noTLSVerify":true/);
+});
+
+test("configures local-mode Tunnel ingress over the private Swarm HTTP network", async () => {
+  let configuration;
+  const client = createCloudflareClient({
+    fetchImpl: async (url, options = {}) => {
+      configuration = JSON.parse(options.body);
+      return Response.json({ success: true, result: { config: {} } });
+    },
+  });
+
+  await client.updateTunnelConfiguration(
+    "test-cloudflare-api-key-value-123456789",
+    "a".repeat(32),
+    "11111111-1111-4111-8111-111111111111",
+    ["app.example.com"],
+    { originProtocol: "http" },
+  );
+
+  assert.equal(configuration.config.ingress[0].service, "http://vps-manager_traefik:80");
+  assert.equal(configuration.config.ingress[0].originRequest.httpHostHeader, "app.example.com");
+  assert.equal("noTLSVerify" in configuration.config.ingress[0].originRequest, false);
+  assert.equal(configuration.config.ingress[1].service, "http_status:404");
 });
 
 test("converts only a tracked A record to a proxied tunnel CNAME", async () => {

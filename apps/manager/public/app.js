@@ -164,6 +164,8 @@ const cloudflareTunnelNameInput = document.querySelector("#cloudflare-tunnel-nam
 const cloudflareTunnelTokenInput = document.querySelector("#cloudflare-tunnel-token");
 const cloudflareTunnelSaveButton = document.querySelector("#cloudflare-tunnel-save");
 const cloudflareTunnelStatus = document.querySelector("#cloudflare-tunnel-status");
+const cloudflareTunnelOriginSelect = document.querySelector("#cloudflare-tunnel-origin");
+const cloudflareTunnelOriginStatus = document.querySelector("#cloudflare-tunnel-origin-status");
 const registryForm = document.querySelector("#registry-configure-form");
 const registryDomainInput = document.querySelector("#registry-domain");
 const registryUsernameInput = document.querySelector("#registry-username");
@@ -2488,6 +2490,11 @@ async function loadDomains() {
     const result = await request("/api/domains");
     domainData = result;
     ingressIpInput.value = result.ingressIp ?? "";
+    cloudflareTunnelOriginSelect.value = result.tunnel?.originProtocol
+      ?? result.defaultTunnelOriginProtocol
+      ?? "https";
+    cloudflareTunnelOriginSelect.querySelector('option[value="http"]').disabled
+      = !result.localTunnelOriginAvailable;
     ingressIpCard.hidden = result.ingressMode === "cloudflare-tunnel";
     renderCloudflareTunnel(result.tunnel, result.tunnelStatusError);
     renderDomainZones(result.zones);
@@ -2521,8 +2528,11 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
     cloudflareTunnelAccountInput.readOnly = false;
     cloudflareTunnelNameInput.readOnly = false;
     cloudflareTunnelSaveButton.textContent = "Crear y conectar túnel";
+    cloudflareTunnelOriginSelect.disabled = true;
     return;
   }
+  cloudflareTunnelOriginSelect.value = tunnel.originProtocol ?? "https";
+  cloudflareTunnelOriginSelect.disabled = false;
   cloudflareTunnelAccountInput.value = tunnel.accountId;
   cloudflareTunnelNameInput.value = tunnel.name;
   cloudflareTunnelAccountInput.readOnly = true;
@@ -2547,6 +2557,26 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
     tunnelStatusError ?? "",
   ].filter(Boolean).join(" ");
 }
+
+cloudflareTunnelOriginSelect.addEventListener("change", async () => {
+  const originProtocol = cloudflareTunnelOriginSelect.value;
+  cloudflareTunnelOriginSelect.disabled = true;
+  cloudflareTunnelOriginStatus.textContent = "Actualizando la configuración de ingreso del túnel…";
+  try {
+    const result = await request("/api/cloudflare/tunnel/origin", {
+      method: "PUT",
+      body: JSON.stringify({ originProtocol }),
+    });
+    cloudflareTunnelOriginStatus.textContent = result.message;
+    await loadDomains();
+  } catch (error) {
+    cloudflareTunnelOriginStatus.textContent = error.message;
+    cloudflareTunnelOriginStatus.setAttribute("role", "alert");
+    void loadDomains();
+  } finally {
+    cloudflareTunnelOriginSelect.disabled = false;
+  }
+});
 
 function openNewDomainZoneDialog() {
   resetDomainZoneForm();
@@ -3213,6 +3243,7 @@ cloudflareTunnelForm.addEventListener("submit", async (event) => {
         accountId: cloudflareTunnelAccountInput.value.trim(),
         name: cloudflareTunnelNameInput.value.trim(),
         token: cloudflareTunnelTokenInput.value,
+        originProtocol: cloudflareTunnelOriginSelect.value,
       }),
     });
     cloudflareTunnelTokenInput.value = "";

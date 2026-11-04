@@ -1874,6 +1874,7 @@ PY
   for environment_entry in "${project_environment_entries[@]}"; do
     project_environment_args+=(--env-add "${environment_entry}")
   done
+  project_test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' /opt/vps-manager/install.env | head -n 1)"
   project_traefik_label_args=()
   for index in "${!project_domains[@]}"; do
     IFS=$'\t' read -r project_domain project_port <<< "${project_domains[$index]}"
@@ -1882,9 +1883,18 @@ PY
       --label-add "traefik.http.routers.${project_router}.rule=Host(\`${project_domain}\`)"
       --label-add "traefik.http.routers.${project_router}.entrypoints=websecure"
       --label-add "traefik.http.routers.${project_router}.tls=true"
-      --label-add "traefik.http.routers.${project_router}.tls.certresolver=vpsmanager"
       --label-add "traefik.http.services.${project_router}.loadbalancer.server.port=${project_port}"
     )
+    if [[ "${project_test_mode}" == "true" ]]; then
+      project_http_router="${project_router}-http"
+      project_traefik_label_args+=(
+        --label-add "traefik.http.routers.${project_http_router}.rule=Host(\`${project_domain}\`)"
+        --label-add "traefik.http.routers.${project_http_router}.entrypoints=web"
+        --label-add "traefik.http.services.${project_http_router}.loadbalancer.server.port=${project_port}"
+      )
+    else
+      project_traefik_label_args+=(--label-add "traefik.http.routers.${project_router}.tls.certresolver=vpsmanager")
+    fi
   done
   if (( ${#project_domains[@]} > 0 )); then
     project_traefik_label_args+=(--label-add traefik.enable=true --label-add traefik.swarm.network=vps-manager-proxy)
@@ -1898,6 +1908,9 @@ PY
       --label-rm "traefik.http.routers.${project_router}.tls"
       --label-rm "traefik.http.routers.${project_router}.tls.certresolver"
       --label-rm "traefik.http.services.${project_router}.loadbalancer.server.port"
+      --label-rm "traefik.http.routers.${project_router}-http.rule"
+      --label-rm "traefik.http.routers.${project_router}-http.entrypoints"
+      --label-rm "traefik.http.services.${project_router}-http.loadbalancer.server.port"
     )
   done
   if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "vps-manager.project-id"}}' "${PROJECT_SERVICE}" 2>/dev/null)"; then
@@ -2136,15 +2149,25 @@ PY
   done
   application_service="vps-manager-app-${application_instance_id//-/}"
   application_router="${application_service}"
+  application_test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' /opt/vps-manager/install.env | head -n 1)"
   application_router_args=(
     --label-add traefik.enable=true
     --label-add traefik.swarm.network=vps-manager-proxy
     --label-add "traefik.http.routers.${application_router}.rule=Host(\`${application_domain}\`)"
     --label-add "traefik.http.routers.${application_router}.entrypoints=websecure"
     --label-add "traefik.http.routers.${application_router}.tls=true"
-    --label-add "traefik.http.routers.${application_router}.tls.certresolver=vpsmanager"
     --label-add "traefik.http.services.${application_router}.loadbalancer.server.port=${application_port}"
   )
+  if [[ "${application_test_mode}" == "true" ]]; then
+    application_http_router="${application_router}-http"
+    application_router_args+=(
+      --label-add "traefik.http.routers.${application_http_router}.rule=Host(\`${application_domain}\`)"
+      --label-add "traefik.http.routers.${application_http_router}.entrypoints=web"
+      --label-add "traefik.http.services.${application_http_router}.loadbalancer.server.port=${application_port}"
+    )
+  else
+    application_router_args+=(--label-add "traefik.http.routers.${application_router}.tls.certresolver=vpsmanager")
+  fi
   application_volume_args=()
   if [[ -n "${application_volume_target}" ]]; then
     application_volume_args+=(--mount "type=volume,source=${application_service}-data,target=${application_volume_target}")

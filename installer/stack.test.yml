@@ -52,6 +52,7 @@ services:
       - --providers.swarm.exposedbydefault=false
       - --providers.swarm.network=vps-manager-proxy
       - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
       - --accesslog=true
       - --log.level=INFO
     ports:

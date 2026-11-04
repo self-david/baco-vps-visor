@@ -176,13 +176,25 @@ const cloudflareTunnelCredentialId = "00000000-0000-4000-8000-000000000001";
 let cloudflareTunnelConfigurationPending = false;
 const githubOAuth = createGithubOAuth({ directory: serviceOperationsDirectory });
 const cloudflareClient = createCloudflareClient();
-async function updateCloudflareTunnelHosts(tunnel, hostnames) {
+function getCloudflareTunnelOriginProtocol(tunnel) {
+  if (tunnel?.originProtocol === "http" || tunnel?.originProtocol === "https") {
+    return tunnel.originProtocol;
+  }
+  return testMode ? "http" : "https";
+}
+
+async function updateCloudflareTunnelHosts(
+  tunnel,
+  hostnames,
+  originProtocol = getCloudflareTunnelOriginProtocol(tunnel),
+) {
   const token = await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId);
   return cloudflareClient.updateTunnelConfiguration(
     token,
     tunnel.accountId,
     tunnel.tunnelId,
     [...new Set(hostnames)].sort(),
+    { originProtocol },
   );
 }
 const taskQueueWorker = createTaskQueueWorker({
@@ -1360,6 +1372,7 @@ const server = createServer(async (request, response) => {
             name: settings.name,
             tunnelId: settings.tunnelId,
             accountId: settings.accountId,
+            originProtocol: getCloudflareTunnelOriginProtocol(settings),
             lastError: typeof settings.lastError === "string" ? settings.lastError : null,
             configured: await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
             latestTask: await getLatestTaskByType("cloudflare.tunnel.configure"),
@@ -1373,6 +1386,8 @@ const server = createServer(async (request, response) => {
       respondJson(response, 200, {
         ingressIp,
         ingressMode: tunnel ? "cloudflare-tunnel" : "direct",
+        defaultTunnelOriginProtocol: testMode ? "http" : "https",
+        localTunnelOriginAvailable: testMode,
         tunnel,
         tunnelStatusError,
         zones: await Promise.all(domainZones.map(async (domainZone) => {
@@ -1428,6 +1443,76 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === "/api/cloudflare/tunnel/origin") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "PUT") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "PUT" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    if (cloudflareTunnelConfigurationPending) {
+      respondJson(response, 409, { error: "Ya hay una configuración de Cloudflare Tunnel en curso." });
+      return;
+    }
+    cloudflareTunnelConfigurationPending = true;
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).length !== 1 || !["http", "https"].includes(body.originProtocol)) {
+        respondJson(response, 400, { error: "Selecciona HTTP local o HTTPS como origen del túnel." });
+        return;
+      }
+      if (body.originProtocol === "http" && !testMode) {
+        respondJson(response, 400, { error: "HTTP local solo está disponible en modo de prueba; en producción Traefik redirige HTTP a HTTPS." });
+        return;
+      }
+      const tunnel = await getCloudflareTunnelSettings();
+      if (!tunnel) {
+        respondJson(response, 409, { error: "Configura primero Cloudflare Tunnel antes de cambiar su origen." });
+        return;
+      }
+      const currentOriginProtocol = getCloudflareTunnelOriginProtocol(tunnel);
+      if (currentOriginProtocol === body.originProtocol) {
+        respondJson(response, 200, { originProtocol: body.originProtocol, message: "El origen del túnel ya usa esta opción." });
+        return;
+      }
+      const domains = await getProjectDomains();
+      if (domains.length > 100) {
+        respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
+        return;
+      }
+      await updateCloudflareTunnelHosts(tunnel, domains.map((domain) => domain.hostname), body.originProtocol);
+      await saveCloudflareTunnelSettings({
+        ...tunnel,
+        originProtocol: body.originProtocol,
+        lastError: null,
+      });
+      respondJson(response, 200, {
+        originProtocol: body.originProtocol,
+        message: body.originProtocol === "http"
+          ? "Origen actualizado a HTTP interno. El tráfico entre Cloudflare Tunnel y Traefik viaja solo por la red privada de Swarm."
+          : "Origen actualizado a HTTPS. Cloudflare Tunnel verificará el servicio HTTPS de Traefik.",
+      });
+    } catch (error) {
+      console.error("Could not update Cloudflare Tunnel origin:", error);
+      const status = error?.code === "CLOUDFLARE_TOKEN_INVALID" ? 401
+        : error?.code === "CLOUDFLARE_UNAVAILABLE" || error?.code === "CLOUDFLARE_REQUEST_FAILED" ? 502
+          : error?.code === "ENOENT" ? 409 : 503;
+      respondJson(response, status, {
+        error: error instanceof Error ? `No se pudo cambiar el origen del túnel: ${error.message}` : "No se pudo cambiar el origen del túnel.",
+      });
+    } finally {
+      cloudflareTunnelConfigurationPending = false;
+    }
+    return;
+  }
+
   if (url.pathname === "/api/cloudflare/tunnel") {
     if (!hasSession(request)) {
       respondJson(response, 401, { error: "Sesión requerida." });
@@ -1446,8 +1531,17 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)
-        || Object.keys(body).sort().join(",") !== ["accountId", "name", "token"].sort().join(",")) {
-        respondJson(response, 400, { error: "La solicitud debe incluir únicamente Account ID, nombre del túnel y API Token." });
+        || Object.keys(body).some((key) => !["accountId", "name", "token", "originProtocol"].includes(key))
+        || !["accountId", "name", "token"].every((key) => Object.hasOwn(body, key))) {
+        respondJson(response, 400, { error: "La solicitud debe incluir Account ID, nombre del túnel y API Token; originProtocol es opcional." });
+        return;
+      }
+      if (body.originProtocol !== undefined && !["http", "https"].includes(body.originProtocol)) {
+        respondJson(response, 400, { error: "El origen del túnel debe ser HTTP local o HTTPS." });
+        return;
+      }
+      if (body.originProtocol === "http" && !testMode) {
+        respondJson(response, 400, { error: "HTTP local solo está disponible en modo de prueba; en producción Traefik redirige HTTP a HTTPS." });
         return;
       }
       if (typeof body.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(body.accountId)) {
@@ -1461,10 +1555,6 @@ const server = createServer(async (request, response) => {
       if (typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
         || /[\u0000-\u001f\u007f]/.test(body.token)) {
         respondJson(response, 400, { error: "El API Token debe tener entre 20 y 512 caracteres. Pega el token de API completo, no el token del conector de `cloudflared`." });
-        return;
-      }
-      if (testMode) {
-        respondJson(response, 409, { error: "Cloudflare Tunnel requiere una instalación real de Swarm; no está disponible en modo de prueba." });
         return;
       }
       if (cloudflareTunnelConfigurationPending) {
@@ -1481,6 +1571,8 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "El nombre del túnel es inmutable en esta configuración." });
         return;
       }
+      const originProtocol = body.originProtocol
+        ?? getCloudflareTunnelOriginProtocol(current);
       const [domains, domainZones] = await Promise.all([getProjectDomains(), getDomainZones()]);
       if (domains.length > 100) {
         respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
@@ -1503,6 +1595,7 @@ const server = createServer(async (request, response) => {
         accountId: body.accountId.toLowerCase(),
         tunnelId: tunnel.id,
         name: body.name,
+        originProtocol,
       };
       await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
       await saveCloudflareTunnelSettings({
@@ -1529,6 +1622,7 @@ const server = createServer(async (request, response) => {
         body.accountId.toLowerCase(),
         tunnel.id,
         domains.map((domain) => domain.hostname),
+        { originProtocol },
       );
 
       taskId = randomUUID();
@@ -1565,6 +1659,7 @@ const server = createServer(async (request, response) => {
         respondJson(response, 401, { error: error.message });
         return;
       }
+
       if (error instanceof TypeError) {
         respondJson(response, 400, { error: error.message });
         return;
