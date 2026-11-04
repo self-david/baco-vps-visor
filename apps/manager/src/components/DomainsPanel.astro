@@ -33,7 +33,7 @@
                 <p id="cloudflare-tunnel-status" class="muted" role="status" aria-live="polite">No hay un túnel configurado.</p>
                 <form id="cloudflare-tunnel-form" class="form-stack">
                   <label for="cloudflare-tunnel-account">Account ID</label>
-                  <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" required>
+                  <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" pattern="[A-Fa-f0-9]{32}" title="Debe tener exactamente 32 caracteres hexadecimales." required>
                   <label for="cloudflare-tunnel-name">Nombre del túnel</label>
                   <input id="cloudflare-tunnel-name" name="name" type="text" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_\x2d]{0,62}" required>
                   <label for="cloudflare-tunnel-token">API Token de Cloudflare</label>

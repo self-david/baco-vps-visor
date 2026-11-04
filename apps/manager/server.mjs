@@ -1446,12 +1446,21 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)
-        || Object.keys(body).sort().join(",") !== ["accountId", "name", "token"].sort().join(",")
-        || typeof body.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(body.accountId)
-        || typeof body.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(body.name)
-        || typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
+        || Object.keys(body).sort().join(",") !== ["accountId", "name", "token"].sort().join(",")) {
+        respondJson(response, 400, { error: "La solicitud debe incluir únicamente Account ID, nombre del túnel y API Token." });
+        return;
+      }
+      if (typeof body.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(body.accountId)) {
+        respondJson(response, 400, { error: "El Account ID debe tener exactamente 32 caracteres hexadecimales. Cópialo de la información de tu cuenta Cloudflare." });
+        return;
+      }
+      if (typeof body.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(body.name)) {
+        respondJson(response, 400, { error: "El nombre del túnel debe empezar con una letra o número y contener solo letras, números, guiones o guiones bajos (máximo 63 caracteres)." });
+        return;
+      }
+      if (typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
         || /[\u0000-\u001f\u007f]/.test(body.token)) {
-        respondJson(response, 400, { error: "Proporciona un Account ID, nombre de túnel y API Token de Cloudflare válidos." });
+        respondJson(response, 400, { error: "El API Token debe tener entre 20 y 512 caracteres. Pega el token de API completo, no el token del conector de `cloudflared`." });
         return;
       }
       if (testMode) {

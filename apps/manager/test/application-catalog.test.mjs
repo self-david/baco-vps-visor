@@ -45,6 +45,7 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /Account Resources/);
   assert.match(domainsPanel, /No uses el token del conector/);
   assert.match(domainsPanel, /solo sirve para ejecutar un túnel ya creado/);
+  assert.match(domainsPanel, /pattern="\[A-Fa-f0-9\]\{32\}"/);
   assert.match(projectsPanel, /id="github-connect-status"/);
   assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
@@ -96,6 +97,7 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(application, /function renderAssignedDomains\(domains\)/);
   assert.match(application, /Conectado correctamente\./);
   assert.match(application, /Falló la conexión\. Motivo:/);
+  assert.match(application, /HTTP \$\{response\.status\}: \$\{responseMessage\}/);
   assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
   assert.match(application, /function updateProjectDeploymentFields\(\)/);
   assert.match(application, /connectDomains\.href = "\/#tab-domains"/);

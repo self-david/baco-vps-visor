@@ -240,7 +240,11 @@ async function request(path, options = {}) {
           : !/^\s*</.test(responseText)
             ? responseText.trim().slice(0, 1000)
             : "";
-    throw new Error(responseMessage || `Error HTTP ${response.status}: el servidor no devolvió detalles.`);
+    throw new Error(
+      responseMessage
+        ? `HTTP ${response.status}: ${responseMessage}`
+        : `HTTP ${response.status}: el servidor no devolvió detalles legibles.`,
+    );
   }
   if (!responseText || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("El servidor devolvió una respuesta inválida.");
