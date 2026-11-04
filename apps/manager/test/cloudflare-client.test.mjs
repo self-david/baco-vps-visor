@@ -124,3 +124,63 @@ test("updates only the stored record and rejects an untracked DNS record", async
     proxied: false,
   }), { code: "CLOUDFLARE_RECORD_EXISTS" });
 });
+
+test("creates Cloudflare Tunnels, retrieves connector tokens, and configures ingress", async () => {
+  const calls = [];
+  const accountId = "a".repeat(32);
+  const tunnelId = "11111111-1111-4111-8111-111111111111";
+  const tunnelToken = "eyJhIjoiY2xvdWRmbGFyZS10dW5uZWwtdG9rZW4tdGVzdCJ9";
+  const client = createCloudflareClient({
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (String(url).endsWith("/cfd_tunnel")) {
+        return Response.json({ success: true, result: { id: tunnelId, name: "home-vps" } });
+      }
+      if (String(url).endsWith(`/cfd_tunnel/${tunnelId}/token`)) {
+        return Response.json({ success: true, result: tunnelToken });
+      }
+      return Response.json({ success: true, result: { config: {} } });
+    },
+  });
+  const token = "test-cloudflare-api-key-value-123456789";
+  const tunnel = await client.createTunnel(token, accountId, "home-vps", Buffer.alloc(32, 1).toString("base64"));
+  assert.deepEqual(tunnel, { id: tunnelId, name: "home-vps", token: tunnelToken });
+  await client.updateTunnelConfiguration(token, accountId, tunnelId, ["app.example.com"]);
+  assert.equal(calls[0].options.method, "POST");
+  assert.match(calls[0].options.body, /"config_src":"cloudflare"/);
+  assert.equal(calls[2].options.method, "PUT");
+  assert.match(calls[2].options.body, /"hostname":"app\.example\.com"/);
+  assert.match(calls[2].options.body, /"service":"https:\/\/vps-manager_traefik:443"/);
+});
+
+test("converts only a tracked A record to a proxied tunnel CNAME", async () => {
+  const calls = [];
+  const zoneId = "b".repeat(32);
+  const tunnelId = "11111111-1111-4111-8111-111111111111";
+  const client = createCloudflareClient({
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (String(url).includes("/dns_records?")) {
+        return Response.json({
+          success: true,
+          result: [{ id: "managed-a-record", type: "A", name: domainInput.hostname }],
+        });
+      }
+      if (options.method === "DELETE") {
+        return Response.json({ success: true, result: { id: "managed-a-record" } });
+      }
+      return Response.json({ success: true, result: { id: "managed-cname", type: "CNAME" } });
+    },
+  });
+  const record = await client.upsertTunnelCname("test-cloudflare-api-key-value-123456789", {
+    zoneId,
+    hostname: domainInput.hostname,
+    tunnelId,
+    existingRecordId: "managed-a-record",
+  });
+  assert.deepEqual(record, { id: "managed-cname" });
+  assert.equal(calls[1].options.method, "DELETE");
+  assert.equal(calls[2].options.method, "POST");
+  assert.match(calls[2].options.body, new RegExp(`${tunnelId}\\.cfargotunnel\\.com`));
+  assert.match(calls[2].options.body, /"proxied":true/);
+});

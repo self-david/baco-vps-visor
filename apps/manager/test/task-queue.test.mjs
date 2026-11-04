@@ -8,6 +8,7 @@ import {
   createProjectDeployHandler,
   createProjectPushDeployHandler,
   createProjectUndeployHandler,
+  createCloudflareTunnelConfigureHandler,
   createRegistryConfigureHandler,
   createSwarmNodeEnrollHandler,
   createServiceRestartHandler,
@@ -562,6 +563,44 @@ test("configures a private registry through a fixed host operation without persi
   assert.deepEqual(calls, [
     ["request", "registry.example.com", "registry-user", task.id],
     ["remove", task.id],
+  ]);
+});
+
+test("configures Cloudflare Tunnel through the host agent and removes its staged connector token", async () => {
+  const tunnelTask = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "cloudflare.tunnel.configure",
+    payload: {
+      tunnelId: "11111111-1111-4111-8111-111111111111",
+      tunnelName: "home-vps",
+    },
+  };
+  const calls = [];
+  const handler = createCloudflareTunnelConfigureHandler({
+    async requestCloudflareTunnelConfiguration(tunnelId, id) {
+      calls.push(["request", tunnelId, id]);
+    },
+    async getStatus() {
+      return {
+        id: tunnelTask.id,
+        operation: "configure-cloudflare-tunnel",
+        tunnelId: tunnelTask.payload.tunnelId,
+        state: "succeeded",
+        message: "Conector activo.",
+      };
+    },
+    async removeCloudflareTunnelCredentials(id) {
+      calls.push(["remove", id]);
+    },
+  }, { pollIntervalMs: 100 });
+
+  assert.deepEqual(await handler(tunnelTask, new AbortController().signal), {
+    message: "Conector activo.",
+    tunnelId: tunnelTask.payload.tunnelId,
+  });
+  assert.deepEqual(calls, [
+    ["request", tunnelTask.payload.tunnelId, tunnelTask.id],
+    ["remove", tunnelTask.id],
   ]);
 });
 

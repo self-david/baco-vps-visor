@@ -154,6 +154,13 @@ const ingressIpForm = document.querySelector("#domains-ingress-ip-form");
 const ingressIpInput = document.querySelector("#domains-ingress-ip");
 const ingressIpSaveButton = document.querySelector("#domains-ingress-ip-save");
 const ingressIpStatus = document.querySelector("#domains-ingress-ip-status");
+const ingressIpCard = document.querySelector("#domains-ingress-ip-card");
+const cloudflareTunnelForm = document.querySelector("#cloudflare-tunnel-form");
+const cloudflareTunnelAccountInput = document.querySelector("#cloudflare-tunnel-account");
+const cloudflareTunnelNameInput = document.querySelector("#cloudflare-tunnel-name");
+const cloudflareTunnelTokenInput = document.querySelector("#cloudflare-tunnel-token");
+const cloudflareTunnelSaveButton = document.querySelector("#cloudflare-tunnel-save");
+const cloudflareTunnelStatus = document.querySelector("#cloudflare-tunnel-status");
 const registryForm = document.querySelector("#registry-configure-form");
 const registryDomainInput = document.querySelector("#registry-domain");
 const registryUsernameInput = document.querySelector("#registry-username");
@@ -163,6 +170,7 @@ const registryStatus = document.querySelector("#registry-status");
 const registryFormStatus = document.querySelector("#registry-form-status");
 const registrySaveButton = document.querySelector("#registry-save");
 let domainZoneProxied = false;
+let cloudflareTunnelPollTimer;
 let giteaStatusPollTimer;
 let n8nStatusPollTimer;
 let postgresqlStatusPollTimer;
@@ -2418,12 +2426,51 @@ async function loadDomains() {
     const result = await request("/api/domains");
     domainData = result;
     ingressIpInput.value = result.ingressIp ?? "";
+    ingressIpCard.hidden = result.ingressMode === "cloudflare-tunnel";
+    renderCloudflareTunnel(result.tunnel);
     renderDomainZones(result.zones);
+    if (["pending", "in_progress"].includes(result.tunnel?.latestTask?.status)) {
+      if (cloudflareTunnelPollTimer !== undefined) clearTimeout(cloudflareTunnelPollTimer);
+      cloudflareTunnelPollTimer = setTimeout(() => {
+        cloudflareTunnelPollTimer = undefined;
+        void loadDomains();
+      }, 3000);
+    } else if (cloudflareTunnelPollTimer !== undefined) {
+      clearTimeout(cloudflareTunnelPollTimer);
+      cloudflareTunnelPollTimer = undefined;
+    }
     if (projects.length) renderProjects();
   } catch (error) {
     domainZonesList.replaceChildren();
     domainZonesStatus.textContent = error.message;
   }
+}
+
+function renderCloudflareTunnel(tunnel) {
+  const task = tunnel?.latestTask;
+  const statusText = {
+    pending: "Creando el conector en el VPS…",
+    in_progress: "Configurando el conector de Cloudflare en Swarm…",
+    completed: "Túnel configurado y conector activo en Swarm.",
+    failed: `Falló la configuración del conector: ${task.error ?? "revisa el historial de tareas."}`,
+  };
+  if (!tunnel) {
+    cloudflareTunnelStatus.textContent = "No hay un túnel configurado. Puedes crear uno para publicar servicios sin IPv4 pública ni puertos abiertos.";
+    cloudflareTunnelAccountInput.readOnly = false;
+    cloudflareTunnelNameInput.readOnly = false;
+    cloudflareTunnelSaveButton.textContent = "Crear y conectar túnel";
+    return;
+  }
+  cloudflareTunnelAccountInput.value = tunnel.accountId;
+  cloudflareTunnelNameInput.value = tunnel.name;
+  cloudflareTunnelAccountInput.readOnly = true;
+  cloudflareTunnelNameInput.readOnly = true;
+  cloudflareTunnelSaveButton.textContent = "Actualizar token y reconectar";
+  cloudflareTunnelStatus.textContent = [
+    `Cloudflare Tunnel “${tunnel.name}” (${tunnel.tunnelId}).`,
+    tunnel.configured ? "API Token protegido." : "Falta el API Token protegido; vuelve a introducirlo.",
+    task ? statusText[task.status] ?? task.status : "Esperando la primera activación del conector.",
+  ].join(" ");
 }
 
 function openNewDomainZoneDialog() {
@@ -3080,6 +3127,28 @@ domainZoneForm.addEventListener("submit", async (event) => {
   }
 });
 refreshDomainsButton.addEventListener("click", () => void Promise.all([loadDomains(), loadN8nApplication()]));
+cloudflareTunnelForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  cloudflareTunnelSaveButton.disabled = true;
+  cloudflareTunnelStatus.textContent = "Validando permisos y configurando el túnel de Cloudflare…";
+  try {
+    const result = await request("/api/cloudflare/tunnel", {
+      method: "POST",
+      body: JSON.stringify({
+        accountId: cloudflareTunnelAccountInput.value.trim(),
+        name: cloudflareTunnelNameInput.value.trim(),
+        token: cloudflareTunnelTokenInput.value,
+      }),
+    });
+    cloudflareTunnelTokenInput.value = "";
+    cloudflareTunnelStatus.textContent = result.task.message;
+    await loadDomains();
+  } catch (error) {
+    cloudflareTunnelStatus.textContent = error.message;
+  } finally {
+    cloudflareTunnelSaveButton.disabled = false;
+  }
+});
 ingressIpForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   ingressIpSaveButton.disabled = true;

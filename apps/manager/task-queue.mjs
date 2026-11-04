@@ -374,6 +374,47 @@ export function createRegistryConfigureHandler(agent, {
   };
 }
 
+export function createCloudflareTunnelConfigureHandler(agent, { pollIntervalMs = 1000 } = {}) {
+  if (!agent || typeof agent.requestCloudflareTunnelConfiguration !== "function"
+    || typeof agent.removeCloudflareTunnelCredentials !== "function"
+    || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+    throw new TypeError("The Cloudflare Tunnel configuration task handler is invalid.");
+  }
+  return async (task, signal) => {
+    const { tunnelId, tunnelName } = task.payload ?? {};
+    if (task.type !== "cloudflare.tunnel.configure"
+      || typeof tunnelId !== "string" || !/^[a-f0-9-]{36}$/i.test(tunnelId)
+      || typeof tunnelName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(tunnelName)) {
+      throw new TaskExecutionError("La tarea contiene una configuración de túnel inválida.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("La configuración fue interrumpida.");
+    try {
+      await agent.requestCloudflareTunnelConfiguration(tunnelId, task.id);
+      while (!signal.aborted) {
+        const operation = await agent.getStatus();
+        if (operation?.id === task.id) {
+          if (operation.operation !== "configure-cloudflare-tunnel" || operation.tunnelId !== tunnelId) {
+            throw new TaskExecutionError("El agente devolvió una configuración de túnel inconsistente.", {
+              retryable: false,
+            });
+          }
+          if (operation.state === "succeeded") {
+            return { message: operation.message, tunnelId };
+          }
+          if (operation.state === "failed") {
+            throw new TaskExecutionError(operation.message, { retryable: false });
+          }
+        }
+        await waitForRetry(signal, pollIntervalMs);
+      }
+      throw signal.reason ?? new Error("La configuración fue interrumpida.");
+    } finally {
+      await agent.removeCloudflareTunnelCredentials(task.id);
+    }
+  };
+}
+
 export function createProjectBuildHandler({
   agent,
   getBuildSource,

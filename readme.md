@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir y desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los proyectos ofrecen tres perfiles: estático servido por Nginx, dinámico con Dockerfile o Railpack, y Build que instala dependencias según el lockfile, ejecuta el comando configurado y publica la carpeta de salida con Nginx. La integración debe validarse en un VPS antes de considerarse lista para producción.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare y Cloudflare Tunnel, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir y desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los proyectos ofrecen tres perfiles: estático servido por Nginx, dinámico con Dockerfile o Railpack, y Build que instala dependencias según el lockfile, ejecuta el comando configurado y publica la carpeta de salida con Nginx. La integración debe validarse en un VPS antes de considerarse lista para producción.
 
 ---
 
@@ -522,18 +522,24 @@ VPS de pruebas con GitHub OAuth, recepción de webhook, build, despliegue,
 actualización y rollback antes de usarse en producción.
 
 En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar.
-La página incluye instrucciones para delegar nameservers a
-Cloudflare y crear un token con permisos `Zone:Read` y `DNS:Edit`. La conexión
-comprueba que Cloudflare exponga la zona como activa y guarda el token en el VPS
-con permisos restringidos; no lo guarda en PostgreSQL ni en el historial de
-tareas. La vista conserva el estado de conexión, el último error y la fecha de
-verificación; permite volver a conectar una zona fallida o comprobar de nuevo el
-token y que la zona siga activa en Cloudflare. Esto no comprueba la propagación
-DNS pública ni HTTPS. El dominio puede haberse comprado en Namecheap u otro
-registrador si sus nameservers están delegados a Cloudflare. Esta vista no crea
-subdominios, registros DNS ni asignaciones a proyectos. La selección de dominio
-para aplicaciones se realiza desde el flujo de cada aplicación cuando está
-disponible.
+La página incluye instrucciones para delegar nameservers a Cloudflare y crear
+tokens por zona con permisos `Zone:Read` y `DNS:Edit`. Las credenciales se
+guardan en archivos protegidos del VPS, no en PostgreSQL ni en el historial de
+tareas. La conexión comprueba que la zona esté activa; no comprueba la
+propagación DNS pública ni HTTPS. El dominio puede haberse comprado en
+Namecheap u otro registrador si sus nameservers están delegados a Cloudflare.
+
+Para una VPS doméstica o sin IPv4 pública, se puede administrar **Cloudflare
+Tunnel** desde esta misma pestaña. Crea un API Token adicional con permiso
+`Account: Cloudflare Tunnel: Edit`, introduce el Account ID y el nombre del
+túnel; VPS Manager crea el túnel, guarda el token de cuenta en un archivo
+protegido, almacena el token del conector como secreto Swarm y configura las
+rutas hacia Traefik. Las zonas conectadas siguen usando sus propios tokens
+`Zone:Read` y `DNS:Edit`; al activar Tunnel, los registros A que ya administra
+VPS Manager se convierten en CNAME proxied. Al asignar o quitar hostnames,
+también se actualiza la configuración de ingreso del túnel. Sin Tunnel, el
+panel usa la IPv4 pública configurada para crear registros A. La asignación de
+dominios a proyectos y aplicaciones se realiza desde sus respectivos flujos.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de

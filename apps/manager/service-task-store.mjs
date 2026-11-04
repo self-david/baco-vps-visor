@@ -43,6 +43,9 @@ function mapTask(row, { includePayload = false } = {}) {
     ...(row.type === "registry.configure"
       ? { domain: row.payload.domain, username: row.payload.username }
       : {}),
+    ...(row.type === "cloudflare.tunnel.configure"
+      ? { tunnelId: row.payload.tunnelId, tunnelName: row.payload.tunnelName }
+      : {}),
     ...(row.type === "swarm.node.enroll"
       ? {
         nodeAddress: row.payload.address,
@@ -118,6 +121,9 @@ function mapTask(row, { includePayload = false } = {}) {
           : {}),
         ...(row.type === "registry.configure" && typeof row.result.domain === "string"
           ? { domain: row.result.domain }
+          : {}),
+        ...(row.type === "cloudflare.tunnel.configure" && typeof row.result.tunnelId === "string"
+          ? { tunnelId: row.result.tunnelId }
           : {}),
         ...(row.type === "swarm.node.enroll" && typeof row.result.nodeId === "string"
           ? { nodeId: row.result.nodeId, nodeAddress: row.result.nodeAddress }
@@ -199,6 +205,12 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain)
       || typeof payload.username !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(payload.username))) {
     throw new TypeError("Private registry configuration task fields are invalid.");
+  }
+  if (type === "cloudflare.tunnel.configure"
+    && (Object.keys(payload).sort().join(",") !== ["tunnelId", "tunnelName"].sort().join(",")
+      || typeof payload.tunnelId !== "string" || !/^[a-f0-9-]{36}$/i.test(payload.tunnelId)
+      || typeof payload.tunnelName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(payload.tunnelName))) {
+    throw new TypeError("Cloudflare Tunnel configuration task fields are invalid.");
   }
   if (type === "project.build") {
     const sourceType = payload.sourceType ?? "github";
@@ -299,6 +311,20 @@ export function createTaskStore({ pool, insertAuditEvent }) {
         if (activeTask.rowCount > 0) {
           const error = new Error("Ya hay una configuración del registro en curso.");
           error.code = "REGISTRY_CONFIGURATION_IN_PROGRESS";
+          throw error;
+        }
+      }
+      if (type === "cloudflare.tunnel.configure") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["cloudflare.tunnel.configure"]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type = $1 AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [type],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay una configuración de Cloudflare Tunnel en curso.");
+          error.code = "CLOUDFLARE_TUNNEL_CONFIGURATION_IN_PROGRESS";
           throw error;
         }
       }

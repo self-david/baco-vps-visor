@@ -159,7 +159,68 @@ export function createCloudflareClient({
       error.code = "CLOUDFLARE_ZONE_NOT_FOUND";
       throw error;
     }
-    return { id: match.id, name: match.name };
+    return {
+      id: match.id,
+      name: match.name,
+      ...(typeof match.account?.id === "string" ? { accountId: match.account.id } : {}),
+    };
+  }
+
+  async function createTunnel(token, accountId, name, tunnelSecret) {
+    if (!/^[a-f0-9]{32}$/i.test(accountId ?? "")
+      || typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(name)
+      || typeof tunnelSecret !== "string" || !/^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/.test(tunnelSecret)) {
+      throw new TypeError("La cuenta, el nombre o el secreto del túnel de Cloudflare no son válidos.");
+    }
+    const tunnel = await request(token, `/accounts/${accountId}/cfd_tunnel`, {
+      method: "POST",
+      body: JSON.stringify({ name, tunnel_secret: tunnelSecret, config_src: "cloudflare" }),
+    });
+    if (!tunnel || typeof tunnel.id !== "string" || !/^[a-f0-9-]{36}$/i.test(tunnel.id)) {
+      throw new Error("Cloudflare devolvió un identificador de túnel inválido.");
+    }
+    const tunnelToken = await getTunnelToken(token, accountId, tunnel.id);
+    if (typeof tunnelToken !== "string" || tunnelToken.length < 20 || tunnelToken.length > 4096) {
+      throw new Error("Cloudflare no devolvió un token válido para el túnel.");
+    }
+    return { id: tunnel.id, name: tunnel.name, token: tunnelToken };
+  }
+
+  async function getTunnelToken(token, accountId, tunnelId) {
+    if (!/^[a-f0-9]{32}$/i.test(accountId ?? "") || !/^[a-f0-9-]{36}$/i.test(tunnelId ?? "")) {
+      throw new TypeError("La cuenta o el identificador de túnel de Cloudflare no son válidos.");
+    }
+    const tunnelToken = await request(token, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`);
+    if (typeof tunnelToken !== "string" || tunnelToken.length < 20 || tunnelToken.length > 4096) {
+      throw new Error("Cloudflare no devolvió un token válido para el túnel.");
+    }
+    return tunnelToken;
+  }
+
+  async function updateTunnelConfiguration(token, accountId, tunnelId, hostnames) {
+    if (!/^[a-f0-9]{32}$/i.test(accountId ?? "")
+      || !/^[a-f0-9-]{36}$/i.test(tunnelId ?? "")
+      || !Array.isArray(hostnames)
+      || hostnames.length > 100
+      || hostnames.some((hostname) => !hostnamePattern.test(hostname))) {
+      throw new TypeError("La configuración de hostnames del túnel no es válida.");
+    }
+    const ingress = [
+      ...hostnames.map((hostname) => ({
+        hostname,
+        service: "https://vps-manager_traefik:443",
+        originRequest: {
+          httpHostHeader: hostname,
+          noTLSVerify: true,
+        },
+      })),
+      { service: "http_status:404" },
+    ];
+    await request(token, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+      method: "PUT",
+      body: JSON.stringify({ config: { ingress } }),
+    });
+    return { hostnameCount: hostnames.length };
   }
 
   async function upsertARecord(token, { zoneId, hostname, address, proxied, existingRecordId }) {
@@ -196,7 +257,64 @@ export function createCloudflareClient({
     return validateRecord(result);
   }
 
-  return { verifyZone, upsertARecord };
+  async function upsertTunnelCname(token, { zoneId, hostname, tunnelId, existingRecordId }) {
+    if (!/^[a-f0-9]{32}$/i.test(zoneId ?? "")
+      || !hostnamePattern.test(hostname ?? "")
+      || !/^[a-f0-9-]{36}$/i.test(tunnelId ?? "")) {
+      throw new TypeError("La zona, el hostname o el túnel de Cloudflare no son válidos.");
+    }
+    const records = await request(
+      token,
+      `/zones/${encodeURIComponent(zoneId)}/dns_records?name=${encodeURIComponent(hostname)}&per_page=100`,
+    );
+    if (!Array.isArray(records)) throw new Error("Cloudflare devolvió una lista DNS inválida.");
+    const recordsForHost = records.filter((record) => record.name === hostname);
+    const trackedRecord = existingRecordId
+      ? recordsForHost.find((record) => record.id === existingRecordId)
+      : undefined;
+    if (existingRecordId && !trackedRecord && recordsForHost.length > 0) {
+      const missing = new Error("El registro DNS administrado ya no existe en Cloudflare; vuelve a guardar el dominio para crearlo.");
+      missing.code = "CLOUDFLARE_RECORD_NOT_FOUND";
+      throw missing;
+    }
+    if (recordsForHost.some((record) => record.id !== trackedRecord?.id)) {
+      const conflict = new Error("Ya existe un registro DNS no administrado para este hostname.");
+      conflict.code = "CLOUDFLARE_RECORD_EXISTS";
+      throw conflict;
+    }
+    const body = JSON.stringify({
+      type: "CNAME",
+      name: hostname,
+      content: `${tunnelId}.cfargotunnel.com`,
+      proxied: true,
+      ttl: 1,
+    });
+    if (trackedRecord && trackedRecord.type !== "CNAME") {
+      if (trackedRecord.type !== "A") {
+        const conflict = new Error("El registro DNS administrado no se puede convertir automáticamente a CNAME.");
+        conflict.code = "CLOUDFLARE_RECORD_EXISTS";
+        throw conflict;
+      }
+      await request(
+        token,
+        `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(trackedRecord.id)}`,
+        { method: "DELETE" },
+      );
+    }
+    const result = trackedRecord?.type === "CNAME"
+      ? await request(token, `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(trackedRecord.id)}`, {
+        method: "PUT",
+        body,
+      })
+      : await request(token, `/zones/${encodeURIComponent(zoneId)}/dns_records`, {
+        method: "POST",
+        body,
+      });
+    if (!result || typeof result.id !== "string") throw new Error("Cloudflare devolvió un registro DNS inválido.");
+    return { id: result.id };
+  }
+
+  return { verifyZone, createTunnel, getTunnelToken, updateTunnelConfiguration, upsertARecord, upsertTunnelCname };
 }
 
 function validateRecord(record) {

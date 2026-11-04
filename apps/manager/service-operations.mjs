@@ -16,6 +16,7 @@ const allowedOperations = new Set([
   "install-postgresql",
   "configure-gitea-token",
   "configure-registry",
+  "configure-cloudflare-tunnel",
   "build-project",
   "deploy-project",
   "remove-project",
@@ -133,6 +134,8 @@ function validateStatus(status) {
         ? typeof status.credentialsAvailable !== "boolean"
       : status.operation === "configure-registry"
         ? (!isPublicHostname(status.domain) || !registryUsernamePattern.test(status.username ?? ""))
+      : status.operation === "configure-cloudflare-tunnel"
+        ? !/^[a-f0-9-]{36}$/i.test(status.tunnelId ?? "")
       : status.operation === "build-project"
         ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
           || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
@@ -182,7 +185,10 @@ function validateStatus(status) {
       && !containerIdPattern.test(status.containerId ?? ""))
     || (status.operation === "configure-registry"
       && Object.keys(status).sort().join(",")
-        !== ["domain", "id", "message", "operation", "state", "updatedAt", "username"].sort().join(","))) {
+        !== ["domain", "id", "message", "operation", "state", "updatedAt", "username"].sort().join(","))
+    || (status.operation === "configure-cloudflare-tunnel"
+      && Object.keys(status).sort().join(",")
+        !== ["id", "message", "operation", "state", "tunnelId", "updatedAt"].sort().join(","))) {
     throw new Error("The service operation status file has an invalid format.");
   }
   return status;
@@ -200,6 +206,7 @@ export function createServiceOperationAgent({
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
   const applicationDeploymentPath = (requestId) => join(directory, `application-deploy-${requestId}.json`);
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
+  const cloudflareTunnelCredentialsPath = (requestId) => join(directory, `cloudflare-tunnel-token-${requestId}.txt`);
   const nodeCredentialsPath = (requestId) => join(directory, `node-ssh-key-${requestId}`);
   const registryStatusPath = join(directory, "registry-status.json");
 
@@ -245,6 +252,8 @@ export function createServiceOperationAgent({
             ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
             : queuedRequest.operation === "configure-registry"
               ? isPublicHostname(queuedRequest.domain) && registryUsernamePattern.test(queuedRequest.username ?? "")
+            : queuedRequest.operation === "configure-cloudflare-tunnel"
+              ? /^[a-f0-9-]{36}$/i.test(queuedRequest.tunnelId ?? "")
             : queuedRequest.operation === "build-project"
               ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
@@ -300,6 +309,8 @@ export function createServiceOperationAgent({
           ? ["id", "operation", "token"]
           : queuedRequest.operation === "configure-registry"
             ? ["id", "operation", "domain", "username"]
+          : queuedRequest.operation === "configure-cloudflare-tunnel"
+            ? ["id", "operation", "tunnelId"]
           : queuedRequest.operation === "build-project"
             ? [
               "id", "operation", "projectId", "commitSha", "deploymentType", "buildStrategy", "buildContext", "dockerfilePath",
@@ -337,6 +348,8 @@ export function createServiceOperationAgent({
               ? {}
               : queuedRequest.operation === "configure-registry"
                 ? { domain: queuedRequest.domain, username: queuedRequest.username }
+              : queuedRequest.operation === "configure-cloudflare-tunnel"
+                ? { tunnelId: queuedRequest.tunnelId }
               : queuedRequest.operation === "build-project"
                 ? {
                   projectId: queuedRequest.projectId,
@@ -955,6 +968,69 @@ export function createServiceOperationAgent({
     })}\n`, { flag: "wx", mode: 0o600 });
   }
 
+  async function stageCloudflareTunnelCredentials(requestId, token) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || typeof token !== "string" || token.length < 20 || token.length > 4096
+      || /[\u0000-\u001f\u007f]/.test(token)) {
+      throw new TypeError("Las credenciales del túnel de Cloudflare no son válidas.");
+    }
+    await writeFile(cloudflareTunnelCredentialsPath(requestId), `${token}\n`, { flag: "wx", mode: 0o600 });
+  }
+
+  async function removeCloudflareTunnelCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("El identificador de tarea de Cloudflare Tunnel no es válido.");
+    }
+    await unlink(cloudflareTunnelCredentialsPath(requestId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
+
+  async function requestCloudflareTunnelConfiguration(tunnelId, requestId = createId()) {
+    if (!/^[a-f0-9-]{36}$/i.test(tunnelId ?? "") || !requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("Los campos de configuración del túnel de Cloudflare no son válidos.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "configure-cloudflare-tunnel" || currentStatus.tunnelId !== tunnelId) {
+        throw new Error("El identificador de tarea ya pertenece a otra configuración de túnel.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify({
+        id: requestId,
+        operation: "configure-cloudflare-tunnel",
+        tunnelId,
+      })}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "configure-cloudflare-tunnel",
+      state: "queued",
+      tunnelId,
+      message: "La configuración del conector de Cloudflare Tunnel fue aceptada.",
+    };
+  }
+
   async function removeRegistryCredentials(requestId) {
     if (!requestIdPattern.test(requestId ?? "")) {
       throw new TypeError("The registry configuration request identifier is invalid.");
@@ -1187,6 +1263,9 @@ export function createServiceOperationAgent({
     stageRegistryCredentials,
     removeRegistryCredentials,
     requestRegistryConfiguration,
+    stageCloudflareTunnelCredentials,
+    removeCloudflareTunnelCredentials,
+    requestCloudflareTunnelConfiguration,
     hasGiteaApiToken,
   };
 }

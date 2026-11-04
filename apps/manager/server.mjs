@@ -27,6 +27,7 @@ import {
   createProjectPushDeployHandler,
   createProjectUndeployHandler,
   createRegistryConfigureHandler,
+  createCloudflareTunnelConfigureHandler,
   createSwarmNodeEnrollHandler,
   createTaskQueueWorker,
 } from "./task-queue.mjs";
@@ -73,6 +74,8 @@ import {
   deleteDomainZone,
   getIngressIp,
   setIngressIp,
+  getCloudflareTunnelSettings,
+  saveCloudflareTunnelSettings,
   createProject,
   updateProject,
   deleteProject,
@@ -101,6 +104,7 @@ import {
   updateManualApplicationDeployment,
   createManualApplicationDeployTask,
   createRegistryConfigureTask,
+  createCloudflareTunnelConfigureTask,
   createProjectBuildTask,
   createProjectDeployTask,
   createProjectUndeployTask,
@@ -168,8 +172,19 @@ const updateChecker = createUpdateChecker({
 const webUpdater = createWebUpdater();
 const serviceOperationAgent = createServiceOperationAgent();
 const serviceOperationsDirectory = process.env.SERVICE_OPERATIONS_DIRECTORY ?? "/var/lib/vps-manager/service-operations";
+const cloudflareTunnelCredentialId = "00000000-0000-4000-8000-000000000001";
+let cloudflareTunnelConfigurationPending = false;
 const githubOAuth = createGithubOAuth({ directory: serviceOperationsDirectory });
 const cloudflareClient = createCloudflareClient();
+async function updateCloudflareTunnelHosts(tunnel, hostnames) {
+  const token = await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId);
+  return cloudflareClient.updateTunnelConfiguration(
+    token,
+    tunnel.accountId,
+    tunnel.tunnelId,
+    [...new Set(hostnames)].sort(),
+  );
+}
 const taskQueueWorker = createTaskQueueWorker({
   store: { claimNextTask, completeTask, failTask, renewTaskLease },
   handlers: {
@@ -182,6 +197,7 @@ const taskQueueWorker = createTaskQueueWorker({
       updateDeployment: updateManualApplicationDeployment,
     }),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
+    "cloudflare.tunnel.configure": createCloudflareTunnelConfigureHandler(serviceOperationAgent),
     "swarm.node.enroll": createSwarmNodeEnrollHandler(serviceOperationAgent),
     "project.build": createProjectBuildHandler({
       agent: serviceOperationAgent,
@@ -1328,15 +1344,25 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const [domains, domainZones, projects, ingressIp] = await Promise.all([
+      const [domains, domainZones, projects, ingressIp, tunnel] = await Promise.all([
         getProjectDomains(),
         getDomainZones(),
         getProjects(),
         getIngressIp(),
+        getCloudflareTunnelSettings(),
       ]);
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       respondJson(response, 200, {
         ingressIp,
+        ingressMode: tunnel ? "cloudflare-tunnel" : "direct",
+        tunnel: tunnel ? {
+          provider: "cloudflare",
+          name: tunnel.name,
+          tunnelId: tunnel.tunnelId,
+          accountId: tunnel.accountId,
+          configured: await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
+          latestTask: await getLatestTaskByType("cloudflare.tunnel.configure"),
+        } : null,
         zones: await Promise.all(domainZones.map(async (domainZone) => {
           const tokenConfigured = await hasCloudflareToken(
             serviceOperationsDirectory,
@@ -1382,6 +1408,141 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       console.error("Could not retrieve project domains:", error);
       respondJson(response, 503, { error: "No se pudieron consultar los dominios." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/cloudflare/tunnel") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let taskId;
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).sort().join(",") !== ["accountId", "name", "token"].sort().join(",")
+        || typeof body.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(body.accountId)
+        || typeof body.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(body.name)
+        || typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
+        || /[\u0000-\u001f\u007f]/.test(body.token)) {
+        respondJson(response, 400, { error: "Proporciona un Account ID, nombre de túnel y API Token de Cloudflare válidos." });
+        return;
+      }
+      if (testMode) {
+        respondJson(response, 409, { error: "Cloudflare Tunnel requiere una instalación real de Swarm; no está disponible en modo de prueba." });
+        return;
+      }
+      if (cloudflareTunnelConfigurationPending) {
+        respondJson(response, 409, { error: "Ya hay una configuración de Cloudflare Tunnel en curso." });
+        return;
+      }
+      cloudflareTunnelConfigurationPending = true;
+      const current = await getCloudflareTunnelSettings();
+      if (current && current.accountId !== body.accountId.toLowerCase()) {
+        respondJson(response, 409, { error: "Ya existe un túnel conectado a otra cuenta de Cloudflare. Primero retira la configuración actual." });
+        return;
+      }
+      if (current && current.name !== body.name) {
+        respondJson(response, 409, { error: "El nombre del túnel es inmutable en esta configuración." });
+        return;
+      }
+      const [domains, domainZones] = await Promise.all([getProjectDomains(), getDomainZones()]);
+      if (domains.length > 100) {
+        respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
+        return;
+      }
+      const tunnel = current
+        ? {
+          id: current.tunnelId,
+          name: current.name,
+          token: await cloudflareClient.getTunnelToken(body.token, current.accountId, current.tunnelId),
+        }
+        : await cloudflareClient.createTunnel(
+          body.token,
+          body.accountId.toLowerCase(),
+          body.name,
+          randomBytes(32).toString("base64"),
+        );
+      await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
+      await saveCloudflareTunnelSettings({
+        provider: "cloudflare",
+        accountId: body.accountId.toLowerCase(),
+        tunnelId: tunnel.id,
+        name: body.name,
+      });
+      for (const domain of domains) {
+        const domainZone = domainZones.find((candidate) =>
+          candidate.zone.toLowerCase() === domain.zone.toLowerCase());
+        if (!domainZone || domainZone.connectionStatus !== "connected") {
+          throw new Error(`La zona Cloudflare de ${domain.hostname} no está conectada.`);
+        }
+        const zoneToken = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
+        const dnsRecord = await cloudflareClient.upsertTunnelCname(zoneToken, {
+          zoneId: domain.zoneId,
+          hostname: domain.hostname,
+          tunnelId: tunnel.id,
+          existingRecordId: domain.dnsRecordId,
+        });
+        await saveProjectDomain({ ...domain, proxied: true, dnsRecordId: dnsRecord.id });
+      }
+      await cloudflareClient.updateTunnelConfiguration(
+        body.token,
+        body.accountId.toLowerCase(),
+        tunnel.id,
+        domains.map((domain) => domain.hostname),
+      );
+
+      taskId = randomUUID();
+      await serviceOperationAgent.stageCloudflareTunnelCredentials(taskId, tunnel.token);
+      try {
+        await createCloudflareTunnelConfigureTask({
+          id: taskId,
+          tunnelId: tunnel.id,
+          tunnelName: body.name,
+        });
+      } catch (error) {
+        await serviceOperationAgent.removeCloudflareTunnelCredentials(taskId);
+        throw error;
+      }
+      respondJson(response, 202, {
+        tunnel: { provider: "cloudflare", accountId: body.accountId.toLowerCase(), tunnelId: tunnel.id, name: body.name },
+        task: {
+          id: taskId,
+          type: "cloudflare.tunnel.configure",
+          status: "pending",
+          message: "Túnel creado y hostnames configurados; esperando que el agente active el conector en Swarm.",
+        },
+      });
+    } catch (error) {
+      if (error?.code === "CLOUDFLARE_TOKEN_INVALID" || error instanceof TypeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error?.code === "CLOUDFLARE_RECORD_EXISTS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      if (error?.code === "ENOENT") {
+        respondJson(response, 409, { error: "Falta el token de Cloudflare de una zona conectada. Reconecta esa zona y vuelve a intentarlo." });
+        return;
+      }
+      if (error?.code === "OPERATION_IN_PROGRESS" || error?.code === "CLOUDFLARE_TUNNEL_CONFIGURATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not configure Cloudflare Tunnel:", error);
+      respondJson(response, 502, { error: "No se pudo configurar Cloudflare Tunnel. Revisa los permisos del API Token y los logs de tareas." });
+    } finally {
+      cloudflareTunnelConfigurationPending = false;
     }
     return;
   }
@@ -1617,6 +1778,10 @@ const server = createServer(async (request, response) => {
         respondJson(response, 400, { error: "Proporciona una dirección IPv4 pública válida para la entrada de Traefik." });
         return;
       }
+      if (await getCloudflareTunnelSettings()) {
+        respondJson(response, 409, { error: "La IPv4 directa no se usa mientras Cloudflare Tunnel está configurado." });
+        return;
+      }
       const ingressIp = await setIngressIp(body.ipv4);
       const [domains, domainZones] = await Promise.all([getProjectDomains(), getDomainZones()]);
       const failures = [];
@@ -1693,6 +1858,15 @@ const server = createServer(async (request, response) => {
             return;
           }
         }
+        const tunnel = await getCloudflareTunnelSettings();
+        if (tunnel) {
+          await updateCloudflareTunnelHosts(
+            tunnel,
+            (await getProjectDomains())
+              .filter((domain) => domain.id !== domainId)
+              .map((domain) => domain.hostname),
+          );
+        }
         const domainZone = await getDomainZoneByName(existing.zone);
         await deleteProjectDomain(domainId);
         if (!domainZone || domainZone.credentialId !== domainId) {
@@ -1701,7 +1875,9 @@ const server = createServer(async (request, response) => {
         if (existing.projectId) await saveProjectDomainAssignments(existing.projectId);
         respondJson(response, 200, {
           deleted: true,
-          message: existing.applicationId === "n8n"
+          message: tunnel
+            ? "Se quitó la configuración del dominio y su hostname dejó de estar en el túnel. El registro DNS de Cloudflare se conserva."
+            : existing.applicationId === "n8n"
             ? "Se quitó la configuración de n8n. El registro A de Cloudflare se conserva."
             : "Se quitó la configuración. El registro A de Cloudflare se conserva; el enrutamiento del servicio se actualiza en su próximo despliegue.",
         });
@@ -1719,8 +1895,9 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Conecta primero el dominio raíz en la pestaña Dominios." });
         return;
       }
-      const ingressIp = await getIngressIp();
-      if (!ingressIp) {
+      const tunnel = await getCloudflareTunnelSettings();
+      const ingressIp = tunnel ? null : await getIngressIp();
+      if (!tunnel && !ingressIp) {
         respondJson(response, 409, { error: "Configura primero la IPv4 pública del VPS manager." });
         return;
       }
@@ -1785,15 +1962,29 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "La zona de Cloudflare cambió. Actualiza la conexión en Dominios." });
         return;
       }
-      const dnsRecord = await cloudflareClient.upsertARecord(token, {
-        zoneId: zone.id,
-        hostname: input.hostname,
-        address: ingressIp,
-        proxied: input.proxied,
-        existingRecordId: existing?.zoneId === zone.id && existing.hostname === input.hostname
-          ? existing.dnsRecordId
-          : undefined,
-      });
+      const existingRecordId = existing?.zoneId === zone.id && existing.hostname === input.hostname
+        ? existing.dnsRecordId
+        : undefined;
+      const dnsRecord = tunnel
+        ? await cloudflareClient.upsertTunnelCname(token, {
+          zoneId: zone.id,
+          hostname: input.hostname,
+          tunnelId: tunnel.tunnelId,
+          existingRecordId,
+        })
+        : await cloudflareClient.upsertARecord(token, {
+          zoneId: zone.id,
+          hostname: input.hostname,
+          address: ingressIp,
+          proxied: input.proxied,
+          existingRecordId,
+        });
+      if (tunnel) {
+        await updateCloudflareTunnelHosts(tunnel, [
+          ...currentDomains.filter((domain) => domain.id !== existing?.id).map((domain) => domain.hostname),
+          input.hostname,
+        ]);
+      }
       const id = domainId ?? randomUUID();
       const saved = await saveProjectDomain({
         id,
@@ -1805,7 +1996,7 @@ const server = createServer(async (request, response) => {
         projectId: input.projectId,
         applicationId: input.applicationId,
         port: input.port,
-        proxied: input.proxied,
+        proxied: tunnel ? true : input.proxied,
         dnsRecordId: dnsRecord.id,
       });
       if (input.token !== undefined) {
@@ -1830,8 +2021,8 @@ const server = createServer(async (request, response) => {
           tokenConfigured: true,
         },
         message: saved.applicationId === "n8n"
-          ? `Se conectó ${saved.hostname} con Cloudflare para n8n. Instala n8n para activar el enrutamiento HTTPS.`
-          : `Se conectó ${saved.hostname} con Cloudflare. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
+          ? `Se conectó ${saved.hostname} con Cloudflare${tunnel ? " Tunnel" : ""} para n8n. Instala n8n para activar el enrutamiento HTTPS.`
+          : `Se conectó ${saved.hostname} con Cloudflare${tunnel ? " Tunnel" : ""}. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
       });
     } catch (error) {
       if (error instanceof RequestError) {

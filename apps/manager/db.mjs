@@ -710,6 +710,41 @@ export async function setIngressIp(ip) {
   }
 }
 
+export async function getCloudflareTunnelSettings() {
+  const result = await pool.query(
+    "SELECT value FROM server_settings WHERE key = $1",
+    ["cloudflare_tunnel"],
+  );
+  const value = result.rows[0]?.value;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+export async function saveCloudflareTunnelSettings(settings) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`
+      INSERT INTO server_settings (key, value)
+      VALUES ($1, $2::jsonb)
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value, updated_at = now()
+    `, ["cloudflare_tunnel", JSON.stringify(settings)]);
+    await insertAuditEvent(client, {
+      action: "domains.cloudflare_tunnel.configured",
+      resourceType: "setting",
+      resourceId: "cloudflare_tunnel",
+      details: { accountId: settings.accountId, tunnelId: settings.tunnelId, name: settings.name },
+    });
+    await client.query("COMMIT");
+    return settings;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function deleteProject(id) {
   const client = await pool.connect();
   try {
@@ -1054,6 +1089,15 @@ export async function createRegistryConfigureTask(task) {
     id: task.id,
     type: "registry.configure",
     payload: { domain: task.domain, username: task.username },
+    maxAttempts: 1,
+  });
+}
+
+export async function createCloudflareTunnelConfigureTask(task) {
+  return createTask({
+    id: task.id,
+    type: "cloudflare.tunnel.configure",
+    payload: { tunnelId: task.tunnelId, tunnelName: task.tunnelName },
     maxAttempts: 1,
   });
 }

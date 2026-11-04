@@ -128,6 +128,8 @@ application_id = "-"
 application_instance_id = "-"
 registry_domain = "-"
 registry_username = "-"
+cloudflare_tunnel_id = "-"
+cloudflare_tunnel_token = "-"
 node_address = "-"
 node_ssh_user = "-"
 node_ssh_port = "-"
@@ -218,6 +220,29 @@ elif request.get("operation") == "configure-registry":
     replicas = "-"
     registry_domain = request["domain"].lower()
     registry_username = request["username"]
+elif request.get("operation") == "configure-cloudflare-tunnel":
+    if set(request) != {"id", "operation", "tunnelId"} \
+        or not isinstance(request["tunnelId"], str) \
+        or not re.fullmatch(r"[a-fA-F0-9-]{36}", request["tunnelId"]):
+        raise SystemExit("Invalid Cloudflare Tunnel configuration request fields.")
+    credential_path = f"/var/lib/vps-manager/service-operations/cloudflare-tunnel-token-{request['id']}.txt"
+    credential_descriptor = os.open(credential_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        credential_metadata = os.fstat(credential_descriptor)
+        if not stat.S_ISREG(credential_metadata.st_mode) or credential_metadata.st_mode & 0o077 \
+            or credential_metadata.st_size > 4096:
+            raise SystemExit("Invalid Cloudflare Tunnel credential file.")
+        with os.fdopen(credential_descriptor, encoding="utf-8") as credential_file:
+            credential_descriptor = -1
+            cloudflare_tunnel_token = credential_file.read().strip()
+    finally:
+        if credential_descriptor >= 0:
+            os.close(credential_descriptor)
+    if not cloudflare_tunnel_token or re.search(r"[\x00-\x20\x7f]", cloudflare_tunnel_token):
+        raise SystemExit("Invalid Cloudflare Tunnel token.")
+    service_id = "-"
+    replicas = "-"
+    cloudflare_tunnel_id = request["tunnelId"].lower()
 elif request.get("operation") == "build-project":
     required_fields = {
         "id", "operation", "projectId", "commitSha",
@@ -354,14 +379,14 @@ if request["operation"] in {"restart-service", "scale-service", "stop-container"
     r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}\t{build_command}\t{build_output_directory}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}\t{build_command}\t{build_output_directory}\t{cloudflare_tunnel_id}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path build_command build_output_directory <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path build_command build_output_directory cloudflare_tunnel_id <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -389,6 +414,9 @@ write_status() {
   elif [[ "${operation}" == "configure-registry" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","username":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${registry_domain}" "${registry_username}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "configure-cloudflare-tunnel" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","tunnelId":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${cloudflare_tunnel_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "build-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
       printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","buildCommand":"%s","buildOutputDirectory":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
@@ -451,6 +479,8 @@ elif [[ "${operation}" == "configure-gitea-token" ]]; then
   write_status "running" "Actualizando de forma segura el secreto del token de Gitea."
 elif [[ "${operation}" == "configure-registry" ]]; then
   write_status "running" "Configurando el registro privado en el VPS."
+elif [[ "${operation}" == "configure-cloudflare-tunnel" ]]; then
+  write_status "running" "Configurando el conector de Cloudflare Tunnel en Swarm."
 elif [[ "${operation}" == "build-project" ]]; then
   write_status "running" "Preparando el contexto local de construcción."
 elif [[ "${operation}" == "deploy-project" ]]; then
@@ -882,6 +912,86 @@ PY
   chmod 0644 "${public_status_temp}"
   mv -f -- "${public_status_temp}" "${STATE_DIRECTORY}/registry-status.json"
   write_status "succeeded" "Registro privado configurado en https://${registry_domain}/ con almacenamiento persistente."
+  exit 0
+fi
+
+if [[ "${operation}" == "configure-cloudflare-tunnel" ]]; then
+  readonly CLOUDFLARE_TUNNEL_SERVICE="vps-manager_cloudflared"
+  readonly CLOUDFLARE_TUNNEL_IMAGE="cloudflare/cloudflared:2025.11.1"
+  readonly CLOUDFLARE_TUNNEL_SECRET_TARGET="cloudflare_tunnel_token"
+  tunnel_credentials_path="${STATE_DIRECTORY}/cloudflare-tunnel-token-${request_id}.txt"
+  new_secret="vps_manager_cloudflare_tunnel_${request_id//-/}"
+  old_secret=""
+  tunnel_secret_created=false
+  cleanup_cloudflare_tunnel() {
+    local exit_code="$?"
+    rm -f -- "${tunnel_credentials_path}"
+    if [[ "${tunnel_secret_created}" == "true" ]]; then
+      docker secret rm "${new_secret}" >/dev/null 2>&1 || true
+    fi
+    if (( exit_code != 0 )); then
+      write_status "failed" "No se pudo configurar el conector de Cloudflare Tunnel en Swarm." || true
+    fi
+  }
+  trap cleanup_cloudflare_tunnel EXIT
+  if docker secret inspect "${new_secret}" >/dev/null 2>&1; then
+    write_status "failed" "El identificador del secreto de Cloudflare Tunnel ya está en uso."
+    exit 1
+  fi
+  if ! docker secret create \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=cloudflare-tunnel \
+    "${new_secret}" "${tunnel_credentials_path}" >/dev/null; then
+    write_status "failed" "No se pudo guardar el token del túnel como secreto Swarm."
+    exit 1
+  fi
+  tunnel_secret_created=true
+  if docker service inspect "${CLOUDFLARE_TUNNEL_SERVICE}" >/dev/null 2>&1; then
+    service_labels="$(docker service inspect --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${CLOUDFLARE_TUNNEL_SERVICE}")"
+    if [[ "${service_labels}" != "true cloudflare-tunnel" ]]; then
+      write_status "failed" "El nombre del servicio Cloudflare Tunnel está ocupado por un servicio ajeno."
+      exit 1
+    fi
+    old_secret="$(docker service inspect --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}}{{end}}' "${CLOUDFLARE_TUNNEL_SERVICE}")"
+    if [[ ! "${old_secret}" =~ ^vps_manager_cloudflare_tunnel_[a-f0-9]{32}$ ]]; then
+      write_status "failed" "El servicio Cloudflare Tunnel existente no tiene un secreto administrado válido."
+      exit 1
+    fi
+    tunnel_update_args=(
+      --detach=false
+      --secret-rm "${old_secret}"
+      --secret-add "source=${new_secret},target=${CLOUDFLARE_TUNNEL_SECRET_TARGET},mode=0400"
+      --image "${CLOUDFLARE_TUNNEL_IMAGE}"
+    )
+    if ! docker service update "${tunnel_update_args[@]}" "${CLOUDFLARE_TUNNEL_SERVICE}" >/dev/null; then
+      write_status "failed" "No se pudo actualizar el servicio Cloudflare Tunnel."
+      exit 1
+    fi
+  else
+    if ! docker service create \
+      --detach=false \
+      --name "${CLOUDFLARE_TUNNEL_SERVICE}" \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=cloudflare-tunnel \
+      --network vps-manager-proxy \
+      --secret "source=${new_secret},target=${CLOUDFLARE_TUNNEL_SECRET_TARGET},mode=0400" \
+      --constraint node.role==manager \
+      --restart-condition any \
+      --replicas 1 \
+      --update-order start-first \
+      "${CLOUDFLARE_TUNNEL_IMAGE}" \
+      tunnel --no-autoupdate run --token-file "/run/secrets/${CLOUDFLARE_TUNNEL_SECRET_TARGET}" >/dev/null; then
+      write_status "failed" "No se pudo crear el servicio Cloudflare Tunnel en Swarm."
+      exit 1
+    fi
+  fi
+  tunnel_secret_created=false
+  if [[ -n "${old_secret}" ]]; then
+    docker secret rm "${old_secret}" >/dev/null 2>&1 || {
+      echo "Could not remove the previous managed Cloudflare Tunnel secret." >&2
+    }
+  fi
+  write_status "succeeded" "El conector de Cloudflare Tunnel quedó activo en la red privada de Swarm."
   exit 0
 fi
 
