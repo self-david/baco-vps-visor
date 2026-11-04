@@ -3,23 +3,6 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { applicationCatalog } from "../src/data/application-catalog.mjs";
 
-test("Gitea is represented as an optional catalog application with subdomain access", () => {
-  const gitea = applicationCatalog.find((application) => application.id === "gitea");
-
-  assert.ok(gitea);
-  assert.equal(gitea.installation.status, "optional");
-  assert.equal(gitea.installation.enabled, true);
-  assert.match(gitea.features.join(" "), /git\.<dominio>/);
-  assert.match(gitea.features.join(" "), /2222/);
-});
-
-test("Gitea administrator setup runs its CLI as the non-root git user", async () => {
-  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
-
-  assert.ok(serviceAgent.includes('docker exec --user git "${container_id}" gitea admin user list --admin'));
-  assert.ok(serviceAgent.includes('docker exec --user git "${container_id}" gitea admin user create'));
-});
-
 test("project deployment configuration parser imports its fingerprint dependency", async () => {
   const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
   const parser = serviceAgent.match(
@@ -30,19 +13,16 @@ test("project deployment configuration parser imports its fingerprint dependency
   assert.match(parser[1], /^import hashlib$/m);
 });
 
-test("Gitea repository name pattern is valid in modern browsers", async () => {
-  const applicationCatalogComponent = await readFile(
-    new URL("../src/components/ApplicationCatalog.jsx", import.meta.url),
-    "utf8",
-  );
-  const patternSource = String.raw`^[A-Za-z0-9][A-Za-z0-9._\x2d]{0,99}$`;
-  const pattern = new RegExp(patternSource, "v");
+test("projects tab shows planned sources and web app types without enabling unfinished flows", async () => {
+  const page = await readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8");
 
-  assert.ok(applicationCatalogComponent.includes(
-    String.raw`pattern="[A-Za-z0-9][A-Za-z0-9._\x2d]{0,99}"`,
-  ));
-  assert.equal(pattern.test("node-api-ui-test"), true);
-  assert.equal(pattern.test("node api"), false);
+  assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
+  assert.match(page, /Conectar GitHub · Próximamente/);
+  assert.match(page, /Subir archivos · Próximamente/);
+  assert.match(page, /Sitio estático/);
+  assert.match(page, /Aplicación web con SSR/);
+  assert.match(page, /API de Node\.js/);
+  assert.match(page, /API de Python/);
 });
 
 test("all HTML form patterns compile in modern browsers", async () => {

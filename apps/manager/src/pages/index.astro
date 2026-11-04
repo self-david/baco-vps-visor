@@ -1,7 +1,6 @@
 ---
 import DashboardTabs from "../components/DashboardTabs.jsx";
 import ApplicationCatalog from "../components/ApplicationCatalog.jsx";
-import ApplicationRequirementNotice from "../components/ApplicationRequirementNotice.jsx";
 import "../styles/tailwind.css";
 ---
 <!doctype html>
@@ -69,7 +68,7 @@ import "../styles/tailwind.css";
                 <div id="swarm-nodes-list" class="resource-list"></div>
                 <details class="node-enroll-details">
                   <summary>Incorporar VPS por SSH</summary>
-                  <form id="node-enroll-form" class="gitea-form">
+                  <form id="node-enroll-form" class="form-stack">
                     <p class="muted">Solo Ubuntu Server 24.04. El panel instalará Docker y añadirá reglas UFW para el tráfico Swarm en la red privada. UFW debe estar activo en el manager y el destino; no se habilita ni se reinicia automáticamente. Asegúrate de permitir esos puertos también en el firewall del proveedor y en los nodos ya existentes.</p>
                     <label for="node-address">IP privada del VPS destino</label>
                     <input id="node-address" name="address" type="text" inputmode="decimal" placeholder="10.10.0.12" required>
@@ -163,40 +162,38 @@ import "../styles/tailwind.css";
 
           <section id="tab-projects" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-projects" tabindex="0" hidden>
             <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
-              <ApplicationRequirementNotice
-                applicationName="Gitea"
-                feature="los proyectos Git"
-                detail="Instala Gitea y conecta un token para asociar repositorios y ramas de producción."
-              />
-              <section class="card backups-card" aria-labelledby="projects-title">
+              <section class="card" aria-labelledby="projects-title">
                 <div class="card-heading">
-                  <h3 id="projects-title">Proyectos Git</h3>
-                  <span class="badge">Despliegue manual</span>
-                </div>
-                <p class="muted">Asocia un repositorio privado de Gitea y construye imágenes manualmente. Configura variables por proyecto y asigna dominios desde la pestaña Dominios. Los despliegues globales ejecutan una instancia por cada VPS/nodo activo del Swarm; los cambios se aplican al desplegar o hacer rollback. Los pushes no activan builds ni despliegues.</p>
-                <form id="project-form" class="gitea-form hidden">
-                  <h4 id="project-form-title">Registrar proyecto</h4>
-                  <input id="project-id" name="id" type="hidden">
-                  <label for="project-name">Nombre</label>
-                  <input id="project-name" name="name" type="text" pattern="[A-Za-z0-9][A-Za-z0-9._ \x2d]{0,99}" maxLength="100" required>
-                  <label for="project-description">Descripción (opcional)</label>
-                  <input id="project-description" name="description" type="text" maxLength="500">
-                  <label for="project-repository">Repositorio</label>
-                  <select id="project-repository" name="repository" required>
-                    <option value="">Conecta Gitea para consultar repositorios</option>
-                  </select>
-                  <label for="project-production-branch">Rama de producción</label>
-                  <select id="project-production-branch" name="productionBranch" disabled required>
-                    <option value="">Selecciona un repositorio</option>
-                  </select>
-                  <p id="project-form-status" class="muted" role="status" aria-live="polite"></p>
-                  <div class="container-heading-actions">
-                    <button id="project-save" class="button" type="submit">Registrar proyecto</button>
-                    <button id="project-cancel-edit" class="button secondary hidden" type="button">Cancelar edición</button>
+                  <div>
+                    <p class="eyebrow">DESPLIEGUE DE CÓDIGO</p>
+                    <h3 id="projects-title">Proyectos</h3>
                   </div>
-                </form>
-                <p id="projects-status" class="muted" role="status" aria-live="polite">Consultando proyectos…</p>
-                <div id="projects-list" class="resource-list"></div>
+                  <span class="badge roadmap-badge">Estructura inicial</span>
+                </div>
+                <p class="muted">Prepara aplicaciones propias para desplegarlas en tu VPS. La conexión de fuentes y los despliegues todavía no están habilitados.</p>
+                <div class="project-source-options" aria-label="Fuentes de proyecto">
+                  <button class="button secondary" type="button" disabled>Conectar GitHub · Próximamente</button>
+                  <button class="button secondary" type="button" disabled>Subir archivos · Próximamente</button>
+                </div>
+              </section>
+              <section class="card" aria-labelledby="project-types-title">
+                <div class="card-heading">
+                  <h3 id="project-types-title">Tipos de aplicación</h3>
+                  <span class="badge roadmap-badge">Próximamente</span>
+                </div>
+                <ul class="roadmap-list">
+                  <li>Sitio estático</li>
+                  <li>Aplicación web con SSR</li>
+                  <li>API de Node.js</li>
+                  <li>API de Python</li>
+                </ul>
+              </section>
+              <section class="card" aria-labelledby="projects-list-title">
+                <div class="card-heading">
+                  <h3 id="projects-list-title">Mis proyectos</h3>
+                  <span class="badge">0</span>
+                </div>
+                <p class="muted" role="status">Aún no hay proyectos. Cuando se habiliten las fuentes, aquí podrás revisar su estado y despliegues.</p>
               </section>
             </div>
           </section>
@@ -412,7 +409,7 @@ import "../styles/tailwind.css";
                   <span id="registry-state" class="badge">Sin configurar</span>
                 </div>
                 <p id="registry-status" class="muted" aria-live="polite">La configuración se realiza aquí después de instalar VPS Manager.</p>
-                <form id="registry-configure-form" class="gitea-form">
+                <form id="registry-configure-form" class="form-stack">
                   <label for="registry-domain">Dominio del registro</label>
                   <input id="registry-domain" name="domain" type="text" inputmode="url" autocomplete="url" placeholder="registry.ejemplo.com" pattern="(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}" required>
                   <p class="muted">Configura primero un registro DNS A que apunte al VPS. Traefik emitirá un certificado HTTPS para este dominio.</p>
@@ -483,25 +480,6 @@ import "../styles/tailwind.css";
         </div>
       </form>
     </dialog>
-    <dialog id="gitea-credentials-dialog" class="logs-dialog" aria-labelledby="gitea-credentials-title">
-      <div class="logs-heading">
-        <div>
-          <p class="eyebrow">CREDENCIALES DE UN SOLO USO</p>
-          <h2 id="gitea-credentials-title">Administrador de Gitea</h2>
-        </div>
-        <button id="close-gitea-credentials" class="button secondary" type="button">Cerrar</button>
-      </div>
-      <p class="muted">Guarda estas credenciales en un gestor seguro ahora. La contraseña no se volverá a mostrar y caduca si no se consulta durante 30 minutos.</p>
-      <dl class="gitea-credentials">
-        <dt>URL</dt><dd><a id="gitea-credential-url" class="update-release-link"></a></dd>
-        <dt>Usuario</dt><dd><code id="gitea-credential-username"></code></dd>
-        <dt>Contraseña</dt><dd><code id="gitea-credential-password"></code></dd>
-        <dt id="gitea-credential-ssh-label">Git SSH</dt><dd><code id="gitea-credential-ssh"></code></dd>
-      </dl>
-      <div class="dialog-actions">
-        <button id="copy-gitea-credentials" class="button secondary" type="button">Copiar credenciales</button>
-      </div>
-    </dialog>
     <dialog id="postgresql-credentials-dialog" class="logs-dialog" aria-labelledby="postgresql-credentials-title">
       <div class="logs-heading">
         <div>
@@ -511,7 +489,7 @@ import "../styles/tailwind.css";
         <button id="close-postgresql-credentials" class="button secondary" type="button">Cerrar</button>
       </div>
       <p class="muted">Guarda estas credenciales en un gestor seguro ahora. La contraseña no se volverá a mostrar y caduca si no se consulta durante 30 minutos. Solo funciona desde servicios conectados a la red privada de Swarm.</p>
-      <dl class="gitea-credentials">
+      <dl class="credentials-list">
         <dt>Host</dt><dd><code id="postgresql-credential-host"></code></dd>
         <dt>Puerto</dt><dd><code id="postgresql-credential-port"></code></dd>
         <dt>Base de datos</dt><dd><code id="postgresql-credential-database"></code></dd>
@@ -577,25 +555,6 @@ import "../styles/tailwind.css";
         <p id="supabase-configuration-status" class="muted" role="status" aria-live="polite"></p>
         <div class="dialog-actions">
           <button id="save-supabase-configuration" class="button" type="submit">Guardar configuración del VPS</button>
-        </div>
-      </form>
-    </dialog>
-    <dialog id="project-environment-dialog" class="logs-dialog restore-dialog" aria-labelledby="project-environment-title">
-      <div class="logs-heading">
-        <div>
-          <p class="eyebrow">CONFIGURACIÓN DEL PROYECTO</p>
-          <h2 id="project-environment-title">Variables de entorno</h2>
-        </div>
-        <button id="close-project-environment" class="button secondary" type="button">Cerrar</button>
-      </div>
-      <p class="muted">Edita un objeto JSON de nombres y valores de texto. Se guarda en el VPS y se aplica en el próximo despliegue. Docker puede mostrar estas variables a quienes tengan acceso administrativo al clúster; no guardes secretos aquí.</p>
-      <form id="project-environment-form">
-        <input id="project-environment-id" type="hidden">
-        <label for="project-environment-json">Variables JSON</label>
-        <textarea id="project-environment-json" rows="12" spellcheck="false" autocapitalize="off" autocomplete="off" required></textarea>
-        <p id="project-environment-status" class="muted" role="status" aria-live="polite"></p>
-        <div class="dialog-actions">
-          <button id="save-project-environment" class="button" type="submit">Guardar variables</button>
         </div>
       </form>
     </dialog>

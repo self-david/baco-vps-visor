@@ -141,7 +141,6 @@ services:
       - session_key
       - postgres_password
       - backup_key
-      - gitea_api_token
     volumes:
       - type: bind
         source: /var/lib/vps-manager/backups
@@ -215,6 +214,3 @@ secrets:
   backup_key:
     external: true
     name: vps_manager_backup_key
-  gitea_api_token:
-    external: true
-    name: ${VPS_MANAGER_GITEA_API_SECRET:-vps_manager_gitea_api_initial}

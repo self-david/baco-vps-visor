@@ -16,7 +16,6 @@ import {
   validateServiceScale,
 } from "./service-operations.mjs";
 import {
-  createGiteaInstallHandler,
   createN8nInstallHandler,
   createManualApplicationDeployHandler,
   createPostgresqlInstallHandler,
@@ -24,10 +23,6 @@ import {
   createServiceScaleHandler,
   createContainerOperationHandler,
   createRegistryConfigureHandler,
-  createProjectBuildHandler,
-  createProjectDeployHandler,
-  createProjectPushDeployHandler,
-  createProjectUndeployHandler,
   createSwarmNodeEnrollHandler,
   createTaskQueueWorker,
 } from "./task-queue.mjs";
@@ -164,23 +159,12 @@ const taskQueueWorker = createTaskQueueWorker({
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
     "container.operation": createContainerOperationHandler(serviceOperationAgent),
-    "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
     "application.n8n.install": createN8nInstallHandler(serviceOperationAgent),
     "application.postgresql.install": createPostgresqlInstallHandler(serviceOperationAgent),
     "application.custom.deploy": createManualApplicationDeployHandler(serviceOperationAgent, {
       updateDeployment: updateManualApplicationDeployment,
     }),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
-    "project.build": createProjectBuildHandler({
-      agent: serviceOperationAgent,
-      getBuildSource: getProjectBuildSource,
-    }),
-    "project.deploy": createProjectDeployHandler(serviceOperationAgent),
-    "project.push-deploy": createProjectPushDeployHandler({
-      agent: serviceOperationAgent,
-      getBuildSource: getProjectBuildSource,
-    }),
-    "project.undeploy": createProjectUndeployHandler(serviceOperationAgent),
     "swarm.node.enroll": createSwarmNodeEnrollHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
@@ -997,6 +981,15 @@ async function serveStatic(pathname, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://localhost");
+
+  if (url.pathname === "/api/webhooks/gitea"
+    || url.pathname.startsWith("/api/system/applications/gitea")
+    || url.pathname === "/api/projects"
+    || url.pathname.startsWith("/api/projects/")
+    || url.pathname.startsWith("/api/git/")) {
+    respondJson(response, 410, { error: "Esta función fue retirada de VPS Manager." });
+    return;
+  }
 
   if (url.pathname === "/api/webhooks/gitea") {
     if (request.method !== "POST") {

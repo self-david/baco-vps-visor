@@ -71,18 +71,18 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .application-fieldset { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid #34435b; border-radius: 8px; }
 .application-fieldset legend { padding: 0 6px; color: #9eb8ff; font-size: .88rem; font-weight: 650; }
 .application-fieldset input[type="number"] { width: 100%; }
-.gitea-form { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #263247; }
-.gitea-form h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
-.gitea-form label { color: #c4cede; font-size: .84rem; }
-.gitea-form input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
-.gitea-form .checkbox-label input { width: auto; padding: 0; }
-.gitea-form p { margin: 0; font-size: .82rem; line-height: 1.5; }
-.gitea-form a { color: #9eb8ff; overflow-wrap: anywhere; }
-.gitea-repository-result { display: grid; gap: 8px; }
-.gitea-credentials { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 12px; margin: 20px 0; }
-.gitea-credentials dt { color: #9ba8bc; font-size: .85rem; }
-.gitea-credentials dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-.gitea-credentials code { color: #e1e9f5; user-select: all; }
+.form-stack { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #263247; }
+.form-stack h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
+.form-stack label { color: #c4cede; font-size: .84rem; }
+.form-stack input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
+.form-stack .checkbox-label input { width: auto; padding: 0; }
+.form-stack p { margin: 0; font-size: .82rem; line-height: 1.5; }
+.form-stack a { color: #9eb8ff; overflow-wrap: anywhere; }
+.credentials-list { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 12px; margin: 20px 0; }
+.credentials-list dt { color: #9ba8bc; font-size: .85rem; }
+.credentials-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.credentials-list code { color: #e1e9f5; user-select: all; }
+.project-source-options { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .application-notice { display: flex; grid-column: 1 / -1; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid #6b4c37; border-radius: 10px; background: #211a16; color: #f2c99e; }
 .application-notice strong { font-size: .88rem; }
 .application-notice p { margin: 6px 0 0; color: #d3b99f; font-size: .82rem; line-height: 1.5; }

@@ -77,22 +77,18 @@ Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migr
 
 ---
 
-## Fase 4 — Gitea
+## Fase 4 — Estructura de Proyectos
 
-Estado: **Gitea, proyectos Git, builds y despliegues automáticos por push implementados; falta validar en un VPS con dominio público**
+Estado: **estructura inicial de interfaz implementada; fuentes y despliegues pendientes**
 
-- [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
-- [x] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
-- [x] En modo de prueba, permitir Gitea sin dominio; limitar la interfaz web a loopback mediante Traefik/túnel SSH y mantener la API solo en la red privada de Swarm para administrar repositorios y proyectos.
-- [x] Actualizar instalaciones locales antiguas de Gitea a API privada de Swarm y acceso web loopback, conservando el volumen.
-- [x] Migrar una instalación local de Gitea a `git.<dominio-del-panel>` con HTTPS, conservando el volumen, usuarios, repositorios y credenciales.
-- [x] Configurar SSH.
-- [x] Crear repositorios privados desde el panel, con token almacenado como secreto Swarm versionado y conservado en actualizaciones del stack.
-- [x] Consultar ramas de repositorios Gitea y cambiar la rama predeterminada desde el panel, con permisos de administración y auditoría.
-- [x] Configurar webhooks de push autenticados e idempotentes; registrar cada entrega y programar despliegues solo para la rama de producción.
-- [x] Integrar repositorios privados y ramas existentes con registros de proyectos para builds y despliegues automáticos.
+- [x] Sustituir la dependencia del servidor Git integrado por una vista neutral de proyectos.
+- [x] Mostrar fuentes previstas (GitHub y carga de archivos) y tipos de aplicaciones web.
+- [ ] Implementar conexión segura de repositorios de GitHub.
+- [ ] Implementar carga y almacenamiento temporal de archivos de proyecto.
+- [ ] Implementar builds y despliegues para sitios estáticos, SSR, Node.js y Python.
+- [ ] Permitir configurar variables, dominios y estado del despliegue por proyecto.
 
-**Resultado:** servidor Git privado con despliegue automático de la rama de producción.
+**Resultado:** flujo para desplegar proyectos propios desde distintas fuentes.
 
 ---
 
@@ -101,7 +97,7 @@ Estado: **Gitea, proyectos Git, builds y despliegues automáticos por push imple
 Estado: **parcial** (build y despliegue manuales o automáticos por push; falta validar en un VPS)
 
 - [x] Integrar BuildKit mediante Docker Buildx para construir la imagen del panel durante la instalación.
-- [x] Construir manualmente imágenes de repositorios Gitea registrados y publicarlas en el registro privado, etiquetadas por commit y sin desplegarlas.
+- [ ] Construir imágenes de proyectos desde la fuente seleccionada y publicarlas en el registro privado.
 - [x] Configurar el registro privado desde el navegador, con HTTPS, autenticación y almacenamiento persistente.
 - [x] Desplegar manualmente en modo global la última imagen construida, con una tarea por nodo activo del Swarm y sin publicar puertos.
 - [x] Consultar el estado de los nodos y aprovisionar VPS Ubuntu 24.04 adicionales por SSH con fingerprint verificado, instalación de Docker y reglas UFW restringidas a una CIDR privada.

@@ -55,14 +55,6 @@ TEST_MODE="${VPS_MANAGER_TEST_MODE:-false}"
 DOMAIN="${VPS_MANAGER_DOMAIN:-}"
 EMAIL="${VPS_MANAGER_EMAIL:-}"
 GITHUB_REPOSITORY="${VPS_MANAGER_GITHUB_REPOSITORY:-${DEFAULT_GITHUB_REPOSITORY}}"
-GITEA_API_SECRET="${VPS_MANAGER_GITEA_API_SECRET:-}"
-if [[ -z "${GITEA_API_SECRET}" && -r /opt/vps-manager/install.env ]]; then
-  GITEA_API_SECRET="$(sed -n 's/^VPS_MANAGER_GITEA_API_SECRET=//p' /opt/vps-manager/install.env | head -n 1)"
-fi
-GITEA_API_SECRET="${GITEA_API_SECRET:-vps_manager_gitea_api_initial}"
-[[ "${GITEA_API_SECRET}" =~ ^vps_manager_gitea_api_(initial|[a-f0-9]{32})$ ]] \
-  || fail "VPS_MANAGER_GITEA_API_SECRET tiene un nombre inválido."
-export VPS_MANAGER_GITEA_API_SECRET="${GITEA_API_SECRET}"
 if [[ -n "${GITHUB_REPOSITORY}" && ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   fail "VPS_MANAGER_GITHUB_REPOSITORY debe tener el formato owner/repo."
 fi
@@ -222,27 +214,6 @@ if ! docker secret inspect vps_manager_admin_credentials >/dev/null 2>&1; then
   unset ADMIN_PASSWORD ADMIN_PASSWORD_CONFIRM ADMIN_PASSWORD_INPUT
 fi
 
-if ! docker secret inspect "${GITEA_API_SECRET}" >/dev/null 2>&1; then
-  [[ "${GITEA_API_SECRET}" == "vps_manager_gitea_api_initial" ]] \
-    || fail "No se encontró el secreto de Gitea configurado (${GITEA_API_SECRET}); no se desplegará el panel sin él."
-  GITEA_API_TOKEN_FILE="$(mktemp)"
-  TEMP_FILES+=("${GITEA_API_TOKEN_FILE}")
-  chmod 0600 "${GITEA_API_TOKEN_FILE}"
-  printf 'NOT_CONFIGURED' > "${GITEA_API_TOKEN_FILE}"
-  docker secret create \
-    --label vps-manager.managed=true \
-    --label vps-manager.component=gitea-api-token \
-    "${GITEA_API_SECRET}" "${GITEA_API_TOKEN_FILE}" >/dev/null
-  rm -f "${GITEA_API_TOKEN_FILE}"
-fi
-if ! GITEA_SECRET_LABELS="$(docker secret inspect \
-  --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' \
-  "${GITEA_API_SECRET}")"; then
-  fail "No se pudo verificar el secreto configurado para la API de Gitea."
-fi
-[[ "${GITEA_SECRET_LABELS}" == "true gitea-api-token" ]] \
-  || fail "El secreto ${GITEA_API_SECRET} no está identificado como secreto administrado de Gitea."
-
 if ! docker secret inspect vps_manager_session_key >/dev/null 2>&1; then
   SESSION_KEY_FILE="$(mktemp)"
   TEMP_FILES+=("${SESSION_KEY_FILE}")
@@ -286,7 +257,6 @@ install -d -m 0755 /usr/local/libexec
   printf 'VPS_MANAGER_DOMAIN=%s\n' "${DOMAIN}"
   printf 'VPS_MANAGER_TEST_MODE=%s\n' "${TEST_MODE}"
   printf 'VPS_MANAGER_GITHUB_REPOSITORY=%s\n' "${GITHUB_REPOSITORY}"
-  printf 'VPS_MANAGER_GITEA_API_SECRET=%s\n' "${GITEA_API_SECRET}"
   if [[ "${TEST_MODE}" != "true" ]]; then
     printf 'VPS_MANAGER_EMAIL=%s\n' "${EMAIL}"
   fi
@@ -406,6 +376,27 @@ if [[ "${panel_ready}" != "true" ]]; then
     fail "No se pudo validar http://${DOMAIN}/api/health. Revisa el firewall TCP 80 y los logs mostrados."
   fi
   fail "No se pudo validar https://${DOMAIN}/api/health. Revisa DNS, firewall TCP 80/443 y los logs mostrados."
+fi
+
+if docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+  gitea_labels="$(docker service inspect \
+    --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' \
+    vps-manager-gitea)" || fail "No se pudo verificar el servicio Gitea existente."
+  if [[ "${gitea_labels}" == "true gitea" ]]; then
+    log "Retirando el servicio Gitea administrado; sus secretos y volumen persistente se conservan."
+    docker service rm vps-manager-gitea
+    for attempt in $(seq 1 60); do
+      if ! docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+    if docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+      fail "No se pudo retirar el servicio Gitea. Sus datos persistentes se conservaron."
+    fi
+  else
+    log "Se encontró vps-manager-gitea sin las etiquetas de VPS Manager; no se modificó."
+  fi
 fi
 
 printf '%s\n' "${VPS_MANAGER_VERSION}" > "${INSTALL_DIR}/version.tmp"

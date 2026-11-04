@@ -329,6 +329,12 @@ write_status() {
   local message="$2"
   local temporary_file
   temporary_file="$(mktemp "${STATE_DIRECTORY}/status.XXXXXX")"
+  if [[ "${operation}" == "install-gitea" || "${operation}" == "configure-gitea-token" ]]; then
+    write_status "failed" "La administración de Gitea fue retirada; los datos persistentes se conservaron."
+    rm -f -- "${REQUEST_FILE}"
+    exit 0
+  fi
+
   if [[ "${operation}" == "install-gitea" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","credentialsAvailable":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${gitea_domain}" "${gitea_credentials_available:-false}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"

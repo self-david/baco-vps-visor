@@ -71,6 +71,28 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+if docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+  gitea_labels="$(docker service inspect \
+    --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' \
+    vps-manager-gitea)"
+  if [[ "${gitea_labels}" == "true gitea" ]]; then
+    echo "Retirando el servicio Gitea administrado; se conservan sus secretos y volumen persistente."
+    docker service rm vps-manager-gitea
+    for _ in $(seq 1 60); do
+      if ! docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+    if docker service inspect vps-manager-gitea >/dev/null 2>&1; then
+      echo "No se pudo retirar el servicio Gitea." >&2
+      exit 1
+    fi
+  else
+    echo "Se conservó un servicio no administrado llamado vps-manager-gitea." >&2
+  fi
+fi
+
 if docker service inspect vps-manager_registry >/dev/null 2>&1; then
   registry_labels="$(docker service inspect \
     --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' \
@@ -100,11 +122,6 @@ if [[ "${1:-}" == "--purge-secrets" ]]; then
       docker secret rm "${secret}"
     fi
   done
-  while IFS= read -r secret; do
-    if [[ "${secret}" =~ ^vps_manager_gitea_api_(initial|[a-f0-9]{32})$ ]]; then
-      docker secret rm "${secret}"
-    fi
-  done < <(docker secret ls --filter label=vps-manager.component=gitea-api-token --format '{{.Name}}')
   while IFS= read -r secret; do
     if [[ "${secret}" =~ ^vps_manager_registry_auth_[a-f0-9]{32}$ ]]; then
       docker secret rm "${secret}"

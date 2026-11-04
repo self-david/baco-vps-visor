@@ -2040,33 +2040,6 @@ function renderManualApplications(catalog, instances, servers) {
   manualApplicationsStatus.textContent = `${definitions.length} aplicación${definitions.length === 1 ? "" : "es"} manual${definitions.length === 1 ? "" : "es"} en el catálogo; ${deployedInstances.length} instalación${deployedInstances.length === 1 ? "" : "es"}.`;
 }
 
-function renderProjectApplications(projects) {
-  projectApplicationsList.replaceChildren();
-  const deployed = projects.filter((project) => project.deployment);
-  if (deployed.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "No hay proyectos desplegados.";
-    projectApplicationsList.append(empty);
-  }
-  for (const project of deployed) {
-    const row = document.createElement("div");
-    row.className = "resource";
-    const main = document.createElement("div");
-    main.className = "resource-main";
-    const name = document.createElement("div");
-    name.className = "resource-name";
-    name.textContent = project.name;
-    const detail = document.createElement("div");
-    detail.className = "resource-detail";
-    detail.textContent = `${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} nodos activos · ${project.deployment.image}`;
-    main.append(name, detail);
-    row.append(main);
-    projectApplicationsList.append(row);
-  }
-  projectApplicationsStatus.textContent = `${deployed.length} proyecto${deployed.length === 1 ? "" : "s"} desplegado${deployed.length === 1 ? "" : "s"}.`;
-}
-
 function renderSupabaseCatalog(catalog, servers, instances) {
   const entry = catalog.find((application) => application.id === "supabase");
   supabaseApplicationData = { catalogEntry: entry, catalog, servers, instances };
@@ -2109,7 +2082,6 @@ function renderSupabaseCatalog(catalog, servers, instances) {
 async function loadSupabaseApplications() {
   supabaseStatus.textContent = "Consultando catálogo y servidores Swarm…";
   manualApplicationsStatus.textContent = "Consultando aplicaciones…";
-  projectApplicationsStatus.textContent = "Consultando proyectos…";
   try {
     const result = await request("/api/applications");
     renderSupabaseCatalog(
@@ -2118,13 +2090,11 @@ async function loadSupabaseApplications() {
       result.instances.filter((instance) => instance.applicationId === "supabase"),
     );
     renderManualApplications(result.catalog, result.instances, result.servers);
-    renderProjectApplications(result.projects ?? []);
   } catch (error) {
     configureSupabaseButton.disabled = true;
     supabaseStatus.textContent = error.message;
     manualApplicationSubmit.disabled = true;
     manualApplicationsStatus.textContent = error.message;
-    projectApplicationsStatus.textContent = error.message;
   }
 }
 
@@ -2329,141 +2299,6 @@ async function installGitea() {
   }
 }
 
-restartGiteaButton.addEventListener("click", async () => {
-  if (giteaLocalOnly && !confirm("¿Reiniciar el servicio Gitea? Las sesiones web activas se interrumpirán brevemente.")) return;
-  restartGiteaButton.disabled = true;
-  try {
-    const { application } = await request("/api/system/applications/gitea");
-    if (!application.serviceId) throw new Error("No se encontró el servicio administrado de Gitea.");
-    serviceOperationPending = true;
-    giteaContainerStatus.textContent = "Enviando reinicio al servicio Gitea…";
-    const result = await request(`/api/docker/services/${encodeURIComponent(application.serviceId)}/restart`, {
-      method: "POST",
-    });
-    giteaContainerStatus.textContent = result.operation.message;
-    scheduleServiceOperationPoll();
-  } catch (error) {
-    serviceOperationPending = false;
-    giteaContainerStatus.textContent = error.message;
-    restartGiteaButton.disabled = false;
-  }
-});
-
-giteaTokenForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const submitButton = giteaTokenForm.querySelector("button");
-  submitButton.disabled = true;
-  giteaApiTokenStatus.textContent = "Validando el token con Gitea…";
-  try {
-    await request("/api/system/applications/gitea/token", {
-      method: "POST",
-      body: JSON.stringify({ token: giteaApiTokenInput.value }),
-    });
-    giteaApiTokenInput.value = "";
-    giteaTokenConfigurationPending = true;
-    giteaApiTokenStatus.textContent = "Token validado. Se guardará como secreto Swarm y el panel se reiniciará para montarlo.";
-    scheduleGiteaStatusPoll();
-  } catch (error) {
-    giteaApiTokenStatus.textContent = error.message;
-  } finally {
-    submitButton.disabled = false;
-  }
-});
-
-giteaRepositoryForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const submitButton = giteaRepositoryForm.querySelector("button");
-  submitButton.disabled = true;
-  giteaRepositoryStatus.textContent = "Creando repositorio privado…";
-  giteaRepositoryResult.replaceChildren();
-  giteaRepositoryResult.classList.add("hidden");
-  try {
-    const formData = new FormData(giteaRepositoryForm);
-    const { repository } = await request("/api/system/applications/gitea/repositories", {
-      method: "POST",
-      body: JSON.stringify({
-        name: formData.get("name"),
-        description: formData.get("description"),
-      }),
-    });
-    const heading = document.createElement("h4");
-    heading.textContent = `Repositorio privado: ${repository.name}`;
-    const link = document.createElement("a");
-    link.href = repository.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = repository.url;
-    const clone = document.createElement("p");
-    clone.textContent = `${giteaLocalOnly ? "HTTP (usa el túnel SSH)" : "HTTPS"}: ${repository.cloneUrl}`;
-    giteaRepositoryResult.append(heading, link, clone);
-    if (!giteaLocalOnly) {
-      const sshClone = document.createElement("p");
-      sshClone.textContent = `SSH: ${repository.sshUrl}`;
-      giteaRepositoryResult.append(sshClone);
-    }
-    giteaRepositoryResult.classList.remove("hidden");
-    giteaRepositoryStatus.textContent = "Repositorio creado correctamente.";
-    giteaRepositoryForm.reset();
-    await loadGiteaRepositories(true, repository.fullName);
-  } catch (error) {
-    giteaRepositoryStatus.textContent = error.message;
-  } finally {
-    submitButton.disabled = false;
-  }
-});
-
-giteaBranchRepository.addEventListener("change", () => void loadGiteaBranches());
-projectRepositorySelect.addEventListener("change", () => void loadProjectBranches());
-projectCancelEditButton.addEventListener("click", resetProjectForm);
-projectForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!giteaCanManageProjects) return;
-  const id = projectIdInput.value;
-  const input = {
-    name: projectNameInput.value,
-    description: projectDescriptionInput.value,
-    repository: projectRepositorySelect.value,
-    productionBranch: projectProductionBranchSelect.value,
-  };
-  projectSaveButton.disabled = true;
-  projectFormStatus.textContent = id ? "Actualizando proyecto…" : "Registrando proyecto…";
-  try {
-    await request(id ? `/api/projects/${encodeURIComponent(id)}` : "/api/projects", {
-      method: id ? "PATCH" : "POST",
-      body: JSON.stringify(input),
-    });
-    resetProjectForm();
-    await loadProjects();
-  } catch (error) {
-    projectFormStatus.textContent = error.message;
-  } finally {
-    projectSaveButton.disabled = false;
-  }
-});
-projectEnvironmentForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const projectId = projectEnvironmentId.value;
-  const submitButton = projectEnvironmentForm.querySelector("button[type=submit]");
-  submitButton.disabled = true;
-  projectEnvironmentStatus.textContent = "Guardando variables en el VPS…";
-  try {
-    const environment = JSON.parse(projectEnvironmentJson.value);
-    if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
-      throw new Error("Proporciona un objeto JSON con nombres y valores de variables.");
-    }
-    const result = await request(`/api/projects/${encodeURIComponent(projectId)}/environment`, {
-      method: "PUT",
-      body: JSON.stringify({ environment }),
-    });
-    projectEnvironmentStatus.textContent = result.message;
-    await loadProjects();
-  } catch (error) {
-    projectEnvironmentStatus.textContent = error.message;
-  } finally {
-    submitButton.disabled = false;
-  }
-});
-document.querySelector("#close-project-environment").addEventListener("click", () => projectEnvironmentDialog.close());
 openDomainZoneDialogButton.addEventListener("click", openNewDomainZoneDialog);
 closeDomainZoneDialogButton.addEventListener("click", () => domainZoneDialog.close());
 document.querySelector("#domain-zone-cancel").addEventListener("click", () => domainZoneDialog.close());
@@ -2496,77 +2331,6 @@ domainZoneForm.addEventListener("submit", async (event) => {
   }
 });
 refreshDomainsButton.addEventListener("click", () => void Promise.all([loadDomains(), loadN8nApplication()]));
-giteaBranchRefresh.addEventListener("click", () => {
-  if (giteaBranchRepository.value) void loadGiteaBranches();
-  else void loadGiteaRepositories(true);
-});
-giteaWebhookConfigure.addEventListener("click", async () => {
-  const repository = giteaRepositories.get(giteaBranchRepository.value);
-  if (!repository?.canAdmin) return;
-  giteaWebhookConfigure.disabled = true;
-  giteaWebhookStatus.textContent = "Configurando webhook de push…";
-  try {
-    const { webhook } = await request("/api/system/applications/gitea/webhooks", {
-      method: "POST",
-      body: JSON.stringify({ repository: repository.fullName }),
-    });
-    giteaWebhookStatus.textContent = `Webhook activo para eventos push en ${webhook.url}. Los eventos se validan y registran; aún no inician despliegues.`;
-  } catch (error) {
-    giteaWebhookStatus.textContent = error.message;
-  } finally {
-    updateGiteaDefaultBranchAction();
-  }
-});
-giteaDefaultBranchSelect.addEventListener("change", updateGiteaDefaultBranchAction);
-giteaDefaultBranchForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const repository = giteaRepositories.get(giteaBranchRepository.value);
-  const branch = giteaDefaultBranchSelect.value;
-  if (!repository?.canAdmin || !branch) return;
-  if (!confirm(`¿Cambiar la rama predeterminada de ${repository.fullName} a ${branch}?`)) return;
-  giteaDefaultBranchSubmit.disabled = true;
-  giteaBranchStatus.textContent = "Actualizando rama predeterminada…";
-  try {
-    const result = await request("/api/system/applications/gitea/default-branch", {
-      method: "PATCH",
-      body: JSON.stringify({ repository: repository.fullName, branch }),
-    });
-    giteaCurrentDefaultBranch = result.repository.defaultBranch;
-    giteaBranchStatus.textContent = `La rama predeterminada de ${repository.fullName} ahora es ${giteaCurrentDefaultBranch}.`;
-    await loadGiteaRepositories(true, repository.fullName);
-  } catch (error) {
-    giteaBranchStatus.textContent = error.message;
-  } finally {
-    updateGiteaDefaultBranchAction();
-  }
-});
-
-async function revealGiteaCredentials() {
-  revealGiteaCredentialsButton.disabled = true;
-  try {
-    const { application } = await request("/api/system/applications/gitea");
-    if (!application.credentialsAvailable || !application.latestTask?.id) {
-      throw new Error("No hay credenciales de Gitea disponibles para mostrar.");
-    }
-    const result = await request(`/api/system/applications/gitea/credentials/${encodeURIComponent(application.latestTask.id)}`);
-    const { credentials } = result;
-    const url = document.querySelector("#gitea-credential-url");
-    url.href = credentials.url;
-    url.textContent = credentials.url;
-    document.querySelector("#gitea-credential-username").textContent = credentials.username;
-    document.querySelector("#gitea-credential-password").textContent = credentials.password;
-    document.querySelector("#gitea-credential-ssh").textContent = credentials.sshCommand;
-    document.querySelector("#gitea-credential-ssh-label").textContent = giteaLocalOnly ? "Túnel SSH" : "Git SSH";
-    giteaCredentialsDialog.showModal();
-    await loadGiteaApplication();
-  } catch (error) {
-    giteaStatus.textContent = error.message;
-    revealGiteaCredentialsButton.classList.add("hidden");
-  } finally {
-    revealGiteaCredentialsButton.disabled = false;
-  }
-}
-
 async function revealPostgresqlCredentials() {
   revealPostgresqlCredentialsButton.disabled = true;
   try {
@@ -2622,11 +2386,9 @@ async function loadResources() {
       loadSwarmNodes(),
       loadServiceOperationStatus(),
       loadTaskHistory(),
-      loadGiteaApplication(),
       loadN8nApplication(),
       loadPostgresqlApplication(),
       loadSupabaseApplications(),
-      loadProjects(),
       loadDomains(),
       loadRegistryConfiguration(),
     ]);
@@ -2701,7 +2463,6 @@ document.querySelector("#refresh-backups").addEventListener("click", loadBackups
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
-installGiteaButton.addEventListener("click", installGitea);
 installN8nButton.addEventListener("click", async () => {
   const selectedZone = n8nDomainZoneSelect.selectedOptions[0];
   if (!n8nDomainZoneSelect.value || !selectedZone) {
@@ -2816,22 +2577,8 @@ manualApplicationForm.addEventListener("submit", async (event) => {
     manualApplicationSubmit.disabled = false;
   }
 });
-revealGiteaCredentialsButton.addEventListener("click", revealGiteaCredentials);
 revealPostgresqlCredentialsButton.addEventListener("click", revealPostgresqlCredentials);
-document.querySelector("#close-gitea-credentials").addEventListener("click", () => giteaCredentialsDialog.close());
 document.querySelector("#close-postgresql-credentials").addEventListener("click", () => postgresqlCredentialsDialog.close());
-document.querySelector("#copy-gitea-credentials").addEventListener("click", async () => {
-  const username = document.querySelector("#gitea-credential-username").textContent;
-  const password = document.querySelector("#gitea-credential-password").textContent;
-  const url = document.querySelector("#gitea-credential-url").textContent;
-  const sshCommand = document.querySelector("#gitea-credential-ssh").textContent;
-  try {
-    await navigator.clipboard.writeText(`URL: ${url}\nUsuario: ${username}\nContraseña: ${password}\nGit SSH: ${sshCommand}`);
-    document.querySelector("#gitea-status").textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
-  } catch (error) {
-    document.querySelector("#gitea-status").textContent = `No se pudieron copiar las credenciales: ${error.message}`;
-  }
-});
 document.querySelector("#copy-postgresql-credentials").addEventListener("click", async () => {
   const credentials = Object.fromEntries(["host", "port", "database", "username", "password"].map((field) => [
     field,

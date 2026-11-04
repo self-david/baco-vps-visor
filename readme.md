@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, builds y despliegues automáticos por push a la rama de producción, n8n y PostgreSQL opcionales, variables por proyecto, dominios Cloudflare, rollback, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. El catálogo persistente incluye configuración de Supabase por VPS, pero su despliegue Swarm y la gestión de secretos aún están pendientes; Redis se pospuso.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. La pestaña Proyectos presenta la estructura inicial para fuentes como GitHub o archivos cargados y tipos de aplicaciones web; la conexión de fuentes, builds y despliegues todavía están pendientes.
 
 ---
 
@@ -22,9 +22,8 @@ Una vez instalado, el usuario accederá a un dashboard web desde el cual podrá:
 - Administrar Docker y Docker Swarm.
 - Consultar todos los contenedores, servicios y stacks.
 - Instalar aplicaciones desde un catálogo.
-- Administrar proyectos web mediante repositorios Git privados.
-- Configurar despliegues automáticos al recibir nuevos commits.
-- Seleccionar la rama de producción de cada proyecto.
+- Preparar proyectos web desde GitHub o archivos cargados.
+- Elegir entre sitios estáticos, SSR, Node.js y Python.
 - Configurar dominios y certificados SSL.
 - Administrar variables de entorno y secretos.
 - Consultar el consumo de recursos por contenedor, aplicación y proyecto.
@@ -35,7 +34,7 @@ Una vez instalado, el usuario accederá a un dashboard web desde el cual podrá:
 - Reiniciar, actualizar y administrar servicios.
 - Recuperar automáticamente servicios después de reiniciar el servidor.
 
-La plataforma debe funcionar de forma independiente de servicios externos como GitHub, GitLab o proveedores de despliegue.
+La plataforma no requiere instalar un servidor Git propio. Las fuentes externas, como GitHub, serán opcionales.
 
 ## 1.1. Filosofía del proyecto
 
@@ -64,7 +63,6 @@ flowchart TD
     AG[Agente de administración]
     D[Docker Engine]
     S[Docker Swarm]
-    GT[Gitea]
     B[Motor de Build]
     M[Prometheus]
     C[cAdvisor]
@@ -78,7 +76,6 @@ flowchart TD
     A --> AG
     AG --> D
     D --> S
-    GT --> A
     A --> B
     B --> D
     C --> M
@@ -98,7 +95,6 @@ flowchart TD
 | Frontend | HTML, CSS y JavaScript nativo | Dashboard sin proceso de compilación |
 | Backend | Node.js con módulos JavaScript (`.mjs`) | API y lógica de negocio |
 | Base de datos | PostgreSQL | Persistencia de información |
-| Git privado | Gitea | Repositorios |
 | Contenedores | Docker Engine | Ejecución |
 | Orquestación | Docker Swarm | Administración de servicios |
 | Build | Docker Buildx / BuildKit | Construcción de imágenes |
@@ -182,7 +178,7 @@ El instalador:
 - La instalación inicial no configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor. El flujo de alta de nodos sí requiere UFW ya activo en el manager y el destino, y agrega reglas Swarm limitadas a la CIDR privada indicada.
 - Conserva los secretos y los volúmenes (Traefik y PostgreSQL) durante la desinstalación normal.
 
-El panel permite consultar contenedores, servicios, stacks y nodos Swarm; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar los servicios permitidos en modo replicado, de 1 a 100 réplicas; el API y el registro privado conservan una sola réplica. El agente `systemd` del host valida nuevamente las operaciones permitidas (reiniciar, escalar, aprovisionar un nodo Swarm, instalar Gitea, configurar el registro privado, construir/publicar imágenes y desplegar o retirar servicios de proyecto); no acepta comandos Docker arbitrarios. El escalado puede dejar tareas pendientes si no hay recursos disponibles. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
+El panel permite consultar contenedores, servicios, stacks y nodos Swarm; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar los servicios permitidos en modo replicado, de 1 a 100 réplicas; el API y el registro privado conservan una sola réplica. El agente `systemd` del host valida nuevamente las operaciones permitidas (reiniciar, escalar, aprovisionar un nodo Swarm y configurar el registro privado); no acepta comandos Docker arbitrarios. El escalado puede dejar tareas pendientes si no hay recursos disponibles. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
 
 La incorporación de nodos desde el panel usa una llave SSH dedicada sin passphrase, una cuenta no root con `sudo -n` y un fingerprint del host verificado. El VPS destino debe usar Ubuntu Server 24.04; UFW debe estar activo tanto en el manager como en el destino y el administrador debe proporcionar las IP privadas y la CIDR compartida correctas. El flujo instala Docker desde el repositorio oficial y agrega reglas UFW para TCP 2377, TCP/UDP 7946 y UDP 4789, limitadas a esa CIDR; no habilita UFW ni modifica las reglas SSH. Los firewalls del proveedor y de todos los nodos Swarm preexistentes también deben permitir el tráfico privado necesario entre nodos. La llave temporal no se guarda en PostgreSQL, tareas ni auditoría. Este flujo aún requiere validación de extremo a extremo en VPS Ubuntu 24.04 dentro de una red privada real.
 
@@ -196,15 +192,7 @@ Desde la raíz del checkout en Ubuntu 24.04, indica la IPv4 privada del VPS:
 sudo env VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash install.sh
 ```
 
-La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor. En este modo puedes instalar Gitea sin dominio ni puertos públicos propios. La API solo es accesible para el panel mediante la red privada de Swarm. Para abrir la interfaz web desde tu equipo, crea este túnel SSH:
-
-```bash
-ssh -L 3001:127.0.0.1:80 usuario@IP_DEL_VPS
-```
-
-Reemplaza `usuario` con tu usuario SSH y `IP_DEL_VPS` con la dirección IP del servidor. Mientras el túnel esté activo, visita `http://localhost:3001/gitea/`. La ruta de Gitea en Traefik solo acepta conexiones loopback; el panel puede validar tokens, administrar repositorios y crear proyectos a través de la API privada de Swarm. El puerto 80 del modo de prueba no debe exponerse a Internet. Una instalación local anterior se actualiza al nuevo acceso conservando su volumen y sus credenciales.
-
-Para pasar Gitea del modo local a HTTPS, primero configura el dominio público del panel y apunta `git.<dominio-del-panel>` a la IP del VPS. Ejecuta de nuevo `install.sh` en modo producción con ese dominio y un correo válido para Let's Encrypt; la instalación conserva los secretos Swarm y volúmenes existentes. Cuando el panel vuelva a estar disponible por HTTPS, abre la ficha de Gitea y selecciona **Migrar Gitea a HTTPS**. El servicio se recreará en Traefik con el mismo volumen persistente: no se crean cuentas ni contraseñas nuevas. El DNS debe resolver antes de migrar y el puerto TCP 2222 debe estar libre para Git SSH.
+La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor.
 
 Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proyecto:
 
@@ -237,9 +225,7 @@ El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de
 
 La desinstalación retira el servicio del registro privado, pero conserva su volumen de imágenes y secretos por defecto. `sudo vps-manager-uninstall --purge-secrets` también retira sus secretos de autenticación; no elimina el volumen persistente del registro.
 
-El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Las operaciones existentes continúan en el cliente actual mientras se migran progresivamente. Gitea es una aplicación opcional que puede instalarse desde Aplicaciones en instalaciones con dominio público y HTTPS. Requiere que `git.<dominio-del-panel>` apunte al VPS, que el puerto TCP `2222` esté libre y accesible, y al menos 768 MB disponibles para el servicio. Se utiliza SQLite con una sola réplica y un volumen persistente independiente. La contraseña aleatoria del administrador se puede consultar una sola vez durante los 30 minutos posteriores a la instalación. El instalador solo crea el nodo inicial del Swarm; los nodos de VPS adicionales deben incorporarse manualmente antes de solicitar un despliegue global de proyectos.
-
-Después de instalar Gitea, crea en sus ajustes de usuario un token con permiso de lectura de cuenta y escritura de repositorios. En Aplicaciones, VPS Manager valida el token contra la API HTTPS y lo guarda como secreto Swarm versionado; no lo persiste en PostgreSQL ni lo muestra otra vez. El servicio del panel se reinicia para montar el secreto y su nombre se conserva en `/opt/vps-manager/install.env`, por lo que las siguientes actualizaciones del stack mantienen el token. Luego puedes crear repositorios privados inicializados con un README desde el panel; el formulario muestra las direcciones de clonación HTTPS y SSH. La sección Administrar ramas permite consultar las ramas de repositorios disponibles y cambiar la rama predeterminada cuando el token tiene permisos de administración. Estos cambios se registran en la auditoría; el panel no crea ni elimina ramas. Para rotarlo, envía uno nuevo desde el mismo formulario; para revocarlo, revócalo en Gitea.
+El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. La pestaña Proyectos es por ahora una estructura inicial con fuentes previstas (GitHub y carga de archivos) y tipos de aplicaciones (sitios estáticos, SSR y APIs). Los flujos de conexión, build y despliegue se implementarán en etapas posteriores. El instalador solo crea el nodo inicial del Swarm; los nodos de VPS adicionales deben incorporarse manualmente antes de solicitar despliegues distribuidos.
 
 Para desarrollar el frontend desde `apps/manager`, ejecuta `npm ci` y `npm run dev`; `npm run build` genera `dist/` y `npm test` ejecuta las pruebas del backend. La imagen Docker construye el frontend en una etapa separada y publica únicamente los archivos generados junto al backend.
 
@@ -281,7 +267,7 @@ El script cambia la contraseña en `baco@192.168.100.158` por defecto; puedes el
 
 El archivo se transfiere por SCP dentro de un directorio temporal con acceso restringido, se elimina del VPS al terminar y no se borra del equipo local. Este modo evita el ingreso interactivo, pero el archivo local contiene la contraseña en texto plano: no lo subas al repositorio, no lo compartas y elimínalo después de la prueba. No uses este método para producción.
 
-La desinstalación conserva los secretos y los datos persistentes de Traefik y PostgreSQL. `--purge-secrets` elimina las credenciales de administrador, la clave de sesión y los tokens Swarm de Gitea; no borra la contraseña ni el volumen de PostgreSQL, para no dejar la base inaccesible.
+La desinstalación conserva los secretos y los datos persistentes de Traefik y PostgreSQL. `--purge-secrets` elimina las credenciales de administrador y la clave de sesión; no borra la contraseña ni el volumen de PostgreSQL, para no dejar la base inaccesible.
 
 #### Publicación para el comando `curl`
 
@@ -351,7 +337,7 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 - Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-Gitea, n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, conecta primero una zona raíz en Dominios y luego elige el dominio y subdominio directamente en la ficha de n8n; el panel crea su registro DNS y Traefik publica el acceso HTTPS sin puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
+n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, conecta primero una zona raíz en Dominios y luego elige el dominio y subdominio directamente en la ficha de n8n; el panel crea su registro DNS y Traefik publica el acceso HTTPS sin puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
 
 ### Etapa 6: finalización
 
@@ -408,7 +394,7 @@ Mostrar:
 
 ### Proyectos
 
-Administración de aplicaciones desarrolladas por el usuario y alojadas en Git.
+Estructura inicial para aplicaciones web desarrolladas por el usuario.
 
 ### Aplicaciones
 
@@ -460,76 +446,36 @@ Configuración general del VPS Manager.
 
 ---
 
-# 5. Sistema de proyectos
+# 5. Proyectos y despliegues
 
-Este es uno de los módulos principales.
+La pestaña Proyectos contiene la estructura inicial para registrar aplicaciones
+propias y desplegarlas en el VPS. Las fuentes previstas son GitHub y carga de
+archivos; aún no se conectan repositorios ni se reciben proyectos.
 
-Permitirá desplegar proyectos propios alojados en repositorios Git privados dentro del mismo VPS.
+## 5.1. Fuentes y tipos de aplicación
 
-## 5.1. Integración Git
+Las fuentes previstas para una etapa posterior son:
 
-Utilizar Gitea como servidor Git autohospedado.
+- Repositorio de GitHub.
+- Archivos del proyecto cargados desde el equipo.
 
-Características:
+Los tipos de aplicación considerados inicialmente son:
 
-- Crear repositorios privados.
-- Administrar usuarios.
-- Administrar permisos.
-- Administrar ramas.
-- Consultar commits.
-- Consultar historial.
-- Utilizar SSH para operaciones Git.
-- Configurar webhooks autenticados de push desde el panel y evitar procesar entregas repetidas.
-- Administrar llaves SSH.
+- Sitio web estático.
+- Aplicación web con SSR.
+- API de Node.js.
+- API de Python.
 
-El panel configura un webhook por repositorio que envía eventos `push` a
-`/api/webhooks/gitea`. El receptor valida la firma HMAC con una clave derivada
-del secreto persistente `session_key`, limita el cuerpo a 1 MiB y guarda cada
-identificador de entrega una sola vez en PostgreSQL. En la misma transacción,
-un push a la rama de producción de un proyecto registrado crea una tarea
-duradera de build y despliegue; los reintentos de la misma entrega no duplican
-la tarea. Los pushes de otras ramas solo se registran.
-
-El usuario no necesitará GitHub ni GitLab.
+La interfaz actual solo presenta estas opciones como estructura. No ofrece
+builds, almacenamiento de proyectos, despliegues, variables ni asignación de
+dominios a proyectos.
 
 ## 5.2. Registro de proyectos
 
-El panel permite registrar y modificar la relación entre un proyecto y un
-repositorio de Gitea con una rama de producción existente; también permite
-eliminar el registro del proyecto sin borrar el repositorio ni sus webhooks.
-Por ahora cada repositorio se puede asociar a un solo proyecto.
-
-Desde el proyecto se puede solicitar manualmente una construcción de la rama
-de producción. VPS Manager obtiene el commit y su archivo ZIP autenticado desde
-la API de Gitea, limita la descarga a 32 MiB y la envía al agente host por el
-canal de solicitudes existente. El agente rechaza ZIPs con rutas inseguras,
-archivos especiales, más de 100 000 entradas o más de 1 GiB descomprimido, y
-requiere un `Dockerfile` regular en la raíz. BuildKit construye y publica la
-imagen como `<dominio-registro>/vps-manager-project-<id>:<commit>`. La tarea
-expira a los 14 minutos; no entrega el token de Gitea ni las credenciales del
-registro al Dockerfile ni despliega servicios.
-
-Después de un build exitoso, el administrador puede solicitar manualmente el
-despliegue de la última imagen desde el panel. El agente crea o actualiza el
-servicio `vps-manager-project-<id>` en modo global: Swarm programa exactamente
-una tarea del servicio en cada nodo activo y elegible, nunca varias réplicas
-del mismo servicio en un solo nodo. La autenticación del registro se reenvía a
-Swarm mediante `--with-registry-auth`. Para desplegar en varios VPS, deben
-estar unidos al mismo Swarm y tener conectividad segura entre nodos y al
-registro HTTPS. El instalador solo inicializa el primer nodo; la unión se
-administra fuera del panel. El servicio no publica puertos del host. En el
-panel se pueden configurar variables por proyecto y conectar hostnames desde
-la vista centralizada Dominios; Traefik aplica las rutas a través de la red
-privada `vps-manager-proxy` durante el siguiente despliegue. El panel muestra
-los despliegues exitosos anteriores y permite volver a uno de ellos conservando
-las variables y dominios actuales. También muestra el commit construido y el
-número de nodos con tareas activas. Al recibir un push en la rama de producción,
-VPS Manager descarga el archivo del commit exacto autenticándose con Gitea,
-construye y publica su imagen y después actualiza el servicio. Cada push queda
-en el historial de tareas, incluso si falla el build o despliegue. Los pushes
-en otras ramas solo se registran. Retirar un servicio no borra la imagen del
-registro. Para borrar la ficha del proyecto primero hay que retirar el servicio
-y quitar sus dominios.
+El panel todavía no registra proyectos ni almacena su código. En una etapa
+posterior, cada proyecto tendrá una fuente, un tipo de aplicación y la
+configuración necesaria para construirlo y desplegarlo. El servicio actual no
+crea builds, imágenes o tareas de despliegue a partir de proyectos.
 
 En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar
 más adelante. La página incluye instrucciones para delegar nameservers a
@@ -547,8 +493,8 @@ disponible.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
-Cloudflare como Full (strict). Las rutas nuevas y los cambios de dominios se
-aplican en el siguiente despliegue manual del proyecto.
+Cloudflare como Full (strict). La asignación de dominios a proyectos está
+pendiente.
 
 Las variables de entorno se guardan por proyecto en un archivo del VPS con
 permisos restringidos; no se incluyen en PostgreSQL, auditoría ni payloads de
@@ -589,10 +535,8 @@ La ficha de proyecto implementada cubre estos datos:
 - Dominios asociados y puertos HTTP internos.
 - Historial de despliegues exitosos y rollback.
 
-Los volúmenes y límites de recursos quedan pendientes. La configuración actual
-de variables, dominios y rollback aplica a proyectos Git; todavía no administra
-aplicaciones arbitrarias del catálogo. El historial de despliegues se deriva de
-las tareas persistidas.
+La interfaz aún no registra estos datos ni configura despliegues; son parte del
+alcance futuro de Proyectos.
 
 El modelo completo previsto incluye:
 
@@ -610,66 +554,16 @@ El modelo completo previsto incluye:
 - Estado.
 - Historial de despliegues.
 
-## 5.3. Selección de rama
+## 5.3. Configuración de la fuente
 
-Cada proyecto tendrá una rama de producción independiente.
+La conexión a GitHub y la carga de archivos están planeadas, pero aún no se
+implementan. La interfaz no solicita credenciales ni copia archivos.
 
-Ejemplo:
+## 5.4. Flujo de despliegue
 
-```text
-Proyecto: OwnMind
-
-Repositorio:
-git@servidor:proyectos/ownmind.git
-
-Rama de producción:
-main
-
-Dominio:
-app.ejemplo.com
-
-Puerto:
-4321
-
-Deploy automático:
-Activado
-```
-
-El sistema debe permitir cambiar la rama de producción sin modificar el repositorio.
-
-También debe permitir seleccionar una rama diferente para un despliegue manual.
-
-## 5.4. Flujo de despliegue automático
-
-El usuario desarrollará localmente y enviará cambios al VPS.
-
-Ejemplo:
-
-```bash
-git add .
-git commit -m "Actualización"
-git push production main
-```
-
-Proceso:
-
-1. Gitea recibe el push.
-2. Gitea notifica al backend mediante un webhook autenticado.
-3. El backend valida el repositorio y la rama.
-4. Comprueba que el proyecto tenga despliegue automático habilitado.
-5. Registra una tarea de despliegue.
-6. Obtiene el commit correspondiente.
-7. Construye una imagen Docker.
-8. Identifica la imagen con el commit.
-9. Valida la configuración de Swarm.
-10. Despliega la nueva versión.
-11. Comprueba el estado del servicio.
-12. Registra el resultado.
-13. Notifica el éxito o error.
-
-Si el push corresponde a una rama distinta de la configurada, no debe desplegar producción.
-
-Los webhooks deben validar su autenticidad y evitar ejecuciones duplicadas.
+La integración de fuentes, build, despliegue y seguimiento del estado se
+definirá e implementará en fases posteriores. No hay webhooks ni despliegues
+automáticos de proyectos habilitados.
 
 ## 5.5. Construcción de proyectos
 
@@ -698,39 +592,13 @@ El usuario debe poder definir:
 
 ## 5.6. Versiones y rollback
 
-El MVP registra los despliegues exitosos en las tareas persistidas y permite
-seleccionar el commit de un despliegue anterior del mismo proyecto. El rollback
-conserva las variables y dominios actuales del proyecto; no restaura
-automáticamente una configuración anterior.
+La vista inicial no administra versiones ni ofrece rollback. El producto está
+planteado para mantener la versión estable desplegada de cada proyecto.
 
-El historial completo previsto debe conservar:
+## 5.7. Estado del proyecto
 
-- Identificador del commit.
-- Rama.
-- Imagen generada.
-- Fecha.
-- Estado.
-- Logs de construcción.
-- Logs de despliegue.
-
-Las imágenes se identifican por commit. Las aplicaciones arbitrarias del
-catálogo y la restauración de configuración histórica quedan pendientes.
-
-## 5.7. Historial de despliegues
-
-El panel muestra el historial de tareas de despliegue persistidas y ofrece
-rollback para los despliegues exitosos anteriores del proyecto. El historial
-detallado previsto incluye:
-
-- Proyecto.
-- Commit.
-- Rama.
-- Fecha.
-- Duración.
-- Usuario o evento que inició el despliegue.
-- Resultado.
-- Logs.
-- Acción de rollback.
+La lista de proyectos y los estados de build y despliegue se implementarán
+cuando estén disponibles las fuentes de código.
 
 ---
 
@@ -762,7 +630,7 @@ Esta primera versión se limita intencionalmente a aplicaciones de un contenedor
 - Node Exporter.
 
 ### Administración
-- Gitea.
+- Administración de proyectos desde varias fuentes.
 
 El catálogo debe poder ampliarse sin modificar el código principal del panel.
 
@@ -911,9 +779,6 @@ registros AAAA, reglas de redirección o vencimientos de certificados.
 panel.ejemplo.com
     -> VPS Manager
 
-git.ejemplo.com
-    -> Gitea
-
 n8n.ejemplo.com
     -> n8n
 
@@ -949,8 +814,7 @@ La emisión de certificados requiere que el DNS y los puertos correspondientes e
 # 9. Variables de entorno y secretos
 
 Cada proyecto y aplicación debe disponer de su propio sistema de configuración.
-Actualmente, los proyectos Git admiten variables por proyecto desde el panel;
-la configuración genérica de aplicaciones del catálogo sigue pendiente.
+La configuración por proyecto todavía no está habilitada.
 
 ## 9.1. Variables
 
@@ -1126,7 +990,6 @@ Después de reiniciar Ubuntu:
 - Traefik debe recuperar el enrutamiento.
 - El panel debe volver a estar disponible.
 - La base de datos debe conservar sus datos.
-- Gitea debe conservar sus repositorios.
 - Prometheus debe conservar sus métricas según la retención configurada.
 
 ## 11.2. Políticas de reinicio
@@ -1473,23 +1336,8 @@ GET /api/dashboard/activity
 
 ## Proyectos
 
-```text
-GET    /api/projects
-POST   /api/projects
-GET    /api/projects/:id
-PATCH  /api/projects/:id
-DELETE /api/projects/:id
-POST   /api/projects/:id/deploy
-POST   /api/projects/:id/rollback
-GET    /api/projects/:id/deployments
-```
-
-`POST /api/projects` y `PATCH /api/projects/:id` aceptan `name`, `description`,
-`repository` y `productionBranch`. El backend verifica que el repositorio esté
-disponible para la cuenta conectada y que la rama exista antes de guardar.
-`GET/PUT /api/projects/:id/environment` consulta o actualiza las variables del
-proyecto. `POST /api/projects/:id/rollback` acepta `{ "commitSha": "..." }`
-únicamente para un despliegue exitoso anterior del mismo proyecto.
+Las rutas de registro, build y despliegue de proyectos no están disponibles en
+esta etapa.
 
 ## Dominios
 
@@ -1508,19 +1356,6 @@ La conexión de zona requiere el dominio raíz y un token API de Cloudflare. Sus
 credenciales no se incluyen en respuestas, auditoría ni tareas. La vista no
 asigna dominios a proyectos; las zonas que tengan asignaciones previas no se
 pueden desconectar.
-
-## Git
-
-```text
-GET  /api/git/repositories
-GET  /api/git/repositories/:id/branches
-POST /api/git/webhooks/:projectId
-POST /api/webhooks/gitea
-```
-
-`POST /api/system/applications/gitea/webhooks` configura o actualiza el webhook
-de eventos `push` para un repositorio administrable por la cuenta conectada.
-Requiere sesión y dominio público configurado.
 
 ## Aplicaciones
 
@@ -1751,7 +1586,7 @@ Preparar:
 - Ubuntu Server 24.04.
 - Docker Swarm de un solo nodo.
 - Dominio de pruebas.
-- Repositorio Gitea de pruebas.
+- Repositorio de GitHub de pruebas.
 
 ## 19.2. Pruebas del instalador
 
@@ -1763,18 +1598,12 @@ Preparar:
 - Verificación de firewall.
 - Verificación de HTTPS.
 
-## 19.3. Pruebas Git
+## 19.3. Pruebas de proyectos
 
-- Crear repositorio.
-- Enviar primer commit.
-- Seleccionar rama.
-- Cambiar rama de producción.
-- Enviar cambios.
-- Confirmar deploy.
-- Enviar cambios a otra rama.
-- Confirmar que producción no se actualiza.
-- Simular error de build.
-- Ejecutar rollback.
+- Conectar una fuente de GitHub.
+- Cargar archivos del proyecto.
+- Construir y desplegar cada tipo de aplicación.
+- Confirmar logs y estados de despliegue.
 
 ## 19.4. Pruebas Docker
 
@@ -1821,9 +1650,9 @@ El MVP no estará completo hasta que pueda:
 3. Detectar contenedores externos.
 4. Administrar servicios Docker.
 5. Instalar una aplicación desde el catálogo.
-6. Alojar repositorios Git privados.
-7. Configurar una rama de producción.
-8. Desplegar mediante `git push`.
+6. Conectar fuentes de código o cargar archivos.
+7. Configurar el tipo de aplicación.
+8. Construir y desplegar el proyecto.
 9. Configurar dominios.
 10. Administrar variables y secretos.
 11. Mostrar consumo individual de contenedores.
@@ -1885,33 +1714,27 @@ El desarrollo debe ser incremental.
 
 **Resultado:** administración básica desde navegador.
 
-## Fase 4 — Gitea
+## Fase 4 — Proyectos
 
-- Desplegar Gitea.
-- Configurar SSH.
-- Crear repositorios.
-- Administrar ramas.
-- Configurar webhooks.
-- Integrar repositorios con proyectos.
+- [x] Crear la estructura inicial de la pestaña Proyectos.
+- [x] Mostrar fuentes y tipos de aplicaciones previstos.
+- [ ] Implementar conexión con GitHub y carga de archivos.
+- [ ] Implementar builds y despliegues por tipo de aplicación.
 
-**Resultado:** servidor Git privado.
+**Resultado:** despliegue de proyectos propios desde distintas fuentes.
 
 ## Fase 5 — Deploy automático
 
 - [x] Integrar BuildKit.
 - [x] Construir y publicar imágenes manualmente.
 - [x] Configurar registro privado desde el navegador.
-- [x] Desplegar manualmente proyectos como servicios Swarm globales internos, sin puertos publicados.
-- [x] Configurar variables por proyecto Git.
-- [x] Conectar dominios raíz de Cloudflare una vez y reutilizarlos en proyectos Git y al instalar n8n.
-- [x] Hacer rollback de un proyecto a un despliegue exitoso anterior.
+- [ ] Desplegar proyectos como servicios Swarm internos, sin puertos publicados.
+- [ ] Configurar variables y dominios por proyecto.
 - [ ] Aplicar configuración genérica a aplicaciones del catálogo.
 - [ ] Gestionar secretos mediante Docker Secrets.
 - [ ] Desplegar automáticamente al recibir un push.
 
-**Resultado:** `git push` despliega proyectos registrados cuando el webhook de
-Gitea está configurado; los builds y despliegues manuales continúan disponibles.
-El rollback conserva las variables y dominios actualmente configurados.
+**Resultado:** los proyectos podrán construirse y desplegarse desde la fuente seleccionada.
 
 ## Fase 6 — Catálogo
 
@@ -1959,8 +1782,8 @@ El rollback conserva las variables y dominios actualmente configurados.
 
 1. Docker Swarm será el motor de orquestación principal.
 2. No introducir Kubernetes.
-3. No depender de GitHub ni GitLab.
-4. Gitea estará alojado en el mismo VPS.
+3. Admitir fuentes externas como GitHub sin requerir un servidor Git propio.
+4. No instalar servicios de control de versiones como dependencia obligatoria.
 5. Todos los despliegues deben utilizar imágenes identificables por versión.
 6. Los datos persistentes no deben eliminarse al actualizar aplicaciones.
 7. Los recursos externos deben detectarse sin modificarse automáticamente.
@@ -1988,7 +1811,6 @@ Estas decisiones no impiden iniciar el proyecto, pero deben resolverse antes de 
 |---|---|
 | Nombre definitivo | VPS Manager, provisional |
 | Dominio del panel | Configurable durante instalación |
-| Dominio de Gitea | Subdominio configurable |
 | Registro de imágenes | Registro privado local |
 | Almacenamiento de secretos | Docker Secrets y cifrado |
 | Sistema de logs | Docker + registros de tareas |
@@ -2013,8 +1835,8 @@ El flujo ideal será:
 4. Configurar dominio y acceso.
 5. Abrir el panel.
 6. Crear proyectos.
-7. Crear repositorios Git privados.
-8. Configurar ramas y despliegues.
+7. Conectar una fuente de código o cargar archivos.
+8. Configurar y desplegar una aplicación.
 9. Instalar aplicaciones.
 10. Administrar servicios.
 11. Consultar recursos.
