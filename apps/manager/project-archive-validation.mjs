@@ -60,8 +60,10 @@ export function validateProjectArchive(archive) {
     } catch {
       rejectArchive(400, "El ZIP debe usar nombres de archivo UTF-8.");
     }
-    const isDirectory = name.endsWith("/");
-    const path = isDirectory ? name.slice(0, -1) : name;
+    const externalAttributes = archive.readUInt32LE(offset + 38);
+    const mode = (externalAttributes >>> 16) & 0xf000;
+    const isDirectory = name.endsWith("/") || Boolean(externalAttributes & 0x10) || mode === 0x4000;
+    const path = isDirectory && name.endsWith("/") ? name.slice(0, -1) : name;
     const parts = path.split("/");
     if (!path || path.startsWith("/") || path.includes("\\")
       || parts.some((part) => !part || part === "." || part === "..")
@@ -70,8 +72,6 @@ export function validateProjectArchive(archive) {
     }
     paths.add(path);
     entries.push({ path, directory: isDirectory });
-    const externalAttributes = archive.readUInt32LE(offset + 38);
-    const mode = (externalAttributes >>> 16) & 0xf000;
     if (madeBy === 3 && mode !== 0
       && mode !== (isDirectory ? 0x4000 : 0x8000)) {
       rejectArchive(400, "El ZIP contiene enlaces o archivos especiales no permitidos.");
@@ -96,7 +96,7 @@ export function validateProjectArchive(archive) {
   const hasRootContents = entries.some((entry) => entry.path.startsWith(`${root}/`));
   const stripRoot = entries.every((entry) => entry.path === root || entry.path.startsWith(`${root}/`))
     && (topLevelDirectories.size === 1 || hasRootContents);
-  return stripRoot
+  return (stripRoot
     ? filePaths.map((path) => path.split("/").slice(1).join("/"))
-    : filePaths;
+    : filePaths).filter(Boolean);
 }

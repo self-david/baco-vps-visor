@@ -123,9 +123,13 @@ test("uploaded projects render assigned domains and provide root/subdomain assig
   assert.match(renderer, /https:\/\/\$\{domain\.hostname\}/);
   assert.match(renderer, /currentDeployment\?\.configurationCurrent/);
   assert.match(renderer, /subdomainInput\.placeholder = "www \(o @ para usar el dominio raíz\)"/);
+  assert.match(renderer, /assignmentRow\.append\(subdomainInput, zoneSelect, addDomain\)/);
+  assert.doesNotMatch(renderer, /const domainsDetails = document\.createElement\("details"\)/);
+  assert.doesNotMatch(renderer, /const environmentDetails = document\.createElement\("details"\)/);
   assert.match(renderer, /subdomain === "@" \? zone : `\$\{subdomain\}\.\$\{zone\}`/);
   assert.match(renderer, /"Ver sitio"/);
   assert.match(domainsPanel, /asignar el dominio raíz o crear subdominios para tus proyectos/);
+  assert.match(domainsPanel, /id="domains-ingress-ip-form"/);
 });
 
 test("login bootstrap is independent from dashboard initialization", async () => {

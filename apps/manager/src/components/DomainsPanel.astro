@@ -16,6 +16,18 @@
                 <p id="domain-zones-status" class="muted" role="status" aria-live="polite">Consultando dominios…</p>
                 <div id="domain-zones-list" class="resource-list"></div>
               </section>
+              <section class="card">
+                <h3>IPv4 pública del VPS</h3>
+                <p class="muted">Indica la IPv4 pública fija del VPS que ejecuta VPS Manager y Traefik. La dirección se usa para los registros DNS de tus dominios; si cambia, actualízala aquí.</p>
+                <form id="domains-ingress-ip-form" class="form-stack">
+                  <label for="domains-ingress-ip">IPv4 pública</label>
+                  <div class="container-heading-actions">
+                    <input id="domains-ingress-ip" name="ipv4" type="text" inputmode="decimal" autocomplete="off" placeholder="IPv4 pública asignada por tu proveedor" pattern="[0-9.]{7,15}" required>
+                    <button id="domains-ingress-ip-save" class="button" type="submit">Guardar IPv4</button>
+                  </div>
+                  <p id="domains-ingress-ip-status" class="muted" role="status" aria-live="polite"></p>
+                </form>
+              </section>
               <section class="card backups-card">
                 <h3>Guía para conectar un dominio con Cloudflare</h3>
                 <ol class="roadmap-list">

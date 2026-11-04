@@ -56,6 +56,24 @@ test("creates a ZIP with one project root and UTF-8 filenames", async () => {
   assert.equal(new TextDecoder().decode(bytes.subarray(30, 30 + nameLength)), "mi-app/");
 });
 
+test("strips a root directory identified only by ZIP external attributes", async () => {
+  const blob = await createProjectZip([
+    { file: fileWithPath("index.html", "ok", "index.html"), path: "index.html" },
+  ], "sitio");
+  const original = Buffer.from(await blob.arrayBuffer());
+  const endOffset = original.length - 22;
+  const directoryOffset = original.readUInt32LE(endOffset + 16);
+  const nameLength = original.readUInt16LE(directoryOffset + 28);
+  assert.equal(original.subarray(directoryOffset + 46, directoryOffset + 46 + nameLength).toString(), "sitio/");
+
+  const slashOffset = directoryOffset + 46 + nameLength - 1;
+  const archive = Buffer.concat([original.subarray(0, slashOffset), original.subarray(slashOffset + 1)]);
+  archive.writeUInt16LE(nameLength - 1, directoryOffset + 28);
+  archive.writeUInt32LE(original.readUInt32LE(endOffset + 12) - 1, endOffset - 1 + 12);
+
+  assert.deepEqual(validateProjectArchive(archive), ["index.html"]);
+});
+
 test("accepts root-level files and multiple ZIP roots while rejecting unsafe folder paths", async () => {
   const blob = new Blob(["not a zip"], { type: "application/zip" });
   await assert.rejects(inspectProjectZip(blob), /incompleto o no es válido/);

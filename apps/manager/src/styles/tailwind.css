@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+@layer components {
+  .project-domain-assignment {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  @media (max-width: 640px) {
+    .project-domain-assignment {
+      grid-template-columns: 1fr;
+    }
+  }
+}

@@ -150,6 +150,10 @@ const closeDomainZoneDialogButton = document.querySelector("#close-domain-zone-d
 const domainZonesStatus = document.querySelector("#domain-zones-status");
 const domainZonesList = document.querySelector("#domain-zones-list");
 const refreshDomainsButton = document.querySelector("#refresh-domains");
+const ingressIpForm = document.querySelector("#domains-ingress-ip-form");
+const ingressIpInput = document.querySelector("#domains-ingress-ip");
+const ingressIpSaveButton = document.querySelector("#domains-ingress-ip-save");
+const ingressIpStatus = document.querySelector("#domains-ingress-ip-status");
 const registryForm = document.querySelector("#registry-configure-form");
 const registryDomainInput = document.querySelector("#registry-domain");
 const registryUsernameInput = document.querySelector("#registry-username");
@@ -2105,10 +2109,9 @@ function renderProjects() {
     }
     document.querySelector("#project-detail-history").append(history);
 
-    const domainsDetails = document.createElement("details");
-    const domainsSummary = document.createElement("summary");
-    domainsSummary.textContent = `Dominios (${assignedDomains.length})`;
-    domainsDetails.append(domainsSummary);
+    const assignedDomainsHeading = document.createElement("h4");
+    assignedDomainsHeading.textContent = `Dominios asignados (${assignedDomains.length})`;
+    document.querySelector("#project-detail-domains").append(assignedDomainsHeading);
     const routeIsReady = Boolean(currentDeployment?.configurationCurrent && currentDeployment.runningReplicas > 0);
     for (const domain of assignedDomains) {
       const domainRow = document.createElement("div");
@@ -2148,14 +2151,15 @@ function renderProjects() {
         domainRow.append(routeStatus);
       }
       domainRow.append(removeDomain);
-      domainsDetails.append(domainRow);
+      document.querySelector("#project-detail-domains").append(domainRow);
     }
     const availableZones = domainData.zones.filter((zone) =>
       zone.connectionStatus === "connected" && zone.tokenConfigured);
     const domainForm = document.createElement("form");
-    domainForm.className = "project-upload-form";
+    domainForm.className = "form-stack project-domain-form";
     const zoneSelect = document.createElement("select");
     zoneSelect.setAttribute("aria-label", `Zona de dominio para ${project.name}`);
+    zoneSelect.required = true;
     zoneSelect.add(new Option("Selecciona dominio conectado", ""));
     for (const zone of availableZones) zoneSelect.add(new Option(zone.zone, zone.zone));
     const subdomainInput = document.createElement("input");
@@ -2164,8 +2168,6 @@ function renderProjects() {
     subdomainInput.autocomplete = "off";
     subdomainInput.required = true;
     subdomainInput.setAttribute("aria-label", `Subdominio del proyecto ${project.name}`);
-    const hostnamePreview = document.createElement("span");
-    hostnamePreview.className = "muted";
     const domainStatus = document.createElement("span");
     domainStatus.className = "muted";
     domainStatus.setAttribute("role", "status");
@@ -2178,21 +2180,15 @@ function renderProjects() {
       connectDomains.textContent = "Ir a conectar dominio";
       domainForm.append(connectDomains);
     }
-    const updateHostnamePreview = () => {
-      const zone = zoneSelect.value;
-      const subdomain = subdomainInput.value.trim();
-      hostnamePreview.textContent = zone
-        ? `Dirección: ${subdomain === "@" ? zone : subdomain ? `${subdomain}.${zone}` : zone}`
-        : "Selecciona un dominio conectado para ver la dirección.";
-    };
-    zoneSelect.addEventListener("change", updateHostnamePreview);
-    subdomainInput.addEventListener("input", updateHostnamePreview);
     const addDomain = document.createElement("button");
     addDomain.className = "button secondary";
     addDomain.type = "submit";
     addDomain.textContent = "Asignar dominio";
     addDomain.disabled = availableZones.length === 0;
-    domainForm.append(zoneSelect, subdomainInput, hostnamePreview, domainStatus, addDomain);
+    const assignmentRow = document.createElement("div");
+    assignmentRow.className = "project-domain-assignment";
+    assignmentRow.append(subdomainInput, zoneSelect, addDomain);
+    domainForm.append(assignmentRow, domainStatus);
     domainForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const zone = zoneSelect.value;
@@ -2223,12 +2219,8 @@ function renderProjects() {
         addDomain.disabled = availableZones.length === 0;
       }
     });
-    domainsDetails.append(domainForm);
-    document.querySelector("#project-detail-domains").append(domainsDetails);
+    document.querySelector("#project-detail-domains").append(domainForm);
 
-    const environmentDetails = document.createElement("details");
-    const environmentSummary = document.createElement("summary");
-    environmentSummary.textContent = "Variables de entorno";
     const environmentForm = document.createElement("form");
     environmentForm.className = "form-stack";
     const environmentText = document.createElement("textarea");
@@ -2241,17 +2233,20 @@ function renderProjects() {
     saveEnvironment.type = "submit";
     saveEnvironment.textContent = "Guardar variables";
     environmentForm.append(environmentText, saveEnvironment);
-    environmentDetails.append(environmentSummary, environmentForm);
-    environmentDetails.addEventListener("toggle", async () => {
-      if (!environmentDetails.open || environmentDetails.dataset.loaded) return;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/environment`);
-        environmentText.value = JSON.stringify(result.environment, null, 2);
-        environmentDetails.dataset.loaded = "true";
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-      }
-    });
+    const environmentStatus = document.createElement("p");
+    environmentStatus.className = "muted";
+    environmentStatus.setAttribute("role", "status");
+    environmentStatus.setAttribute("aria-live", "polite");
+    environmentStatus.textContent = "Cargando variables…";
+    environmentForm.prepend(environmentStatus);
+    void request(`/api/projects/${encodeURIComponent(project.id)}/environment`)
+      .then(({ environment }) => {
+        environmentText.value = JSON.stringify(environment, null, 2);
+        environmentStatus.textContent = "";
+      })
+      .catch((error) => {
+        environmentStatus.textContent = `No se pudieron cargar las variables: ${error.message}`;
+      });
     environmentForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       let environment;
@@ -2267,14 +2262,14 @@ function renderProjects() {
           method: "PUT",
           body: JSON.stringify({ environment }),
         });
-        projectsStatus.textContent = result.message;
+        environmentStatus.textContent = result.message;
       } catch (error) {
-        projectsStatus.textContent = error.message;
+        environmentStatus.textContent = error.message;
       } finally {
         saveEnvironment.disabled = false;
       }
     });
-    document.querySelector("#project-detail-environment").append(environmentDetails);
+    document.querySelector("#project-detail-environment").append(environmentForm);
   }
   const project = renderProjectRoute();
   if (project) setProjectTab("deploy");
@@ -2422,6 +2417,7 @@ async function loadDomains() {
   try {
     const result = await request("/api/domains");
     domainData = result;
+    ingressIpInput.value = result.ingressIp ?? "";
     renderDomainZones(result.zones);
     if (projects.length) renderProjects();
   } catch (error) {
@@ -3084,6 +3080,24 @@ domainZoneForm.addEventListener("submit", async (event) => {
   }
 });
 refreshDomainsButton.addEventListener("click", () => void Promise.all([loadDomains(), loadN8nApplication()]));
+ingressIpForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  ingressIpSaveButton.disabled = true;
+  ingressIpStatus.textContent = "Guardando la IPv4 y sincronizando los registros DNS…";
+  try {
+    const result = await request("/api/domains/ingress-ip", {
+      method: "PUT",
+      body: JSON.stringify({ ipv4: ingressIpInput.value.trim() }),
+    });
+    const failures = result.failures?.map(({ hostname, error }) => `${hostname}: ${error}`).join(" · ");
+    ingressIpStatus.textContent = failures ? `${result.message} ${failures}` : result.message;
+    await loadDomains();
+  } catch (error) {
+    ingressIpStatus.textContent = error.message;
+  } finally {
+    ingressIpSaveButton.disabled = false;
+  }
+});
 async function revealPostgresqlCredentials() {
   revealPostgresqlCredentialsButton.disabled = true;
   try {
