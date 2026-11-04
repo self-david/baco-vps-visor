@@ -278,6 +278,7 @@ function mapProjectDomain(row) {
     id: row.id,
     provider: row.provider,
     zone: row.zone_name,
+    domainZoneId: row.domain_zone_id,
     zoneId: row.zone_id,
     hostname: row.hostname,
     projectId: row.project_id,
@@ -290,9 +291,115 @@ function mapProjectDomain(row) {
   };
 }
 
+function mapDomainZone(row) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    zone: row.zone_name,
+    zoneId: row.zone_id,
+    credentialId: row.credential_id,
+    proxied: row.proxied,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function getDomainZones() {
+  const result = await pool.query(`
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    FROM domain_zones
+    ORDER BY lower(zone_name), id
+  `);
+  return result.rows.map(mapDomainZone);
+}
+
+export async function getDomainZone(id) {
+  const result = await pool.query(`
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    FROM domain_zones
+    WHERE id = $1
+  `, [id]);
+  return result.rows[0] ? mapDomainZone(result.rows[0]) : null;
+}
+
+export async function getDomainZoneByName(zone) {
+  const result = await pool.query(`
+    SELECT id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    FROM domain_zones
+    WHERE lower(zone_name) = lower($1)
+  `, [zone]);
+  return result.rows[0] ? mapDomainZone(result.rows[0]) : null;
+}
+
+export async function saveDomainZone(domainZone) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      INSERT INTO domain_zones (id, provider, zone_name, zone_id, credential_id, proxied)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (id) DO UPDATE
+      SET zone_id = EXCLUDED.zone_id,
+          credential_id = EXCLUDED.credential_id,
+          proxied = EXCLUDED.proxied,
+          updated_at = now()
+      RETURNING id, provider, zone_name, zone_id, credential_id, proxied, created_at, updated_at
+    `, [
+      domainZone.id,
+      domainZone.provider,
+      domainZone.zone,
+      domainZone.zoneId,
+      domainZone.credentialId,
+      domainZone.proxied,
+    ]);
+    await insertAuditEvent(client, {
+      action: "domain.zone.saved",
+      resourceType: "domain_zone",
+      resourceId: domainZone.id,
+      details: { zone: domainZone.zone, provider: domainZone.provider },
+    });
+    await client.query("COMMIT");
+    return mapDomainZone(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteDomainZone(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      DELETE FROM domain_zones
+      WHERE id = $1
+      RETURNING id, zone_name, credential_id
+    `, [id]);
+    if (result.rowCount > 0) {
+      await insertAuditEvent(client, {
+        action: "domain.zone.deleted",
+        resourceType: "domain_zone",
+        resourceId: result.rows[0].id,
+        details: { zone: result.rows[0].zone_name },
+      });
+    }
+    await client.query("COMMIT");
+    return result.rows[0]
+      ? { id: result.rows[0].id, zone: result.rows[0].zone_name, credentialId: result.rows[0].credential_id }
+      : null;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function getProjectDomains() {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, hostname, project_id, application_id, port, proxied,
+    SELECT id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     ORDER BY lower(hostname), id
@@ -302,7 +409,7 @@ export async function getProjectDomains() {
 
 export async function getProjectDomain(id) {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, hostname, project_id, application_id, port, proxied,
+    SELECT id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     WHERE id = $1
@@ -316,12 +423,14 @@ export async function saveProjectDomain(domain) {
     await client.query("BEGIN");
     const result = await client.query(`
       INSERT INTO project_domains (
-        id, provider, zone_name, zone_id, hostname, project_id, application_id, port, proxied, dns_record_id
+        id, provider, zone_name, domain_zone_id, zone_id, hostname, project_id, application_id, port, proxied,
+        dns_record_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       ON CONFLICT (id) DO UPDATE
       SET provider = EXCLUDED.provider,
           zone_name = EXCLUDED.zone_name,
+          domain_zone_id = EXCLUDED.domain_zone_id,
           zone_id = EXCLUDED.zone_id,
           hostname = EXCLUDED.hostname,
           project_id = EXCLUDED.project_id,
@@ -330,12 +439,13 @@ export async function saveProjectDomain(domain) {
           proxied = EXCLUDED.proxied,
           dns_record_id = EXCLUDED.dns_record_id,
           updated_at = now()
-      RETURNING id, provider, zone_name, hostname, project_id, application_id, port, proxied,
+      RETURNING id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
         dns_record_id, created_at, updated_at
     `, [
       domain.id,
       domain.provider,
       domain.zone,
+      domain.domainZoneId,
       domain.zoneId,
       domain.hostname,
       domain.projectId ?? null,

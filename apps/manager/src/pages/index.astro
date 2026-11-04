@@ -274,37 +274,51 @@ import "../styles/tailwind.css";
             <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
               <section class="card roadmap-card">
                 <div class="card-heading"><h3>Dominios y certificados</h3><span class="badge">Cloudflare</span></div>
-                <p class="muted">Conecta dominios de Cloudflare con proyectos o aplicaciones compatibles. VPS Manager crea registros A y configura HTTPS con Traefik al desplegar el proyecto o instalar la aplicación.</p>
+                <p class="muted">Conecta cada dominio raíz una sola vez. Luego podrás elegirlo en las aplicaciones y usar el dominio raíz o cualquier subdominio. También puedes comprar el dominio en Namecheap u otro registrador, siempre que sus nameservers apunten a Cloudflare.</p>
                 <form id="domains-ingress-form">
                   <label for="domains-ingress-ip">IPv4 pública de entrada del VPS manager</label>
                   <input id="domains-ingress-ip" name="ipv4" type="text" inputmode="decimal" autocomplete="off" placeholder="203.0.113.10" required>
                   <button class="button secondary" type="submit">Guardar y sincronizar DNS</button>
                   <p id="domains-ingress-status" class="muted" role="status" aria-live="polite"></p>
                 </form>
+                <form id="domain-zone-form" class="gitea-form">
+                  <h4 id="domain-zone-form-title">Conectar dominio raíz</h4>
+                  <input id="domain-zone-id" name="id" type="hidden">
+                  <label for="domain-zone-name">Dominio raíz</label>
+                  <input id="domain-zone-name" name="zone" type="text" placeholder="midominio.com" autocomplete="off" required>
+                  <label for="domain-zone-token">Token API de Cloudflare <span class="muted">(Zone:Read y DNS:Edit)</span></label>
+                  <input id="domain-zone-token" name="token" type="password" autocomplete="new-password" placeholder="Token de Cloudflare" required>
+                  <label class="checkbox-label" for="domain-zone-proxied">
+                    <input id="domain-zone-proxied" name="proxied" type="checkbox">
+                    Activar proxy de Cloudflare por defecto
+                  </label>
+                  <p class="muted">El token se guarda en el VPS con permisos restringidos, no en PostgreSQL. Cloudflare debe tener una zona activa para este dominio.</p>
+                  <p id="domain-zone-form-status" class="muted" role="status" aria-live="polite"></p>
+                  <div class="container-heading-actions">
+                    <button id="domain-zone-save" class="button" type="submit">Conectar dominio</button>
+                    <button id="domain-zone-cancel" class="button secondary hidden" type="button">Cancelar edición</button>
+                  </div>
+                </form>
                 <form id="domain-form" class="gitea-form">
-                  <h4 id="domain-form-title">Conectar dominio</h4>
+                  <h4 id="domain-form-title">Asignar hostname a un proyecto</h4>
                   <input id="domain-id" name="id" type="hidden">
-                  <label for="domain-provider">Proveedor DNS</label>
-                  <select id="domain-provider" name="provider" required>
-                    <option value="cloudflare">Cloudflare</option>
+                  <label for="domain-zone">Dominio raíz conectado</label>
+                  <select id="domain-zone" name="zone" required>
+                    <option value="">Conecta primero un dominio raíz</option>
                   </select>
-                  <label for="domain-zone">Zona de Cloudflare</label>
-                  <input id="domain-zone" name="zone" type="text" placeholder="ejemplo.com" autocomplete="off" required>
-                  <label for="domain-hostname">Hostname que conectar</label>
-                  <input id="domain-hostname" name="hostname" type="text" placeholder="app.ejemplo.com" autocomplete="off" required>
+                  <label for="domain-hostname">Subdominio (opcional)</label>
+                  <input id="domain-hostname" name="hostname" type="text" placeholder="app (vacío usa el dominio raíz)" autocomplete="off">
                   <label for="domain-project">Proyecto o aplicación</label>
                   <select id="domain-project" name="target" required>
                     <option value="">Registra primero un proyecto o selecciona n8n</option>
                   </select>
                   <label for="domain-port">Puerto HTTP interno</label>
                   <input id="domain-port" name="port" type="number" min="1" max="65535" value="3000" required>
-                  <label for="domain-token">Token API de Cloudflare <span class="muted">(solo al conectar o cambiarlo)</span></label>
-                  <input id="domain-token" name="token" type="password" autocomplete="new-password" placeholder="Token con Zone:Read y DNS:Edit" required>
                   <label class="checkbox-label" for="domain-proxied">
                     <input id="domain-proxied" name="proxied" type="checkbox">
                     Activar proxy de Cloudflare
                   </label>
-                  <p class="muted">El token se guarda en el VPS con permisos restringidos, no en PostgreSQL. Cloudflare debe tener una zona activa y el registro A del hostname no debe existir previamente.</p>
+                  <p class="muted">El hostname puede ser el dominio raíz o un subdominio. Cloudflare creará el registro A si aún no existe y Traefik gestionará HTTPS.</p>
                   <p id="domain-form-status" class="muted" role="status" aria-live="polite"></p>
                   <div class="container-heading-actions">
                     <button id="domain-save" class="button" type="submit">Conectar dominio</button>
@@ -314,10 +328,13 @@ import "../styles/tailwind.css";
               </section>
               <section class="card backups-card">
                 <div class="card-heading">
-                  <h3>Dominios conectados</h3>
+                  <h3>Dominios raíz conectados</h3>
                   <button id="refresh-domains" class="button secondary resource-action" type="button">Actualizar</button>
                 </div>
-                <p id="domains-status" class="muted" role="status" aria-live="polite">Consultando dominios…</p>
+                <p id="domain-zones-status" class="muted" role="status" aria-live="polite">Consultando dominios…</p>
+                <div id="domain-zones-list" class="resource-list"></div>
+                <h4>Hostnames asignados</h4>
+                <p id="domains-status" class="muted" role="status" aria-live="polite">Consultando hostnames…</p>
                 <div id="domains-list" class="resource-list"></div>
               </section>
             </div>

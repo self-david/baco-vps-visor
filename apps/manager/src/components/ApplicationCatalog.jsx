@@ -198,9 +198,16 @@ export default function ApplicationCatalog() {
         <p className="muted">Automatiza flujos de trabajo con una instancia privada y persistente.</p>
         <ul className="roadmap-list">
           <li>Instancia única con SQLite y volumen persistente administrado</li>
-          <li>Acceso HTTPS con dominio registrado como aplicación n8n en Dominios</li>
+          <li>Acceso HTTPS con dominio raíz y subdominio elegidos al instalar</li>
           <li>Clave de cifrado generada automáticamente y guardada como secreto Swarm</li>
         </ul>
+        <label htmlFor="n8n-domain-zone">Dominio raíz</label>
+        <select id="n8n-domain-zone" name="domainZone" required>
+          <option value="">Conecta primero un dominio raíz en Dominios</option>
+        </select>
+        <label htmlFor="n8n-subdomain">Subdominio (opcional)</label>
+        <input id="n8n-subdomain" name="subdomain" type="text" placeholder="automatizacion" autoComplete="off" />
+        <p className="muted">Déjalo vacío para usar el dominio raíz. Ejemplo: automatizacion.midominio.com.</p>
         <p id="n8n-status" className="application-status" role="status" aria-live="polite">
           Consultando disponibilidad…
         </p>

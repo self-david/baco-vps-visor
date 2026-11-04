@@ -106,7 +106,7 @@ Estado: **parcial** (build y despliegue manuales o automáticos por push; falta 
 - [x] Desplegar manualmente en modo global la última imagen construida, con una tarea por nodo activo del Swarm y sin publicar puertos.
 - [x] Consultar el estado de los nodos y aprovisionar VPS Ubuntu 24.04 adicionales por SSH con fingerprint verificado, instalación de Docker y reglas UFW restringidas a una CIDR privada.
 - [x] Configurar variables de entorno por proyecto; se almacenan en archivo restringido del VPS y se aplican al desplegar.
-- [x] Administrar dominios en un panel central, conectar Cloudflare por dominio, sincronizar registros A y asignar hostnames/puertos HTTP a proyectos.
+- [x] Administrar dominios en un panel central, conectar zonas raíz de Cloudflare una vez, sincronizar registros A y reutilizar las zonas para asignar hostnames/puertos HTTP a proyectos y elegir zona/subdominio al instalar n8n.
 - [x] Revertir un proyecto a un despliegue anterior exitoso, conservando su configuración actual.
 - [x] Encolar de forma idempotente el build y despliegue del commit exacto al recibir un push autenticado a la rama de producción.
 

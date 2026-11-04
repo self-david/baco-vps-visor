@@ -69,6 +69,8 @@ const restartGiteaButton = document.querySelector("#restart-gitea");
 const n8nStatus = document.querySelector("#n8n-status");
 const n8nUrl = document.querySelector("#n8n-url");
 const installN8nButton = document.querySelector("#install-n8n");
+const n8nDomainZoneSelect = document.querySelector("#n8n-domain-zone");
+const n8nSubdomainInput = document.querySelector("#n8n-subdomain");
 const postgresqlStatus = document.querySelector("#postgresql-status");
 const installPostgresqlButton = document.querySelector("#install-postgresql");
 const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
@@ -126,15 +128,24 @@ const projectEnvironmentStatus = document.querySelector("#project-environment-st
 const domainsIngressForm = document.querySelector("#domains-ingress-form");
 const domainsIngressIp = document.querySelector("#domains-ingress-ip");
 const domainsIngressStatus = document.querySelector("#domains-ingress-status");
+const domainZoneForm = document.querySelector("#domain-zone-form");
+const domainZoneFormTitle = document.querySelector("#domain-zone-form-title");
+const domainZoneIdInput = document.querySelector("#domain-zone-id");
+const domainZoneNameInput = document.querySelector("#domain-zone-name");
+const domainZoneTokenInput = document.querySelector("#domain-zone-token");
+const domainZoneProxiedInput = document.querySelector("#domain-zone-proxied");
+const domainZoneFormStatus = document.querySelector("#domain-zone-form-status");
+const domainZoneSaveButton = document.querySelector("#domain-zone-save");
+const domainZoneCancelButton = document.querySelector("#domain-zone-cancel");
+const domainZonesStatus = document.querySelector("#domain-zones-status");
+const domainZonesList = document.querySelector("#domain-zones-list");
 const domainForm = document.querySelector("#domain-form");
 const domainFormTitle = document.querySelector("#domain-form-title");
 const domainIdInput = document.querySelector("#domain-id");
-const domainProviderSelect = document.querySelector("#domain-provider");
 const domainZoneInput = document.querySelector("#domain-zone");
 const domainHostnameInput = document.querySelector("#domain-hostname");
 const domainProjectSelect = document.querySelector("#domain-project");
 const domainPortInput = document.querySelector("#domain-port");
-const domainTokenInput = document.querySelector("#domain-token");
 const domainProxiedInput = document.querySelector("#domain-proxied");
 const domainFormStatus = document.querySelector("#domain-form-status");
 const domainSaveButton = document.querySelector("#domain-save");
@@ -486,7 +497,7 @@ function renderFilteredResources() {
       return [
         ...(service.component === "api"
           ? []
-          : [{ label: "Detener (Swarm lo repondrá)", onClick: requestContainerStop }]),
+          : [{ label: "Detener servicio", onClick: requestContainerStop }]),
         { label: "Reiniciar", onClick: requestContainerRestart },
       ];
     },
@@ -1630,16 +1641,97 @@ function resetDomainForm() {
   domainForm.reset();
   domainIdInput.value = "";
   domainPortInput.value = "3000";
-  domainFormTitle.textContent = "Conectar dominio";
-  domainSaveButton.textContent = "Conectar dominio";
+  domainFormTitle.textContent = "Asignar hostname a un proyecto";
+  domainSaveButton.textContent = "Conectar hostname";
   domainCancelEditButton.classList.add("hidden");
-  domainTokenInput.required = true;
-  domainTokenInput.placeholder = "Token con Zone:Read y DNS:Edit";
   domainFormStatus.textContent = "";
   updateDomainPortForTarget();
 }
 
-function renderDomains(domains, availableProjects) {
+function resetDomainZoneForm() {
+  domainZoneForm.reset();
+  domainZoneIdInput.value = "";
+  domainZoneNameInput.disabled = false;
+  domainZoneFormTitle.textContent = "Conectar dominio raíz";
+  domainZoneSaveButton.textContent = "Conectar dominio";
+  domainZoneCancelButton.classList.add("hidden");
+  domainZoneTokenInput.required = true;
+  domainZoneTokenInput.placeholder = "Token de Cloudflare";
+  domainZoneFormStatus.textContent = "";
+}
+
+function renderDomainZones(zones) {
+  domainZonesList.replaceChildren();
+  if (zones.length === 0) {
+    domainZonesStatus.textContent = "Todavía no hay dominios raíz conectados.";
+    return;
+  }
+  domainZonesStatus.textContent = `${zones.length} dominio${zones.length === 1 ? "" : "s"} raíz conectado${zones.length === 1 ? "" : "s"}.`;
+  for (const zone of zones) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = zone.zone;
+    const details = document.createElement("div");
+    details.className = "resource-detail";
+    details.textContent = `Cloudflare · proxy ${zone.proxied ? "activo por defecto" : "inactivo por defecto"} · token ${zone.tokenConfigured ? "guardado" : "faltante"}`;
+    main.append(name, details);
+
+    const actions = document.createElement("div");
+    actions.className = "resource-actions";
+    const edit = document.createElement("button");
+    edit.className = "button secondary resource-action";
+    edit.type = "button";
+    edit.textContent = "Editar";
+    edit.addEventListener("click", () => {
+      domainZoneIdInput.value = zone.id;
+      domainZoneNameInput.value = zone.zone;
+      domainZoneNameInput.disabled = true;
+      domainZoneProxiedInput.checked = zone.proxied;
+      domainZoneTokenInput.value = "";
+      domainZoneTokenInput.required = false;
+      domainZoneTokenInput.placeholder = zone.tokenConfigured
+        ? "Deja vacío para conservar el token actual"
+        : "Token de Cloudflare";
+      domainZoneFormTitle.textContent = `Editar ${zone.zone}`;
+      domainZoneSaveButton.textContent = "Guardar cambios";
+      domainZoneCancelButton.classList.remove("hidden");
+      domainZoneFormStatus.textContent = "";
+      domainZoneForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "button secondary resource-action";
+    remove.type = "button";
+    remove.textContent = "Desconectar";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`¿Desconectar ${zone.zone}? No se borrarán los registros DNS de Cloudflare. Primero debes quitar cualquier asignación a proyectos o aplicaciones.`)) return;
+      remove.disabled = true;
+      try {
+        const result = await request(`/api/domain-zones/${encodeURIComponent(zone.id)}`, { method: "DELETE" });
+        domainZonesStatus.textContent = result.message;
+        await Promise.all([loadDomains(), loadN8nApplication()]);
+      } catch (error) {
+        domainZonesStatus.textContent = error.message;
+        remove.disabled = false;
+      }
+    });
+    actions.append(edit, remove);
+    row.append(main, actions);
+    domainZonesList.append(row);
+  }
+}
+
+function renderDomains(zones, domains, availableProjects) {
+  renderDomainZones(zones);
+  domainZoneInput.replaceChildren(
+    new Option(zones.length ? "Selecciona un dominio raíz" : "Conecta primero un dominio raíz", ""),
+    ...zones.map((zone) => new Option(zone.zone, zone.zone)),
+  );
+  domainZoneInput.disabled = zones.length === 0;
   domainProjectSelect.replaceChildren(
     new Option(availableProjects.length ? "Selecciona un proyecto o aplicación" : "Selecciona n8n o registra un proyecto", ""),
     ...availableProjects.map((project) => new Option(project.name, `project:${project.id}`)),
@@ -1648,10 +1740,10 @@ function renderDomains(domains, availableProjects) {
   domainProjectSelect.disabled = false;
   domainsList.replaceChildren();
   if (domains.length === 0) {
-    domainsStatus.textContent = "Todavía no hay dominios conectados.";
+    domainsStatus.textContent = "Todavía no hay hostnames asignados.";
     return;
   }
-  domainsStatus.textContent = `${domains.length} dominio${domains.length === 1 ? "" : "s"} conectado${domains.length === 1 ? "" : "s"}. Los cambios de enrutamiento se aplican en el próximo despliegue.`;
+  domainsStatus.textContent = `${domains.length} hostname${domains.length === 1 ? "" : "s"} asignado${domains.length === 1 ? "" : "s"}. Los cambios de enrutamiento se aplican en el próximo despliegue.`;
   for (const domain of domains) {
     const row = document.createElement("div");
     row.className = "resource";
@@ -1662,7 +1754,7 @@ function renderDomains(domains, availableProjects) {
     name.textContent = domain.hostname;
     const details = document.createElement("div");
     details.className = "resource-detail";
-    details.textContent = `${domain.provider} · ${domain.projectName} · puerto ${domain.port} · ${domain.proxied ? "proxy Cloudflare activo" : "DNS directo"} · token ${domain.tokenConfigured ? "guardado" : "faltante"}`;
+    details.textContent = `${domain.zone} · ${domain.projectName} · puerto ${domain.port} · ${domain.proxied ? "proxy Cloudflare activo" : "DNS directo"} · token ${domain.tokenConfigured ? "guardado" : "faltante"}`;
     main.append(name, details);
 
     const actions = document.createElement("div");
@@ -1673,20 +1765,16 @@ function renderDomains(domains, availableProjects) {
     edit.textContent = "Editar";
     edit.addEventListener("click", () => {
       domainIdInput.value = domain.id;
-      domainProviderSelect.value = domain.provider;
       domainZoneInput.value = domain.zone;
-      domainHostnameInput.value = domain.hostname;
+      domainHostnameInput.value = domain.hostname === domain.zone
+        ? ""
+        : domain.hostname.slice(0, -(domain.zone.length + 1));
       domainProjectSelect.value = domain.applicationId
         ? `application:${domain.applicationId}`
         : `project:${domain.projectId}`;
       domainPortInput.value = String(domain.port);
       updateDomainPortForTarget();
       domainProxiedInput.checked = domain.proxied;
-      domainTokenInput.value = "";
-      domainTokenInput.required = false;
-      domainTokenInput.placeholder = domain.tokenConfigured
-        ? "Deja vacío para conservar el token actual"
-        : "Token con Zone:Read y DNS:Edit";
       domainFormTitle.textContent = `Editar ${domain.hostname}`;
       domainSaveButton.textContent = "Guardar dominio";
       domainCancelEditButton.classList.remove("hidden");
@@ -1718,11 +1806,14 @@ function renderDomains(domains, availableProjects) {
 
 async function loadDomains() {
   domainsStatus.textContent = "Consultando dominios…";
+  domainZonesStatus.textContent = "Consultando dominios…";
   try {
     const result = await request("/api/domains");
     domainsIngressIp.value = result.ingressIp ?? "";
-    renderDomains(result.domains, result.projects);
+    renderDomains(result.zones, result.domains, result.projects);
   } catch (error) {
+    domainZonesList.replaceChildren();
+    domainZonesStatus.textContent = error.message;
     domainsList.replaceChildren();
     domainsStatus.textContent = error.message;
   }
@@ -1747,6 +1838,29 @@ function scheduleN8nStatusPoll() {
 async function loadN8nApplication() {
   try {
     const { application } = await request("/api/system/applications/n8n");
+    const zones = application.domainZones ?? [];
+    const selectedZoneId = n8nDomainZoneSelect.value;
+    n8nDomainZoneSelect.replaceChildren(
+      new Option(zones.length ? "Selecciona un dominio raíz" : "Conecta primero un dominio raíz en Dominios", ""),
+      ...zones.map((zone) => new Option(zone.zone, zone.id)),
+    );
+    const currentZone = application.domain
+      ? zones.find((zone) => application.domain === zone.zone || application.domain.endsWith(`.${zone.zone}`))
+      : null;
+    if (currentZone) {
+      n8nDomainZoneSelect.value = currentZone.id;
+      if (!n8nSubdomainInput.value) {
+        n8nSubdomainInput.value = application.domain === currentZone.zone
+          ? ""
+          : application.domain.slice(0, -(currentZone.zone.length + 1));
+      }
+    } else if (zones.some((zone) => zone.id === selectedZoneId)) {
+      n8nDomainZoneSelect.value = selectedZoneId;
+    } else if (zones.length > 0) {
+      n8nDomainZoneSelect.value = zones[0].id;
+    }
+    n8nDomainZoneSelect.disabled = application.installed || application.installing || zones.length === 0;
+    n8nSubdomainInput.disabled = application.installed || application.installing || zones.length === 0;
     installN8nButton.classList.toggle("hidden", !application.available);
     installN8nButton.disabled = application.installing;
     if (application.domain && application.installed) {
@@ -1762,7 +1876,9 @@ async function loadN8nApplication() {
           ? "El nombre del servicio de n8n está ocupado por un servicio ajeno a VPS Manager."
           : application.domain
             ? `Dominio ${application.domain} listo. Puedes instalar n8n.`
-            : "Conecta primero un dominio en la pestaña Dominios y asígnalo a n8n.");
+            : zones.length
+              ? "Elige un dominio raíz y un subdominio para instalar n8n."
+              : "Conecta primero un dominio raíz en la pestaña Dominios.");
     if (application.installing) scheduleN8nStatusPoll();
     else if (n8nStatusPollTimer !== undefined) {
       clearTimeout(n8nStatusPollTimer);
@@ -2398,16 +2514,42 @@ projectEnvironmentForm.addEventListener("submit", async (event) => {
   }
 });
 document.querySelector("#close-project-environment").addEventListener("click", () => projectEnvironmentDialog.close());
+domainZoneCancelButton.addEventListener("click", resetDomainZoneForm);
+domainZoneForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const id = domainZoneIdInput.value;
+  const token = domainZoneTokenInput.value;
+  const input = {
+    zone: domainZoneNameInput.value.trim(),
+    proxied: domainZoneProxiedInput.checked,
+    ...(token ? { token } : {}),
+  };
+  domainZoneSaveButton.disabled = true;
+  domainZoneFormStatus.textContent = "Verificando la zona en Cloudflare…";
+  try {
+    const result = await request(id ? `/api/domain-zones/${encodeURIComponent(id)}` : "/api/domain-zones", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(input),
+    });
+    resetDomainZoneForm();
+    domainZonesStatus.textContent = result.message;
+    await Promise.all([loadDomains(), loadN8nApplication()]);
+  } catch (error) {
+    domainZoneFormStatus.textContent = error.message;
+  } finally {
+    domainZoneSaveButton.disabled = false;
+  }
+});
 domainCancelEditButton.addEventListener("click", resetDomainForm);
 domainProjectSelect.addEventListener("change", () => updateDomainPortForTarget(true));
 domainForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = domainIdInput.value;
-  const token = domainTokenInput.value;
+  const subdomain = domainHostnameInput.value.trim();
+  const zone = domainZoneInput.value.trim();
   const input = {
-    provider: domainProviderSelect.value,
-    zone: domainZoneInput.value.trim(),
-    hostname: domainHostnameInput.value.trim(),
+    zone,
+    hostname: subdomain && subdomain !== "@" ? `${subdomain}.${zone}` : zone,
     ...(domainProjectSelect.value.startsWith("application:")
       ? { applicationId: domainProjectSelect.value.slice("application:".length), port: 5678 }
       : {
@@ -2415,17 +2557,15 @@ domainForm.addEventListener("submit", async (event) => {
         port: Number(domainPortInput.value),
       }),
     proxied: domainProxiedInput.checked,
-    ...(token ? { token } : {}),
   };
   domainSaveButton.disabled = true;
-  domainFormStatus.textContent = "Validando zona y configurando el registro DNS en Cloudflare…";
+  domainFormStatus.textContent = "Configurando el registro DNS en Cloudflare…";
   try {
     const result = await request(id ? `/api/domains/${encodeURIComponent(id)}` : "/api/domains", {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(input),
     });
     domainFormStatus.textContent = result.message;
-    domainTokenInput.value = "";
     resetDomainForm();
     domainsStatus.textContent = result.message;
     await Promise.all([loadDomains(), loadProjects(), loadN8nApplication()]);
@@ -2662,11 +2802,23 @@ document.querySelector("#check-updates").addEventListener("click", checkForUpdat
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
 installGiteaButton.addEventListener("click", installGitea);
 installN8nButton.addEventListener("click", async () => {
-  if (!confirm("n8n se instalará con SQLite y un volumen persistente administrado, HTTPS en el dominio configurado y una clave de cifrado guardada como secreto Swarm. No se publicarán puertos del VPS. ¿Continuar?")) return;
+  const selectedZone = n8nDomainZoneSelect.selectedOptions[0];
+  if (!n8nDomainZoneSelect.value || !selectedZone) {
+    n8nStatus.textContent = "Selecciona un dominio raíz para instalar n8n.";
+    return;
+  }
+  const subdomain = n8nSubdomainInput.value.trim();
+  const hostname = subdomain && subdomain !== "@"
+    ? `${subdomain}.${selectedZone.textContent}`
+    : selectedZone.textContent;
+  if (!confirm(`n8n se instalará en https://${hostname}/ con SQLite y almacenamiento persistente. Se creará o actualizará su registro A en Cloudflare y se configurará HTTPS con Traefik. ¿Continuar?`)) return;
   installN8nButton.disabled = true;
   n8nStatus.textContent = "Solicitando la instalación segura de n8n…";
   try {
-    await request("/api/system/applications/n8n", { method: "POST" });
+    await request("/api/system/applications/n8n", {
+      method: "POST",
+      body: JSON.stringify({ zoneId: n8nDomainZoneSelect.value, subdomain }),
+    });
     await Promise.all([loadN8nApplication(), loadTaskHistory()]);
   } catch (error) {
     n8nStatus.textContent = error.message;

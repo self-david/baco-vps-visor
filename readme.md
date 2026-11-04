@@ -351,7 +351,7 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 - Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-Gitea, n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, primero conecta desde Dominios un hostname Cloudflare asignado a n8n y configura la IPv4 de entrada. Traefik publica el acceso mediante HTTPS sin publicar puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
+Gitea, n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, conecta primero una zona raíz en Dominios y luego elige el dominio y subdominio directamente en la ficha de n8n; el panel crea su registro DNS y Traefik publica el acceso HTTPS sin puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
 
 ### Etapa 6: finalización
 
@@ -531,15 +531,17 @@ en otras ramas solo se registran. Retirar un servicio no borra la imagen del
 registro. Para borrar la ficha del proyecto primero hay que retirar el servicio
 y quitar sus dominios.
 
-En **Dominios**, configura una vez la IPv4 pública de entrada del VPS manager.
-Para cada hostname selecciona Cloudflare, especifica su zona activa, el proyecto
-y el puerto HTTP interno de la aplicación, y proporciona un token API con
-permisos `Zone:Read` y `DNS:Edit`. El token se guarda en el VPS en un archivo
-con permisos restringidos; no se guarda en PostgreSQL ni en el historial de
-tareas. VPS Manager crea registros A y actualiza los registros administrados
+En **Dominios**, configura una vez la IPv4 pública de entrada del VPS manager y
+conecta cada dominio raíz con un token de Cloudflare que tenga permisos
+`Zone:Read` y `DNS:Edit`. El token se guarda en el VPS en un archivo con
+permisos restringidos; no se guarda en PostgreSQL ni en el historial de tareas.
+El dominio puede haberse comprado en Namecheap u otro registrador, siempre que
+sus nameservers estén delegados a Cloudflare. Después selecciona esa zona al
+asignar un hostname a un proyecto o instalar n8n; puedes usar la raíz o un
+subdominio. VPS Manager crea registros A y actualiza los registros administrados
 cuando cambia la IPv4 de entrada. No sobrescribe registros A preexistentes:
-resuelve ese conflicto en Cloudflare antes de conectar el hostname. Quitar una
-configuración de dominio conserva su registro DNS en Cloudflare.
+resuelve ese conflicto en Cloudflare antes de conectar el hostname. Desconectar
+una zona o quitar una asignación conserva sus registros DNS en Cloudflare.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
@@ -878,17 +880,17 @@ Para recursos externos:
 
 Utilizar Traefik como proxy inverso.
 
-**Implementación actual:** la pestaña **Dominios** administra hostnames de
-proyectos Git mediante Cloudflare. Se configura una IPv4 de entrada para el VPS
-manager y se puede conectar cada hostname a un proyecto y puerto HTTP interno.
-El panel crea/sincroniza registros A y las etiquetas de Traefik se aplican al
-siguiente despliegue. Los certificados usan el desafío HTTP de Let's Encrypt.
-La sincronización de varios registros al cambiar la IPv4 puede ser parcial; el
-panel informa qué hostnames fallaron y permite volver a guardar la IPv4 para
-reintentar.
-La integración no administra todavía dominios de aplicaciones arbitrarias,
-registros AAAA, reglas de redirección ni el estado de vencimiento de
-certificados.
+**Implementación actual:** la pestaña **Dominios** registra zonas raíz
+reutilizables de Cloudflare. En proyectos se puede elegir una zona conectada y
+asignar un hostname; en la instalación de n8n se eligen la zona y el subdominio
+(vacío para usar el dominio raíz). El panel crea/sincroniza registros A y las
+etiquetas de Traefik se aplican al siguiente despliegue. Los certificados usan
+el desafío HTTP de Let's Encrypt. La sincronización de varios registros al
+cambiar la IPv4 puede ser parcial; el panel informa qué hostnames fallaron y
+permite volver a guardar la IPv4 para reintentar. Comprar un dominio en otro
+registrador está soportado si sus nameservers delegan el DNS a Cloudflare. No
+se conectan APIs de registradores ni se administran todavía registros AAAA,
+reglas de redirección o vencimientos de certificados.
 
 ## 8.1. Funciones previstas
 
@@ -1498,11 +1500,16 @@ POST   /api/domains
 PUT    /api/domains/ingress-ip
 PUT    /api/domains/:id
 DELETE /api/domains/:id
+POST   /api/domain-zones
+PUT    /api/domain-zones/:id
+DELETE /api/domain-zones/:id
 ```
 
-La creación/actualización requiere zona, hostname, ID de proyecto, puerto HTTP
-interno, proveedor `cloudflare`, estado de proxy y, al conectar por primera vez,
-un token API. El token no se incluye en respuestas, auditoría ni tareas.
+La conexión de zona requiere el dominio raíz, estado de proxy predeterminado y
+un token API de Cloudflare. Sus credenciales no se incluyen en respuestas,
+auditoría ni tareas. Las asignaciones de hostnames a proyectos usan una zona
+previamente conectada; n8n recibe la zona y el subdominio elegidos durante la
+instalación. Una zona no se puede desconectar mientras tenga asignaciones.
 
 ## Git
 
@@ -1528,6 +1535,10 @@ PATCH  /api/applications/:id
 POST   /api/applications/:id/update
 DELETE /api/applications/:id
 ```
+
+La instalación de n8n acepta `POST /api/system/applications/n8n` con
+`{ "zoneId": "<id de una zona conectada>", "subdomain": "automatizacion" }`.
+Usa `""` o `"@"` como subdominio para instalarlo en el dominio raíz.
 
 ## Docker
 
@@ -1894,7 +1905,7 @@ El desarrollo debe ser incremental.
 - [x] Configurar registro privado desde el navegador.
 - [x] Desplegar manualmente proyectos como servicios Swarm globales internos, sin puertos publicados.
 - [x] Configurar variables por proyecto Git.
-- [x] Administrar dominios Cloudflare para proyectos Git desde un panel central.
+- [x] Conectar dominios raíz de Cloudflare una vez y reutilizarlos en proyectos Git y al instalar n8n.
 - [x] Hacer rollback de un proyecto a un despliegue exitoso anterior.
 - [ ] Aplicar configuración genérica a aplicaciones del catálogo.
 - [ ] Gestionar secretos mediante Docker Secrets.

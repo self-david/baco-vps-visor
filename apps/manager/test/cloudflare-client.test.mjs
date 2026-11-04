@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildDomainHostname,
   createCloudflareClient,
   isIpv4Address,
   validateDomainConfiguration,
+  validateDomainZoneConfiguration,
 } from "../cloudflare-client.mjs";
 
 const domainInput = {
@@ -14,6 +16,25 @@ const domainInput = {
   port: 3000,
   proxied: false,
 };
+
+test("validates reusable Cloudflare zones and builds hostnames from subdomains", () => {
+  const zoneInput = {
+    zone: "Example.com",
+    token: "test-cloudflare-api-key-value-123456789",
+    proxied: true,
+  };
+  assert.deepEqual(validateDomainZoneConfiguration(zoneInput), {
+    ...zoneInput,
+    zone: "example.com",
+  });
+  assert.throws(() => validateDomainZoneConfiguration({ ...zoneInput, zone: "not a domain" }), /formato/);
+  assert.throws(() => validateDomainZoneConfiguration({ ...zoneInput, token: "short" }), /token/);
+  assert.equal(buildDomainHostname("example.com", "automation"), "automation.example.com");
+  assert.equal(buildDomainHostname("example.com", "@"), "example.com");
+  assert.equal(buildDomainHostname("example.com", ""), "example.com");
+  assert.throws(() => buildDomainHostname("example.com", "bad..name"), /subdominio/);
+  assert.throws(() => buildDomainHostname("example.com", "bad name"), /formato/);
+});
 
 test("validates Cloudflare domain-to-project configuration", () => {
   assert.deepEqual(validateDomainConfiguration(domainInput), domainInput);

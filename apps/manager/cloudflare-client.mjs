@@ -2,6 +2,44 @@ const apiBase = "https://api.cloudflare.com/client/v4";
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
+export function validateDomainZoneConfiguration(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).some((key) => !["zone", "token", "proxied"].includes(key))
+    || typeof input.zone !== "string"
+    || (input.token !== undefined && typeof input.token !== "string")
+    || (input.proxied !== undefined && typeof input.proxied !== "boolean")) {
+    throw new TypeError("Proporciona un dominio raíz, un token de Cloudflare y un proxy válidos.");
+  }
+  const zone = input.zone.trim().toLowerCase().replace(/\.$/, "");
+  if (!hostnamePattern.test(zone)) {
+    throw new TypeError("El dominio raíz no tiene un formato válido.");
+  }
+  if (input.token !== undefined
+    && (input.token.length < 20 || input.token.length > 512 || /[\u0000-\u001f\u007f]/.test(input.token))) {
+    throw new TypeError("El token de Cloudflare no tiene un formato válido.");
+  }
+  return {
+    zone,
+    ...(input.token !== undefined ? { token: input.token } : {}),
+    proxied: input.proxied ?? false,
+  };
+}
+
+export function buildDomainHostname(zone, subdomain) {
+  if (typeof zone !== "string" || !hostnamePattern.test(zone)
+    || typeof subdomain !== "string" || subdomain.length > 253
+    || /[\u0000-\u0020\u007f]/.test(subdomain)) {
+    throw new TypeError("La zona o el subdominio no tienen un formato válido.");
+  }
+  const normalizedSubdomain = subdomain.trim().toLowerCase();
+  if (!normalizedSubdomain || normalizedSubdomain === "@") return zone;
+  const hostname = `${normalizedSubdomain}.${zone}`;
+  if (!hostnamePattern.test(hostname)) {
+    throw new TypeError("Escribe un subdominio válido, por ejemplo app o automatizacion.");
+  }
+  return hostname;
+}
+
 export function validateDomainConfiguration(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).some((key) => ![

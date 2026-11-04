@@ -55,8 +55,13 @@ import {
   getProject,
   getProjectDomains,
   getProjectDomain,
+  getDomainZones,
+  getDomainZone,
+  getDomainZoneByName,
   saveProjectDomain,
+  saveDomainZone,
   deleteProjectDomain,
+  deleteDomainZone,
   getIngressIp,
   setIngressIp,
   createProject,
@@ -108,7 +113,13 @@ import {
   hasCloudflareToken,
   deleteCloudflareToken,
 } from "./project-deployment-config.mjs";
-import { createCloudflareClient, isIpv4Address, validateDomainConfiguration } from "./cloudflare-client.mjs";
+import {
+  buildDomainHostname,
+  createCloudflareClient,
+  isIpv4Address,
+  validateDomainConfiguration,
+  validateDomainZoneConfiguration,
+} from "./cloudflare-client.mjs";
 import { mapSwarmNode, validateSwarmNodeEnrollment } from "./swarm-node-manager.mjs";
 import { validateManualApplicationInput } from "./application-template.mjs";
 
@@ -737,9 +748,10 @@ async function getGiteaApplicationState() {
 }
 
 async function getN8nApplicationState() {
-  const [services, domains, latestTask] = await Promise.all([
+  const [services, domains, domainZones, latestTask] = await Promise.all([
     dockerGet("/services"),
     getProjectDomains(),
+    getDomainZones(),
     getLatestTaskByType("application.n8n.install"),
   ]);
   const service = services.find((item) => item.Spec?.Name === "vps-manager-n8n");
@@ -754,7 +766,12 @@ async function getN8nApplicationState() {
       domain: domain?.hostname ?? null,
       url: domain ? `https://${domain.hostname}/` : null,
       domainConfigured: Boolean(domain),
-      available: Boolean(domain) && !testMode && !installed && !nameConflict && !installing,
+      available: (Boolean(domain) || domainZones.length > 0) && !testMode && !installed && !nameConflict && !installing,
+      domainZones: domainZones.map((domainZone) => ({
+        id: domainZone.id,
+        zone: domainZone.zone,
+        proxied: domainZone.proxied,
+      })),
       installed,
       installing,
       nameConflict,
@@ -1014,14 +1031,22 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const [domains, projects, ingressIp] = await Promise.all([
+      const [domains, domainZones, projects, ingressIp] = await Promise.all([
         getProjectDomains(),
+        getDomainZones(),
         getProjects(),
         getIngressIp(),
       ]);
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       respondJson(response, 200, {
         ingressIp,
+        zones: await Promise.all(domainZones.map(async (domainZone) => ({
+          id: domainZone.id,
+          provider: domainZone.provider,
+          zone: domainZone.zone,
+          proxied: domainZone.proxied,
+          tokenConfigured: await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId),
+        }))),
         domains: await Promise.all(domains.map(async (domain) => ({
           id: domain.id,
           provider: domain.provider,
@@ -1034,13 +1059,158 @@ const server = createServer(async (request, response) => {
             : projectNames.get(domain.projectId) ?? "Proyecto eliminado",
           port: domain.port,
           proxied: domain.proxied,
-          tokenConfigured: await hasCloudflareToken(serviceOperationsDirectory, domain.id),
+          tokenConfigured: await hasCloudflareToken(
+            serviceOperationsDirectory,
+            domainZones.find((domainZone) => domainZone.zone.toLowerCase() === domain.zone.toLowerCase())?.credentialId
+              ?? domain.id,
+          ),
         }))),
         projects,
       });
     } catch (error) {
       console.error("Could not retrieve project domains:", error);
       respondJson(response, 503, { error: "No se pudieron consultar los dominios." });
+    }
+    return;
+  }
+
+  const domainZoneMatch = url.pathname.match(/^\/api\/domain-zones(?:\/([a-f0-9-]+))?$/i);
+  if (domainZoneMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    const zoneId = domainZoneMatch[1]?.toLowerCase();
+    const isUpdateOrDelete = Boolean(zoneId);
+    if (request.method !== (isUpdateOrDelete ? "PUT" : "POST")
+      && !(isUpdateOrDelete && request.method === "DELETE")) {
+      respondJson(response, 405, { error: "Método no permitido." }, {
+        Allow: isUpdateOrDelete ? "PUT, DELETE" : "POST",
+      });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    if (isUpdateOrDelete && !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(zoneId)) {
+      respondJson(response, 400, { error: "El identificador del dominio no es válido." });
+      return;
+    }
+    if (request.method === "DELETE") {
+      try {
+        const existing = await getDomainZone(zoneId);
+        if (!existing) {
+          respondJson(response, 404, { error: "No se encontró el dominio conectado." });
+          return;
+        }
+        if ((await getProjectDomains()).some((domain) =>
+          domain.zone.toLowerCase() === existing.zone.toLowerCase())) {
+          respondJson(response, 409, {
+            error: "Quita primero las asignaciones de aplicaciones y proyectos antes de desconectar esta zona.",
+          });
+          return;
+        }
+        const removed = await deleteDomainZone(zoneId);
+        if (removed) await deleteCloudflareToken(serviceOperationsDirectory, removed.credentialId);
+        respondJson(response, 200, {
+          deleted: true,
+          message: `Se desconectó ${existing.zone}. No se eliminaron sus registros DNS de Cloudflare.`,
+        });
+      } catch (error) {
+        if (error?.code === "23503") {
+          respondJson(response, 409, {
+            error: "Quita primero las asignaciones de aplicaciones y proyectos antes de desconectar esta zona.",
+          });
+          return;
+        }
+        console.error("Could not remove connected domain zone:", error);
+        respondJson(response, 503, { error: "No se pudo desconectar el dominio." });
+      }
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      const input = validateDomainZoneConfiguration(body);
+      const existing = isUpdateOrDelete ? await getDomainZone(zoneId) : null;
+      if (isUpdateOrDelete && !existing) {
+        respondJson(response, 404, { error: "No se encontró el dominio conectado." });
+        return;
+      }
+      if (existing && existing.zone.toLowerCase() !== input.zone) {
+        respondJson(response, 409, { error: "Para conectar otra zona, crea una conexión nueva." });
+        return;
+      }
+      if (!existing && input.token === undefined) {
+        respondJson(response, 400, { error: "Proporciona un token de Cloudflare para conectar el dominio." });
+        return;
+      }
+      let token = input.token;
+      if (token === undefined) {
+        if (!await hasCloudflareToken(serviceOperationsDirectory, existing.credentialId)) {
+          respondJson(response, 409, { error: "Vuelve a proporcionar un token de Cloudflare para esta zona." });
+          return;
+        }
+        token = await getCloudflareToken(serviceOperationsDirectory, existing.credentialId);
+      }
+      const verifiedZone = await cloudflareClient.verifyZone(token, input.zone);
+      if (existing && existing.zoneId !== verifiedZone.id
+        && (await getProjectDomains()).some((domain) => domain.zone.toLowerCase() === existing.zone.toLowerCase())) {
+        respondJson(response, 409, {
+          error: "La zona de Cloudflare cambió mientras tiene hostnames asignados. Quita las asignaciones antes de actualizar la conexión.",
+        });
+        return;
+      }
+      const savedId = existing?.id ?? randomUUID();
+      const credentialId = existing?.credentialId ?? savedId;
+      if (input.token !== undefined) {
+        await saveCloudflareToken(serviceOperationsDirectory, credentialId, input.token);
+      }
+      const saved = await saveDomainZone({
+        id: savedId,
+        provider: "cloudflare",
+        zone: verifiedZone.name,
+        zoneId: verifiedZone.id,
+        credentialId,
+        proxied: input.proxied,
+      });
+      respondJson(response, existing ? 200 : 201, {
+        zone: {
+          id: saved.id,
+          provider: saved.provider,
+          zone: saved.zone,
+          proxied: saved.proxied,
+          tokenConfigured: true,
+        },
+        message: existing
+          ? `Se actualizó la conexión de ${saved.zone}.`
+          : `Se conectó ${saved.zone} con Cloudflare. Ya puedes usarlo en aplicaciones y proyectos.`,
+      });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      const status = {
+        CLOUDFLARE_TOKEN_INVALID: 401,
+        CLOUDFLARE_ZONE_NOT_FOUND: 400,
+        CLOUDFLARE_UNAVAILABLE: 502,
+        CLOUDFLARE_REQUEST_FAILED: 502,
+      }[error?.code];
+      if (status) {
+        respondJson(response, status, { error: error.message });
+        return;
+      }
+      if (error?.code === "23505") {
+        respondJson(response, 409, { error: "Ese dominio ya está conectado." });
+        return;
+      }
+      if (error instanceof TypeError || error instanceof RangeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      console.error("Could not connect domain zone:", error);
+      respondJson(response, 503, { error: "No se pudo conectar el dominio." });
     }
     return;
   }
@@ -1066,11 +1236,14 @@ const server = createServer(async (request, response) => {
         return;
       }
       const ingressIp = await setIngressIp(body.ipv4);
-      const domains = await getProjectDomains();
+      const [domains, domainZones] = await Promise.all([getProjectDomains(), getDomainZones()]);
       const failures = [];
       for (const domain of domains) {
         try {
-          const token = await getCloudflareToken(serviceOperationsDirectory, domain.id);
+          const domainZone = domainZones.find((candidate) =>
+            candidate.zone.toLowerCase() === domain.zone.toLowerCase());
+          if (!domainZone) throw new Error("La zona ya no está conectada.");
+          const token = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
           await cloudflareClient.upsertARecord(token, {
             zoneId: domain.zoneId,
             hostname: domain.hostname,
@@ -1136,9 +1309,12 @@ const server = createServer(async (request, response) => {
             return;
           }
         }
+        const domainZone = await getDomainZoneByName(existing.zone);
         await deleteProjectDomain(domainId);
+        if (!domainZone || domainZone.credentialId !== domainId) {
+          await deleteCloudflareToken(serviceOperationsDirectory, domainId);
+        }
         if (existing.projectId) await saveProjectDomainAssignments(existing.projectId);
-        await deleteCloudflareToken(serviceOperationsDirectory, domainId);
         respondJson(response, 200, {
           deleted: true,
           message: existing.applicationId === "n8n"
@@ -1154,6 +1330,11 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readJson(request);
       const input = validateDomainConfiguration(body);
+      const domainZone = await getDomainZoneByName(input.zone);
+      if (!domainZone) {
+        respondJson(response, 409, { error: "Conecta primero el dominio raíz en la pestaña Dominios." });
+        return;
+      }
       const ingressIp = await getIngressIp();
       if (!ingressIp) {
         respondJson(response, 409, { error: "Configura primero la IPv4 pública del VPS manager." });
@@ -1213,13 +1394,17 @@ const server = createServer(async (request, response) => {
       }
       let token = input.token;
       if (token === undefined) {
-        if (!await hasCloudflareToken(serviceOperationsDirectory, domainId)) {
-          respondJson(response, 409, { error: "Vuelve a proporcionar un token de Cloudflare para este dominio." });
+        if (!await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId)) {
+          respondJson(response, 409, { error: "Actualiza el token de Cloudflare de la zona conectada." });
           return;
         }
-        token = await getCloudflareToken(serviceOperationsDirectory, domainId);
+        token = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
       }
       const zone = await cloudflareClient.verifyZone(token, input.zone);
+      if (zone.id !== domainZone.zoneId) {
+        respondJson(response, 409, { error: "La zona de Cloudflare cambió. Actualiza la conexión en Dominios." });
+        return;
+      }
       const dnsRecord = await cloudflareClient.upsertARecord(token, {
         zoneId: zone.id,
         hostname: input.hostname,
@@ -1234,6 +1419,7 @@ const server = createServer(async (request, response) => {
         id,
         provider: "cloudflare",
         zone: zone.name,
+        domainZoneId: domainZone.id,
         zoneId: zone.id,
         hostname: input.hostname,
         projectId: input.projectId,
@@ -1243,7 +1429,7 @@ const server = createServer(async (request, response) => {
         dnsRecordId: dnsRecord.id,
       });
       if (input.token !== undefined) {
-        await saveCloudflareToken(serviceOperationsDirectory, id, input.token);
+        await saveCloudflareToken(serviceOperationsDirectory, domainZone.credentialId, input.token);
       }
       if (input.projectId) await saveProjectDomainAssignments(input.projectId);
       if (existing?.projectId && existing.projectId !== input.projectId) {
@@ -2092,6 +2278,10 @@ const server = createServer(async (request, response) => {
             respondJson(response, 409, { error: error.message });
             return;
           }
+          if (error instanceof RequestError) {
+            respondJson(response, error.statusCode, { error: error.message });
+            return;
+          }
           throw error;
         }
         respondJson(response, 202, {
@@ -2138,9 +2328,9 @@ const server = createServer(async (request, response) => {
       }
       try {
         const { application } = await getN8nApplicationState();
-        if (testMode || !application.domain) {
+        if (testMode || (!application.domain && application.domainZones.length === 0)) {
           respondJson(response, 409, {
-            error: "n8n requiere HTTPS y un dominio registrado para la aplicación en el panel central de Dominios.",
+            error: "Conecta primero un dominio raíz en la pestaña Dominios para elegir dónde instalar n8n.",
           });
           return;
         }
@@ -2154,20 +2344,112 @@ const server = createServer(async (request, response) => {
           });
           return;
         }
+        const hasBody = Number(request.headers["content-length"] ?? 0) > 0
+          || request.headers["transfer-encoding"] !== undefined;
+        const body = hasBody ? await readJson(request) : undefined;
+        let hostname = application.domain;
+        if (body !== undefined) {
+          if (!body || typeof body !== "object" || Array.isArray(body)
+            || Object.keys(body).some((key) => !["zoneId", "subdomain"].includes(key))
+            || typeof body.zoneId !== "string"
+            || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.zoneId)
+            || typeof body.subdomain !== "string") {
+            respondJson(response, 400, { error: "Selecciona un dominio raíz y escribe un subdominio válido." });
+            return;
+          }
+          const domainZone = await getDomainZone(body.zoneId);
+          if (!domainZone) {
+            respondJson(response, 404, { error: "El dominio raíz seleccionado ya no está conectado." });
+            return;
+          }
+          hostname = buildDomainHostname(domainZone.zone, body.subdomain);
+          const reservedHostnames = new Set([
+            managerDomain.toLowerCase(),
+            managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
+            (await serviceOperationAgent.getRegistryConfiguration())?.domain?.toLowerCase() ?? "",
+          ].filter(Boolean));
+          if (reservedHostnames.has(hostname)) {
+            respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });
+            return;
+          }
+          const domains = await getProjectDomains();
+          const existingDomain = domains.find((domain) => domain.applicationId === "n8n");
+          if (domains.some((domain) => domain.hostname === hostname && domain.id !== existingDomain?.id)) {
+            respondJson(response, 409, { error: "Ese hostname ya está asignado a otro proyecto o aplicación." });
+            return;
+          }
+          const ingressIp = await getIngressIp();
+          if (!ingressIp) {
+            respondJson(response, 409, { error: "Configura primero la IPv4 pública del VPS manager." });
+            return;
+          }
+          if (!await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId)) {
+            respondJson(response, 409, { error: "Actualiza el token de Cloudflare del dominio raíz seleccionado." });
+            return;
+          }
+          const token = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
+          const verifiedZone = await cloudflareClient.verifyZone(token, domainZone.zone);
+          if (verifiedZone.id !== domainZone.zoneId) {
+            respondJson(response, 409, { error: "La zona de Cloudflare cambió. Actualiza la conexión en Dominios." });
+            return;
+          }
+          const dnsRecord = await cloudflareClient.upsertARecord(token, {
+            zoneId: domainZone.zoneId,
+            hostname,
+            address: ingressIp,
+            proxied: domainZone.proxied,
+            existingRecordId: existingDomain?.zone === domainZone.zone && existingDomain.hostname === hostname
+                ? existingDomain.dnsRecordId
+                : undefined,
+          });
+          await saveProjectDomain({
+            id: existingDomain?.id ?? randomUUID(),
+            provider: "cloudflare",
+            zone: domainZone.zone,
+            domainZoneId: domainZone.id,
+            zoneId: domainZone.zoneId,
+            hostname,
+            applicationId: "n8n",
+            port: 5678,
+            proxied: domainZone.proxied,
+            dnsRecordId: dnsRecord.id,
+          });
+        }
         const taskId = randomUUID();
-        await createN8nInstallTask({ id: taskId, domain: application.domain });
+        await createN8nInstallTask({ id: taskId, domain: hostname });
         respondJson(response, 202, {
           task: {
             id: taskId,
             type: "application.n8n.install",
             status: "pending",
-            domain: application.domain,
-            message: `Instalación de n8n solicitada para https://${application.domain}/.`,
+            domain: hostname,
+            message: `Instalación de n8n solicitada para https://${hostname}/.`,
           },
         });
       } catch (error) {
         if (error?.code === "APPLICATION_TASK_IN_PROGRESS") {
           respondJson(response, 409, { error: error.message });
+          return;
+        }
+        if (error instanceof RequestError) {
+          respondJson(response, error.statusCode, { error: error.message });
+          return;
+        }
+        const status = {
+          CLOUDFLARE_TOKEN_INVALID: 401,
+          CLOUDFLARE_ZONE_NOT_FOUND: 400,
+          CLOUDFLARE_RECORD_EXISTS: 409,
+          CLOUDFLARE_RECORD_NOT_FOUND: 409,
+          CLOUDFLARE_UNAVAILABLE: 502,
+          CLOUDFLARE_REQUEST_FAILED: 502,
+          "23505": 409,
+        }[error?.code];
+        if (status) {
+          respondJson(response, status, { error: error.message });
+          return;
+        }
+        if (error instanceof TypeError || error instanceof RangeError) {
+          respondJson(response, 400, { error: error.message });
           return;
         }
         console.error("Could not request n8n installation:", error);
