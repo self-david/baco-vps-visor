@@ -531,17 +531,15 @@ en otras ramas solo se registran. Retirar un servicio no borra la imagen del
 registro. Para borrar la ficha del proyecto primero hay que retirar el servicio
 y quitar sus dominios.
 
-En **Dominios**, configura una vez la IPv4 pública de entrada del VPS manager y
-conecta cada dominio raíz con un token de Cloudflare que tenga permisos
-`Zone:Read` y `DNS:Edit`. El token se guarda en el VPS en un archivo con
-permisos restringidos; no se guarda en PostgreSQL ni en el historial de tareas.
-El dominio puede haberse comprado en Namecheap u otro registrador, siempre que
-sus nameservers estén delegados a Cloudflare. Después selecciona esa zona al
-asignar un hostname a un proyecto o instalar n8n; puedes usar la raíz o un
-subdominio. VPS Manager crea registros A y actualiza los registros administrados
-cuando cambia la IPv4 de entrada. No sobrescribe registros A preexistentes:
-resuelve ese conflicto en Cloudflare antes de conectar el hostname. Desconectar
-una zona o quitar una asignación conserva sus registros DNS en Cloudflare.
+En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar
+más adelante. La página incluye instrucciones para delegar nameservers a
+Cloudflare y crear un token con permisos `Zone:Read` y `DNS:Edit`. La conexión
+comprueba que Cloudflare exponga la zona como activa y guarda el token en el VPS
+con permisos restringidos; no lo guarda en PostgreSQL ni en el historial de
+tareas. El dominio puede haberse comprado en Namecheap u otro registrador si
+sus nameservers están delegados a Cloudflare. Esta vista no crea subdominios,
+registros DNS ni asignaciones a proyectos. La selección de dominio para
+aplicaciones se realiza desde el flujo de cada aplicación cuando está disponible.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
@@ -880,17 +878,15 @@ Para recursos externos:
 
 Utilizar Traefik como proxy inverso.
 
-**Implementación actual:** la pestaña **Dominios** registra zonas raíz
-reutilizables de Cloudflare. En proyectos se puede elegir una zona conectada y
-asignar un hostname; en la instalación de n8n se eligen la zona y el subdominio
-(vacío para usar el dominio raíz). El panel crea/sincroniza registros A y las
-etiquetas de Traefik se aplican al siguiente despliegue. Los certificados usan
-el desafío HTTP de Let's Encrypt. La sincronización de varios registros al
-cambiar la IPv4 puede ser parcial; el panel informa qué hostnames fallaron y
-permite volver a guardar la IPv4 para reintentar. Comprar un dominio en otro
-registrador está soportado si sus nameservers delegan el DNS a Cloudflare. No
-se conectan APIs de registradores ni se administran todavía registros AAAA,
-reglas de redirección o vencimientos de certificados.
+**Implementación actual:** la pestaña **Dominios** mantiene un inventario de
+zonas raíz reutilizables de Cloudflare. Su guía explica cómo agregar el dominio
+a Cloudflare, cambiar los nameservers en el registrador, esperar a que la zona
+esté activa y crear un token limitado a esa zona. Conectar una zona no crea
+subdominios, registros DNS ni asignaciones a proyectos. Las aplicaciones
+compatibles pueden seleccionar dominios desde su propio flujo. Comprar el
+dominio en otro registrador está soportado si sus nameservers delegan el DNS a
+Cloudflare. No se conectan APIs de registradores ni se administran todavía
+registros AAAA, reglas de redirección o vencimientos de certificados.
 
 ## 8.1. Funciones previstas
 
@@ -928,12 +924,11 @@ No se deben exponer servicios administrativos o bases de datos directamente a In
 
 ## 8.3. Validaciones
 
-La integración actual valida el formato y que el hostname pertenezca a la zona
-Cloudflare seleccionada, requiere un proyecto y un puerto interno válidos y no
-sobrescribe registros A que no estén previamente registrados por VPS Manager.
+Al conectar una zona, VPS Manager valida el formato del dominio y comprueba
+mediante la API que la zona esté activa y accesible con el token proporcionado.
 El token requiere permisos `Zone:Read` y `DNS:Edit` y se conserva en un archivo
-host-side con permisos restringidos.
-Al quitar una configuración, el registro DNS se conserva en Cloudflare.
+host-side con permisos restringidos. Esta comprobación no valida propagación
+pública de DNS ni accesibilidad HTTPS.
 
 Las validaciones futuras también deben:
 
@@ -1505,11 +1500,10 @@ PUT    /api/domain-zones/:id
 DELETE /api/domain-zones/:id
 ```
 
-La conexión de zona requiere el dominio raíz, estado de proxy predeterminado y
-un token API de Cloudflare. Sus credenciales no se incluyen en respuestas,
-auditoría ni tareas. Las asignaciones de hostnames a proyectos usan una zona
-previamente conectada; n8n recibe la zona y el subdominio elegidos durante la
-instalación. Una zona no se puede desconectar mientras tenga asignaciones.
+La conexión de zona requiere el dominio raíz y un token API de Cloudflare. Sus
+credenciales no se incluyen en respuestas, auditoría ni tareas. La vista no
+asigna dominios a proyectos; las zonas que tengan asignaciones previas no se
+pueden desconectar.
 
 ## Git
 
