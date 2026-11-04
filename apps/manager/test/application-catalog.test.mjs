@@ -27,6 +27,22 @@ test("projects tab exposes GitHub and ZIP deployment configuration", async () =>
   assert.match(page, /name="autoDeploy"/);
 });
 
+test("manager image includes the GitHub modules imported by the API", async () => {
+  const [dockerfile, server] = await Promise.all([
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
+    readFile(new URL("../server.mjs", import.meta.url), "utf8"),
+  ]);
+  const githubImports = [...server.matchAll(/from "\.\/(github-[^"]+\.mjs)"/g)]
+    .map(([, moduleName]) => moduleName);
+  const runtimeCopy = dockerfile.split(/\r?\n/).find((line) => line.startsWith("COPY server.mjs "));
+
+  assert.ok(githubImports.length > 0);
+  assert.ok(runtimeCopy);
+  for (const moduleName of githubImports) {
+    assert.ok(runtimeCopy.split(/\s+/).includes(moduleName), `${moduleName} must be copied into the runtime image`);
+  }
+});
+
 test("all HTML form patterns compile in modern browsers", async () => {
   const [page, applicationCatalogComponent] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
