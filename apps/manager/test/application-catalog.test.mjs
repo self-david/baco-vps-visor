@@ -30,6 +30,21 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(page, /name="autoDeploy"/);
 });
 
+test("login bootstrap is independent from dashboard initialization", async () => {
+  const [page, login, application] = await Promise.all([
+    readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
+    readFile(new URL("../public/login.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /src="\/login\.js"><\/script>\s*<script is:inline type="module" src="\/app\.js"/);
+  assert.match(login, /\/api\/auth\/login/);
+  assert.match(login, /\/api\/auth\/session/);
+  assert.match(login, /\/api\/auth\/logout/);
+  assert.doesNotMatch(login, /\/app\.js|project-archive\.mjs/);
+  assert.doesNotMatch(application, /\/api\/auth\/login|\/api\/auth\/session|\/api\/auth\/logout/);
+});
+
 test("manager image includes the GitHub and project-archive modules imported by the API", async () => {
   const [dockerfile, server] = await Promise.all([
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),

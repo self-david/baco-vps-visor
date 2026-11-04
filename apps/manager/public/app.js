@@ -1,8 +1,4 @@
-const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
-const loginForm = document.querySelector("#login-form");
-const loginError = document.querySelector("#login-error");
-const logoutButton = document.querySelector("#logout");
 const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
@@ -212,10 +208,7 @@ async function request(path, options = {}) {
   return result;
 }
 
-function showAuthenticated(authenticated) {
-  loginView.classList.toggle("hidden", authenticated);
-  dashboardView.classList.toggle("hidden", !authenticated);
-  logoutButton.classList.toggle("hidden", !authenticated);
+function handleAuthenticationChange(authenticated) {
   if (authenticated && metricAlertsRefreshTimer === undefined) {
     metricAlertsRefreshTimer = setInterval(() => void loadMetricAlerts(), 60_000);
   } else if (!authenticated && metricAlertsRefreshTimer !== undefined) {
@@ -3069,31 +3062,6 @@ async function loadResources() {
   }
 }
 
-loginForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  loginError.textContent = "";
-  const submitButton = loginForm.querySelector("button");
-  submitButton.disabled = true;
-  try {
-    await request("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ password: new FormData(loginForm).get("password") }),
-    });
-    loginForm.reset();
-    showAuthenticated(true);
-    await loadResources();
-  } catch (error) {
-    loginError.textContent = error.message;
-  } finally {
-    submitButton.disabled = false;
-  }
-});
-
-logoutButton.addEventListener("click", async () => {
-  await request("/api/auth/logout", { method: "POST" });
-  showAuthenticated(false);
-});
-
 refreshButton.addEventListener("click", loadResources);
 configureSupabaseButton.addEventListener("click", () => {
   fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
@@ -3371,10 +3339,9 @@ for (const selector of ["#container-filter", "#service-filter", "#stack-filter"]
 }
 document.querySelector("#close-logs").addEventListener("click", () => logsDialog.close());
 
-try {
-  const session = await request("/api/auth/session");
-  showAuthenticated(session.authenticated);
-  if (session.authenticated) await loadResources();
-} catch (error) {
-  statusMessage.textContent = error.message;
-}
+window.addEventListener("vps-manager:auth", (event) => {
+  const { authenticated } = event.detail;
+  handleAuthenticationChange(authenticated);
+  if (authenticated) void loadResources();
+});
+if (window.managerAuthenticated) void loadResources();
