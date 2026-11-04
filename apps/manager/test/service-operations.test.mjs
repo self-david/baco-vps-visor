@@ -441,7 +441,9 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
     await fixture.agent.stageProjectBuildArchive(requestId, archive);
     assert.deepEqual(await readFile(archivePath), archive);
     const operation = await fixture.agent.requestProjectBuild(projectId, commitSha, requestId, {
-      deploymentType: "static",
+      deploymentType: "build",
+      buildCommand: "npm run build",
+      buildOutputDirectory: "dist",
     });
     assert.equal(operation.state, "queued");
     assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
@@ -449,10 +451,12 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       operation: "build-project",
       projectId,
       commitSha,
-      deploymentType: "static",
+      deploymentType: "build",
       buildStrategy: "dockerfile",
       buildContext: ".",
       dockerfilePath: "Dockerfile",
+      buildCommand: "npm run build",
+      buildOutputDirectory: "dist",
     });
     assert.equal((await fixture.agent.getStatus()).projectId, projectId);
     await assert.rejects(
@@ -467,10 +471,12 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       state: "succeeded",
       projectId,
       commitSha,
-      deploymentType: "static",
+      deploymentType: "build",
       buildStrategy: "dockerfile",
       buildContext: ".",
       dockerfilePath: "Dockerfile",
+      buildCommand: "npm run build",
+      buildOutputDirectory: "dist",
       image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
       updatedAt: "2026-11-03T18:00:00Z",
       message: "Imagen construida.",
@@ -478,6 +484,33 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
     assert.equal((await fixture.agent.getStatus()).image, `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`);
     await fixture.agent.removeProjectBuildArchive(requestId);
     await assert.rejects(readFile(archivePath), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("resumes legacy dynamic build requests without Build-only fields", async () => {
+  const fixture = await createFixture();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const commitSha = "a".repeat(40);
+  try {
+    await writeFile(join(fixture.directory, "request.json"), JSON.stringify({
+      id: requestId,
+      operation: "build-project",
+      projectId,
+      commitSha,
+      deploymentType: "dynamic",
+      buildStrategy: "dockerfile",
+      buildContext: ".",
+      dockerfilePath: "Dockerfile",
+    }));
+
+    const queued = await fixture.agent.requestProjectBuild(projectId, commitSha, requestId, {
+      deploymentType: "dynamic",
+    });
+
+    assert.equal(queued.state, "queued");
+    assert.equal(queued.deploymentType, "dynamic");
   } finally {
     await fixture.cleanup();
   }

@@ -8,16 +8,28 @@
   <select id="project-deployment-type" name="deploymentType">
     <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
     <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+    <option value="build">Build + despliegue (compilar e iniciar automáticamente)</option>
   </select>
-  <p id="project-deployment-type-help" class="muted">Los proyectos estáticos se sirven con Nginx en el puerto 80.</p>
+  <p id="project-deployment-type-help" class="muted">Elige el perfil que mejor describe cómo debe publicarse el proyecto.</p>
   <div id="project-dynamic-build-fields">
-  <label for="project-build-strategy">Método de build</label>
-  <select id="project-build-strategy" name="buildStrategy">
-    <option value="dockerfile">Dockerfile</option>
-    <option value="railpack">Railpack (autodetección)</option>
-  </select>
-  <label for="project-build-context">Directorio de contexto</label>
-  <input id="project-build-context" name="buildContext" value="." pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+  <div id="project-build-strategy-field">
+    <label for="project-build-strategy">Método de build</label>
+    <select id="project-build-strategy" name="buildStrategy">
+      <option value="dockerfile">Dockerfile</option>
+      <option value="railpack">Railpack (autodetección)</option>
+    </select>
+  </div>
+  <div id="project-build-context-field">
+    <label for="project-build-context">Directorio de contexto</label>
+    <input id="project-build-context" name="buildContext" value="." pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+  </div>
+  <div id="project-build-output-fields">
+    <label for="project-build-command">Comando de compilación</label>
+    <input id="project-build-command" name="buildCommand" value="npm run build" maxlength="255" required>
+    <label for="project-build-output-directory">Directorio de salida</label>
+    <input id="project-build-output-directory" name="buildOutputDirectory" value="dist" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+    <p class="muted">Build instala dependencias según el lockfile, ejecuta este comando y publica el directorio con Nginx (puerto 80).</p>
+  </div>
   <div id="project-dockerfile-field">
     <label for="project-dockerfile">Ruta del Dockerfile</label>
     <input id="project-dockerfile" name="dockerfilePath" value="Dockerfile" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>

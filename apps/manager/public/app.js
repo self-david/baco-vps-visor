@@ -1774,22 +1774,36 @@ function renderProjectFileTree(paths, list) {
 
 function updateProjectDeploymentFields() {
   const isStatic = projectDeploymentTypeSelect.value === "static";
+  const isBuild = projectDeploymentTypeSelect.value === "build";
   projectDynamicBuildFields.classList.toggle("hidden", isStatic);
   for (const field of projectDynamicBuildFields.querySelectorAll("input, select")) {
     field.disabled = isStatic;
   }
   if (isStatic) document.querySelector("#project-port").value = "80";
+  if (isBuild) {
+    projectBuildStrategySelect.value = "dockerfile";
+    document.querySelector("#project-port").value = "80";
+  }
+  projectBuildStrategySelect.disabled = isStatic || isBuild;
+  document.querySelector("#project-port").disabled = isStatic || isBuild;
+  document.querySelector("#project-build-strategy-field").classList.toggle("hidden", isBuild);
+  const buildOutputFields = document.querySelector("#project-build-output-fields");
+  buildOutputFields.classList.toggle("hidden", !isBuild);
+  for (const field of buildOutputFields.querySelectorAll("input")) field.disabled = !isBuild;
   projectDeploymentTypeHelp.textContent = isStatic
     ? "Los archivos se sirven con Nginx en el puerto 80. No se ejecutan scripts de servidor."
-    : "El proyecto requiere un servidor HTTP. El puerto debe coincidir con el que escucha la aplicación.";
+    : isBuild
+      ? "Se instala según el lockfile, se ejecuta el comando de compilación y se publica la carpeta de salida con Nginx."
+      : "El proyecto requiere un servidor HTTP. El puerto debe coincidir con el que escucha la aplicación.";
   updateProjectBuildFields();
 }
 
 function updateProjectBuildFields() {
-  const isDockerfile = projectBuildStrategySelect.value === "dockerfile";
+  const isDynamic = projectDeploymentTypeSelect.value === "dynamic";
+  const isDockerfile = isDynamic && projectBuildStrategySelect.value === "dockerfile";
   projectDockerfileField.classList.toggle("hidden", !isDockerfile);
   document.querySelector("#project-dockerfile").disabled =
-    projectDeploymentTypeSelect.value === "static" || !isDockerfile;
+    !isDockerfile;
 }
 
 function returnToProjectsRoute() {
@@ -1826,8 +1840,10 @@ function renderProjectRoute() {
   projectBuildStrategySelect.value = project.buildStrategy ?? "dockerfile";
   document.querySelector("#project-build-context").value = project.buildContext ?? ".";
   document.querySelector("#project-dockerfile").value = project.dockerfilePath ?? "Dockerfile";
+  document.querySelector("#project-build-command").value = project.buildCommand ?? "npm run build";
+  document.querySelector("#project-build-output-directory").value = project.buildOutputDirectory ?? "dist";
   document.querySelector("#project-port").value = String(project.internalPort ?? 3000);
-  previousDynamicProjectPort = project.deploymentType === "static"
+  previousDynamicProjectPort = project.deploymentType === "static" || project.deploymentType === "build"
     ? "3000"
     : String(project.internalPort ?? 3000);
   document.querySelector("#project-auto-deploy").checked = project.autoDeploy ?? true;
@@ -1841,7 +1857,7 @@ function renderProjectRoute() {
   projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
   updateProjectDeploymentFields();
-  projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
+  updateProjectBuildFields();
   return project;
 }
 
@@ -2922,9 +2938,9 @@ projectBuildStrategySelect.addEventListener("change", () => {
   updateProjectBuildFields();
 });
 projectDeploymentTypeSelect.addEventListener("change", () => {
-  if (projectDeploymentTypeSelect.value === "static") {
+  if (projectDeploymentTypeSelect.value !== "dynamic") {
     const port = document.querySelector("#project-port").value;
-    if (port) previousDynamicProjectPort = port;
+    if (port && port !== "80") previousDynamicProjectPort = port;
   } else {
     document.querySelector("#project-port").value = previousDynamicProjectPort;
   }
@@ -2944,6 +2960,8 @@ projectForm.addEventListener("submit", async (event) => {
     buildStrategy: projectBuildStrategySelect.value,
     buildContext: document.querySelector("#project-build-context").value.trim(),
     dockerfilePath: document.querySelector("#project-dockerfile").value.trim(),
+    buildCommand: document.querySelector("#project-build-command").value.trim(),
+    buildOutputDirectory: document.querySelector("#project-build-output-directory").value.trim(),
     internalPort: Number(document.querySelector("#project-port").value),
     autoDeploy: document.querySelector("#project-auto-deploy").checked,
     ...(sourceType === "github" ? {
@@ -2953,6 +2971,9 @@ projectForm.addEventListener("submit", async (event) => {
     } : {}),
   };
   if (input.deploymentType === "static") {
+    input.buildStrategy = "dockerfile";
+    input.internalPort = 80;
+  } else if (input.deploymentType === "build") {
     input.buildStrategy = "dockerfile";
     input.internalPort = 80;
   }

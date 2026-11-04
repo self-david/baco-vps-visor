@@ -125,7 +125,7 @@ async function showSelection(files, projectName = "") {
   selectedProjectName = projectName || inferredName;
   selectedPaths = paths;
   const buildProfile = detectProjectBuildProfile(paths);
-  deploymentTypeSelect.value = buildProfile.isStaticSite ? "static" : "dynamic";
+  deploymentTypeSelect.value = buildProfile.recommendedDeploymentType;
   const totalBytes = selectedFiles.reduce((sum, { file }) => sum + file.size, 0);
   const size = totalBytes < 1024 * 1024
     ? `${Math.max(1, Math.ceil(totalBytes / 1024))} KiB`
@@ -209,12 +209,16 @@ async function importSelectedFiles() {
         "Content-Type": "application/zip",
         "X-Project-Name": safeProjectName(root),
         "X-Deployment-Type": deploymentType,
-        "X-Build-Strategy": deploymentType === "static" ? "dockerfile" : buildProfile.buildStrategy,
+        "X-Build-Strategy": deploymentType === "static"
+          ? "dockerfile"
+          : deploymentType === "build" ? "dockerfile" : buildProfile.buildStrategy,
       },
       body: archive,
     });
     uploadStatus.textContent = deploymentType === "static"
       ? `${result.project.name} se creó como sitio estático con Nginx (puerto 80). Pulsa “Construir” para prepararlo.`
+      : deploymentType === "build"
+        ? `${result.project.name} se creó con el perfil Build + despliegue. El proyecto se compilará y su salida se publicará con Nginx.`
       : buildProfile.simpleNodeServer || buildProfile.simplePythonApp
         ? `${result.project.name} usará un contenedor básico para su archivo principal. Verifica el puerto de escucha en Configuración antes de desplegar.`
         : buildProfile.requiresCustomDockerfile

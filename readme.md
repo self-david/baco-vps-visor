@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los sitios con `index.html` reciben un contenedor Nginx; `server.js` y `main.py` sueltos tienen un runtime básico, los manifiestos compatibles usan Railpack y C++ requiere un Dockerfile propio con un servidor HTTP. La integración debe validarse en un VPS antes de considerarse lista para producción.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir y desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los proyectos ofrecen tres perfiles: estático servido por Nginx, dinámico con Dockerfile o Railpack, y Build que instala dependencias según el lockfile, ejecuta el comando configurado y publica la carpeta de salida con Nginx. La integración debe validarse en un VPS antes de considerarse lista para producción.
 
 ---
 
@@ -477,10 +477,11 @@ desde su tarjeta una vez configurados.
 
 ## 5.2. Builds y despliegues
 
-Cada proyecto puede usar uno de estos métodos:
+Cada proyecto ofrece uno de estos perfiles:
 
-- **Dockerfile:** ruta del Dockerfile y directorio de contexto configurables.
-- **Railpack:** autodetección de la aplicación con Railpack 0.43.0.
+- **Estático:** publica los archivos existentes con Nginx.
+- **Dinámico:** usa un Dockerfile configurable o la autodetección de Railpack 0.43.0 para iniciar un servidor.
+- **Build + despliegue:** instala dependencias según `package-lock.json`, `pnpm-lock.yaml` o `yarn.lock`, ejecuta el comando configurado (por defecto `npm run build`) y publica la carpeta de salida (por defecto `dist`) con Nginx. Requiere `package.json`.
 
 El agente del VPS obtiene el código, construye con Docker Buildx/BuildKit y
 publica la imagen en el registro privado configurado. Los despliegues se crean

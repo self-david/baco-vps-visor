@@ -21,6 +21,7 @@ test("recommends deploy strategies only for supported project layouts", () => {
     buildStrategy: "dockerfile",
     internalPort: 80,
     isStaticSite: true,
+    recommendedDeploymentType: "static",
     simpleNodeServer: false,
     simplePythonApp: false,
     requiresCustomDockerfile: false,
@@ -28,6 +29,8 @@ test("recommends deploy strategies only for supported project layouts", () => {
   assert.equal(detectProjectBuildProfile(["server.js"]).simpleNodeServer, true);
   assert.equal(detectProjectBuildProfile(["main.py"]).simplePythonApp, true);
   assert.equal(detectProjectBuildProfile(["package.json", "server.js"]).buildStrategy, "railpack");
+  assert.equal(detectProjectBuildProfile(["package.json", "server.js"]).recommendedDeploymentType, "dynamic");
+  assert.equal(detectProjectBuildProfile(["package.json", "package-lock.json"]).recommendedDeploymentType, "build");
   assert.equal(detectProjectBuildProfile(["main.cpp"]).requiresCustomDockerfile, true);
 });
 

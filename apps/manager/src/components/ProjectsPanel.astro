@@ -34,8 +34,9 @@
                     <select id="project-import-deployment-type">
                       <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
                       <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+                      <option value="build">Build + despliegue (compilar e iniciar automáticamente)</option>
                     </select>
-                    <span class="muted">Estático publica los archivos con Nginx. Dinámico construye una aplicación con servidor.</span>
+                    <span class="muted">El perfil Build detecta manifiestos, instala dependencias, ejecuta la compilación y publica la carpeta de salida.</span>
                     <details id="project-selection-files" open>
                       <summary>Archivos incluidos</summary>
                       <ul id="project-selection-tree" class="project-file-tree"></ul>
@@ -77,6 +78,7 @@
                     <select id="github-deployment-type" name="deploymentType">
                       <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
                       <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
+                      <option value="build">Build + despliegue (Railpack)</option>
                     </select>
                     <button id="github-import-project" class="button" type="submit">Importar y desplegar</button>
                     <p id="github-import-status" class="muted" role="status" aria-live="polite"></p>

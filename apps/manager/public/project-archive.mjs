@@ -40,12 +40,19 @@ export function detectProjectBuildProfile(paths) {
     && !simpleNodeServer
     && !simplePythonApp
     && !requiresCustomDockerfile;
+  const hasServerEntrypoint = fileNames.has("server.js")
+    || fileNames.has("main.py")
+    || fileNames.has("app.py");
+  const recommendedDeploymentType = isStaticSite
+    ? "static"
+    : hasManifest && !hasDockerfile && !hasServerEntrypoint ? "build" : "dynamic";
   return {
     buildStrategy: hasDockerfile || isStaticSite || simpleNodeServer || simplePythonApp || requiresCustomDockerfile
       ? "dockerfile"
       : "railpack",
     internalPort: isStaticSite ? 80 : 3000,
     isStaticSite,
+    recommendedDeploymentType,
     simpleNodeServer,
     simplePythonApp,
     requiresCustomDockerfile,

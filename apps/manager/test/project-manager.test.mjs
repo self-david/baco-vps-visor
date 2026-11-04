@@ -20,6 +20,8 @@ test("validates GitHub project configuration with a selectable production branch
     buildStrategy: "dockerfile",
     buildContext: ".",
     dockerfilePath: "Dockerfile",
+    buildCommand: "npm run build",
+    buildOutputDirectory: "dist",
     internalPort: 3000,
     autoDeploy: true,
   });
@@ -46,6 +48,19 @@ test("validates GitHub project configuration with a selectable production branch
   assert.equal(staticProject.deploymentType, "static");
   assert.equal(staticProject.buildStrategy, "dockerfile");
   assert.equal(staticProject.internalPort, 80);
+
+  const buildProject = validateProjectInput({
+    name: "built-project",
+    sourceType: "upload",
+    deploymentType: "build",
+    buildStrategy: "railpack",
+    buildCommand: "npm run build:production",
+    buildOutputDirectory: "build/client",
+  });
+  assert.equal(buildProject.buildStrategy, "dockerfile");
+  assert.equal(buildProject.buildCommand, "npm run build:production");
+  assert.equal(buildProject.buildOutputDirectory, "build/client");
+  assert.equal(buildProject.internalPort, 80);
 });
 
 test("rejects unsafe or incomplete project metadata and malformed IDs", () => {
@@ -59,6 +74,8 @@ test("rejects unsafe or incomplete project metadata and malformed IDs", () => {
     { name: "project", sourceType: "upload", buildContext: "../escape" },
     { name: "project", sourceType: "upload", dockerfilePath: "/etc/passwd" },
     { name: "project", sourceType: "upload", buildStrategy: "nixpacks" },
+    { name: "project", sourceType: "upload", deploymentType: "build", buildCommand: "npm run build && rm -rf /" },
+    { name: "project", sourceType: "upload", deploymentType: "build", buildOutputDirectory: "../etc" },
     { name: "project", sourceType: "upload", internalPort: 0 },
     { name: "project", sourceType: "upload", autoDeploy: "yes" },
     { name: "project", sourceType: "upload", extra: true },

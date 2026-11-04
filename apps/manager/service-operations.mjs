@@ -36,6 +36,12 @@ function safeProjectPath(value) {
     && !value.split("/").some((part) => part === ".." || part === "");
 }
 
+function safeProjectCommand(value) {
+  return typeof value === "string"
+    && value.length <= 255
+    && /^[A-Za-z0-9._:/@+-]+(?: [A-Za-z0-9._:/@+-]+)*$/.test(value);
+}
+
 export function isPublicHostname(hostname) {
   return typeof hostname === "string" && hostnamePattern.test(hostname)
     && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
@@ -130,10 +136,16 @@ function validateStatus(status) {
       : status.operation === "build-project"
         ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
           || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
-          || !["static", "dynamic"].includes(status.deploymentType)
+          || !["static", "dynamic", "build"].includes(status.deploymentType)
           || !["dockerfile", "railpack"].includes(status.buildStrategy)
+          || (status.deploymentType === "static" && status.buildStrategy !== "dockerfile")
+          || (status.deploymentType === "build" && status.buildStrategy !== "dockerfile")
           || !safeProjectPath(status.buildContext)
           || !safeProjectPath(status.dockerfilePath)
+          || (status.buildCommand !== undefined && !safeProjectCommand(status.buildCommand))
+          || (status.buildOutputDirectory !== undefined && !safeProjectPath(status.buildOutputDirectory))
+          || (status.deploymentType === "build"
+            && (!safeProjectCommand(status.buildCommand) || !safeProjectPath(status.buildOutputDirectory)))
           || (status.state === "succeeded" && typeof status.image !== "string"))
         : status.operation === "deploy-project"
           ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
@@ -236,10 +248,17 @@ export function createServiceOperationAgent({
             : queuedRequest.operation === "build-project"
               ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
-                && ["static", "dynamic"].includes(queuedRequest.deploymentType)
+                && ["static", "dynamic", "build"].includes(queuedRequest.deploymentType)
                 && ["dockerfile", "railpack"].includes(queuedRequest.buildStrategy)
+                && !(queuedRequest.deploymentType === "static" && queuedRequest.buildStrategy !== "dockerfile")
+                && !(queuedRequest.deploymentType === "build" && queuedRequest.buildStrategy !== "dockerfile")
                 && safeProjectPath(queuedRequest.buildContext)
                 && safeProjectPath(queuedRequest.dockerfilePath)
+                && (queuedRequest.buildCommand === undefined || safeProjectCommand(queuedRequest.buildCommand))
+                && (queuedRequest.buildOutputDirectory === undefined || safeProjectPath(queuedRequest.buildOutputDirectory))
+                && (queuedRequest.deploymentType !== "build"
+                  || (safeProjectCommand(queuedRequest.buildCommand)
+                    && safeProjectPath(queuedRequest.buildOutputDirectory)))
               : queuedRequest.operation === "deploy-project"
                 ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                   && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
@@ -282,7 +301,12 @@ export function createServiceOperationAgent({
           : queuedRequest.operation === "configure-registry"
             ? ["id", "operation", "domain", "username"]
           : queuedRequest.operation === "build-project"
-            ? ["id", "operation", "projectId", "commitSha", "deploymentType", "buildStrategy", "buildContext", "dockerfilePath"]
+            ? [
+              "id", "operation", "projectId", "commitSha", "deploymentType", "buildStrategy", "buildContext", "dockerfilePath",
+              ...(queuedRequest.buildCommand === undefined && queuedRequest.buildOutputDirectory === undefined
+                ? []
+                : ["buildCommand", "buildOutputDirectory"]),
+            ]
           : queuedRequest.operation === "deploy-project"
             ? ["id", "operation", "projectId", "commitSha"]
             : queuedRequest.operation === "remove-project"
@@ -321,6 +345,8 @@ export function createServiceOperationAgent({
                   buildStrategy: queuedRequest.buildStrategy,
                   buildContext: queuedRequest.buildContext,
                   dockerfilePath: queuedRequest.dockerfilePath,
+                  buildCommand: queuedRequest.buildCommand,
+                  buildOutputDirectory: queuedRequest.buildOutputDirectory,
                 }
                 : queuedRequest.operation === "deploy-project"
                   ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
@@ -620,12 +646,17 @@ export function createServiceOperationAgent({
     const buildStrategy = configuration.buildStrategy ?? "dockerfile";
     const buildContext = configuration.buildContext ?? ".";
     const dockerfilePath = configuration.dockerfilePath ?? "Dockerfile";
+    const buildCommand = configuration.buildCommand ?? "npm run build";
+    const buildOutputDirectory = configuration.buildOutputDirectory ?? "dist";
     if (!requestIdPattern.test(requestId ?? "")
       || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId ?? "")
       || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
-      || !["static", "dynamic"].includes(deploymentType)
+      || !["static", "dynamic", "build"].includes(deploymentType)
       || !["dockerfile", "railpack"].includes(buildStrategy)
       || (deploymentType === "static" && buildStrategy !== "dockerfile")
+      || (deploymentType === "build" && (buildStrategy !== "dockerfile"
+        || !safeProjectCommand(buildCommand)
+        || !safeProjectPath(buildOutputDirectory)))
       || !safeProjectPath(buildContext)
       || !safeProjectPath(dockerfilePath)) {
       throw new TypeError("Project build request fields are invalid.");
@@ -638,7 +669,11 @@ export function createServiceOperationAgent({
         || currentStatus.deploymentType !== deploymentType
         || currentStatus.buildStrategy !== buildStrategy
         || currentStatus.buildContext !== buildContext
-        || currentStatus.dockerfilePath !== dockerfilePath) {
+        || currentStatus.dockerfilePath !== dockerfilePath
+        || (currentStatus.buildCommand !== undefined && currentStatus.buildCommand !== buildCommand)
+        || (currentStatus.buildOutputDirectory !== undefined && currentStatus.buildOutputDirectory !== buildOutputDirectory)
+        || (deploymentType === "build"
+          && (currentStatus.buildCommand !== buildCommand || currentStatus.buildOutputDirectory !== buildOutputDirectory))) {
         throw new Error("The task identifier already belongs to a different project build.");
       }
       return currentStatus;
@@ -658,6 +693,8 @@ export function createServiceOperationAgent({
       buildStrategy,
       buildContext,
       dockerfilePath,
+      buildCommand,
+      buildOutputDirectory,
     };
     const temporaryPath = join(directory, `.request-${requestId}.tmp`);
     try {
@@ -685,6 +722,8 @@ export function createServiceOperationAgent({
       buildStrategy,
       buildContext,
       dockerfilePath,
+      buildCommand,
+      buildOutputDirectory,
       message: "Construcción aceptada; esperando al agente BuildKit del VPS.",
     };
   }

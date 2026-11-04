@@ -674,6 +674,12 @@ async function getProjectDeploymentState(projects) {
     taskId: build.id,
     commitSha: build.result.commitSha,
     image: build.result.image,
+    deploymentType: build.result.deploymentType,
+    buildStrategy: build.result.buildStrategy,
+    buildContext: build.result.buildContext,
+    dockerfilePath: build.result.dockerfilePath,
+    buildCommand: build.result.buildCommand,
+    buildOutputDirectory: build.result.buildOutputDirectory,
   }]));
   const deploymentsByProject = new Map();
   const deploymentConfigHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
@@ -958,6 +964,8 @@ async function getProjectBuildSource({ projectId, repository, branch, commitSha,
     buildStrategy: project.buildStrategy,
     buildContext: project.buildContext,
     dockerfilePath: project.dockerfilePath,
+    buildCommand: project.buildCommand,
+    buildOutputDirectory: project.buildOutputDirectory,
   };
 }
 
@@ -1969,7 +1977,7 @@ const server = createServer(async (request, response) => {
       }
       await configureGithubProjectWebhook(projectInput);
       const project = await createProject(projectInput);
-      if (project.deploymentType === "static") {
+      if (project.deploymentType !== "dynamic") {
         await saveProjectDeploymentType(serviceOperationsDirectory, project.id, project.deploymentType);
       }
       let deploymentQueued = false;
@@ -2046,13 +2054,15 @@ const server = createServer(async (request, response) => {
       const projectFiles = validateProjectArchive(archive);
       const buildProfile = detectProjectBuildProfile(projectFiles);
       const name = request.headers["x-project-name"];
-      const deploymentType = request.headers["x-deployment-type"] ?? (buildProfile.isStaticSite ? "static" : "dynamic");
-      if (!["static", "dynamic"].includes(deploymentType)) {
-        throw new RequestError(400, "El tipo de despliegue debe ser estático o dinámico.");
+      const deploymentType = request.headers["x-deployment-type"] ?? buildProfile.recommendedDeploymentType;
+      if (!["static", "dynamic", "build"].includes(deploymentType)) {
+        throw new RequestError(400, "El perfil de despliegue debe ser estático, dinámico o build.");
       }
       const buildStrategy = deploymentType === "static"
         ? "dockerfile"
-        : request.headers["x-build-strategy"] ?? buildProfile.buildStrategy;
+        : deploymentType === "build"
+          ? "dockerfile"
+          : request.headers["x-build-strategy"] ?? buildProfile.buildStrategy;
       project = validateProjectInput({
         name,
         sourceType: "upload",
@@ -2061,7 +2071,7 @@ const server = createServer(async (request, response) => {
         autoDeploy: false,
       });
       project = await createProject(project);
-      if (project.deploymentType === "static") {
+      if (project.deploymentType !== "dynamic") {
         await saveProjectDeploymentType(serviceOperationsDirectory, project.id, project.deploymentType);
       }
       const sourceDigest = createHash("sha256").update(archive).digest("hex");
@@ -2363,6 +2373,14 @@ const server = createServer(async (request, response) => {
       if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
         || latestBuild.result?.image !== expectedImage) {
         respondJson(response, 409, { error: "El último build no coincide con la imagen esperada en el registro privado." });
+        return;
+      }
+      if (project.deploymentType === "build"
+        && (latestBuild.result?.deploymentType !== project.deploymentType
+          || latestBuild.result?.buildCommand !== project.buildCommand
+          || latestBuild.result?.buildOutputDirectory !== project.buildOutputDirectory
+          || latestBuild.result?.buildContext !== project.buildContext)) {
+        respondJson(response, 409, { error: "La configuración Build cambió desde la última compilación. Vuelve a construir el proyecto antes de desplegar." });
         return;
       }
       await getProjectDeploymentConfig(serviceOperationsDirectory, project.id);

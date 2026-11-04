@@ -439,6 +439,8 @@ export function createProjectBuildHandler({
         buildStrategy: source.buildStrategy,
         buildContext: source.buildContext,
         dockerfilePath: source.dockerfilePath,
+        buildCommand: source.buildCommand,
+        buildOutputDirectory: source.buildOutputDirectory,
       };
       await agent.requestProjectBuild(projectId, source.commitSha, task.id, buildConfiguration);
 
@@ -451,12 +453,32 @@ export function createProjectBuildHandler({
             throw new TaskExecutionError("El agente devolvió un resultado de construcción inconsistente.", { retryable: false });
           }
           if (operation.state === "succeeded") {
+            if (operation.deploymentType !== source.deploymentType
+              || operation.buildStrategy !== source.buildStrategy
+              || operation.buildContext !== source.buildContext
+              || operation.dockerfilePath !== source.dockerfilePath
+              || (operation.buildCommand !== undefined && operation.buildCommand !== source.buildCommand)
+              || (operation.buildOutputDirectory !== undefined
+                && operation.buildOutputDirectory !== source.buildOutputDirectory)
+              || (source.deploymentType === "build"
+                && (operation.buildCommand !== source.buildCommand
+                  || operation.buildOutputDirectory !== source.buildOutputDirectory))) {
+              throw new TaskExecutionError("La configuración devuelta por el agente no coincide con la del build.", { retryable: false });
+            }
             return {
               message: branch
                 ? `Imagen construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`
                 : `Imagen construida para ${projectName} · ${source.commitSha.slice(0, 12)}.`,
               image: operation.image,
               commitSha: source.commitSha,
+              ...(source.deploymentType ? {
+                deploymentType: source.deploymentType,
+                buildStrategy: source.buildStrategy,
+                buildContext: source.buildContext,
+                dockerfilePath: source.dockerfilePath,
+                buildCommand: source.buildCommand,
+                buildOutputDirectory: source.buildOutputDirectory,
+              } : {}),
               ...(branch ? { branch } : {}),
             };
           }

@@ -219,11 +219,18 @@ elif request.get("operation") == "configure-registry":
     registry_domain = request["domain"].lower()
     registry_username = request["username"]
 elif request.get("operation") == "build-project":
-    if set(request) != {
+    required_fields = {
         "id", "operation", "projectId", "commitSha",
         "deploymentType", "buildStrategy", "buildContext", "dockerfilePath",
-    }:
+    }
+    optional_fields = {"buildCommand", "buildOutputDirectory"}
+    request_fields = frozenset(request)
+    if request_fields not in {frozenset(required_fields), frozenset(required_fields | optional_fields)}:
         raise SystemExit("Invalid project image build request fields.")
+    if request["deploymentType"] == "build" and not optional_fields.issubset(request):
+        raise SystemExit("Build projects require build configuration.")
+    request.setdefault("buildCommand", "npm run build")
+    request.setdefault("buildOutputDirectory", "dist")
     if not re.fullmatch(
         r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
         str(request["projectId"]),
@@ -231,16 +238,25 @@ elif request.get("operation") == "build-project":
         raise SystemExit("Invalid project image build identifier.")
     if not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", str(request["commitSha"])):
         raise SystemExit("Invalid project image build commit.")
-    if request["deploymentType"] not in {"static", "dynamic"}:
+    if request["deploymentType"] not in {"static", "dynamic", "build"}:
         raise SystemExit("Invalid project deployment type.")
     if request["buildStrategy"] not in {"dockerfile", "railpack"}:
         raise SystemExit("Invalid project build strategy.")
     if request["deploymentType"] == "static" and request["buildStrategy"] != "dockerfile":
         raise SystemExit("Static projects must use the managed Nginx image.")
+    if request["deploymentType"] == "build" and request["buildStrategy"] != "dockerfile":
+        raise SystemExit("Build projects must use the generated Nginx image.")
     for path_value in (request["buildContext"], request["dockerfilePath"]):
         if not isinstance(path_value, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,255}", path_value) \
             or path_value.startswith("/") or any(part in {"", ".."} for part in path_value.split("/")):
             raise SystemExit("Invalid project build path.")
+    if not isinstance(request["buildCommand"], str) or len(request["buildCommand"]) > 255 \
+        or not re.fullmatch(r"[A-Za-z0-9._:/@+-]+(?: [A-Za-z0-9._:/@+-]+)*", request["buildCommand"]):
+        raise SystemExit("Invalid project build command.")
+    output_directory = request["buildOutputDirectory"]
+    if not isinstance(output_directory, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,255}", output_directory) \
+        or output_directory.startswith("/") or any(part in {"", ".."} for part in output_directory.split("/")):
+        raise SystemExit("Invalid project build output directory.")
     service_id = "-"
     replicas = "-"
     project_id = request["projectId"].lower()
@@ -249,6 +265,8 @@ elif request.get("operation") == "build-project":
     build_strategy = request["buildStrategy"]
     build_context = request["buildContext"]
     dockerfile_path = request["dockerfilePath"]
+    build_command = request["buildCommand"]
+    build_output_directory = request["buildOutputDirectory"]
 elif request.get("operation") == "deploy-project":
     if set(request) != {"id", "operation", "projectId", "commitSha"}:
         raise SystemExit("Invalid project deployment request fields.")
@@ -336,14 +354,14 @@ if request["operation"] in {"restart-service", "scale-service", "stop-container"
     r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}\t{build_command}\t{build_output_directory}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path build_command build_output_directory <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -373,11 +391,11 @@ write_status() {
       "${request_id}" "${operation}" "${state}" "${registry_domain}" "${registry_username}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "build-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","buildCommand":"%s","buildOutputDirectory":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${build_command}" "${build_output_directory}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     else
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","buildCommand":"%s","buildOutputDirectory":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${build_command}" "${build_output_directory}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     fi
   elif [[ "${operation}" == "deploy-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
@@ -568,6 +586,20 @@ PY
     build_dockerfile="${build_directory}/Dockerfile.static"
     printf '%s\n' 'FROM nginx:alpine' 'COPY . /usr/share/nginx/html' > "${build_dockerfile}"
     chmod 0600 "${build_dockerfile}"
+  elif [[ "${deployment_type}" == "build" ]]; then
+    if [[ ! -f "${build_context_directory}/package.json" ]]; then
+      write_status "failed" "El perfil Build requiere package.json con un script de compilación."
+      exit 1
+    fi
+    build_dockerfile="${build_directory}/Dockerfile.build"
+    {
+      printf '%s\n' 'FROM node:22-alpine AS builder' 'WORKDIR /app' 'COPY . .' \
+        'RUN if [ -f package-lock.json ]; then npm ci; elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; else npm install; fi'
+      printf 'RUN %s\n' "${build_command}"
+      printf '%s\n' 'FROM nginx:alpine'
+      printf 'COPY --from=builder /app/%s /usr/share/nginx/html\n' "${build_output_directory}"
+    } > "${build_dockerfile}"
+    chmod 0600 "${build_dockerfile}"
   elif [[ "${build_strategy}" == "dockerfile" ]]; then
     configured_dockerfile="${build_context_directory}/${dockerfile_path}"
     if [[ -L "${configured_dockerfile}" ]]; then
@@ -660,7 +692,7 @@ PY
   fi
 
   built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
-  if [[ "${deployment_type}" == "static" || "${build_strategy}" == "dockerfile" ]]; then
+  if [[ "${deployment_type}" != "dynamic" || "${build_strategy}" == "dockerfile" ]]; then
     build_arguments=(
       --pull
       --push
@@ -1673,7 +1705,7 @@ if not isinstance(configuration, dict) \
     or not isinstance(configuration.get("environment", {}), dict):
     raise SystemExit("Invalid project deployment configuration.")
 deployment_type = configuration.get("deploymentType", "dynamic")
-if deployment_type not in {"static", "dynamic"}:
+if deployment_type not in {"static", "dynamic", "build"}:
     raise SystemExit("Invalid project deployment type.")
 environment = configuration.get("environment", {})
 if len(environment) > 100:

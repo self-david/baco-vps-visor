@@ -18,6 +18,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY server.mjs db.mjs backup-manager.mjs backup-scheduler.mjs diagnostics.mjs update-checker.mjs web-updater.mjs service-operations.mjs service-task-store.mjs task-queue.mjs gitea-client.mjs gitea-webhooks.mjs github-app.mjs github-oauth.mjs github-webhooks.mjs project-manager.mjs project-archive-validation.mjs project-deployment-config.mjs cloudflare-client.mjs swarm-node-manager.mjs application-template.mjs application-config.mjs container-metrics.mjs metrics-sampler.mjs metric-alerts.mjs operational-alerts.mjs web-service-alerts.mjs deployment-alerts.mjs ./
 COPY --from=frontend-build /app/dist ./dist
+COPY public/project-archive.mjs ./public/project-archive.mjs
 COPY database ./database
 RUN chmod -R a+rX /app/database
 USER node

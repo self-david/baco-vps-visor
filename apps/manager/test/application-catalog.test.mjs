@@ -31,6 +31,7 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /id="github-deployment-type"/);
   assert.match(projectsPanel, /id="project-dropzone"/);
   assert.match(projectsPanel, /id="project-selection"/);
+  assert.match(projectsPanel, /value="build">Build \+ despliegue/);
   assert.match(projectsPanel, /id="project-import-files"/);
   assert.match(projectsPanel, /id="project-zip-input"/);
   assert.match(projectsPanel, /id="project-files-input"/);
@@ -57,6 +58,8 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectImport, /importButton\.addEventListener\("click"/);
   assert.match(projectSettingsForm, /<option value="dockerfile">Dockerfile<\/option>/);
   assert.match(projectSettingsForm, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
+  assert.match(projectSettingsForm, /id="project-build-command"/);
+  assert.match(projectSettingsForm, /id="project-build-output-directory"/);
   assert.match(projectsPanel, /name="productionBranch"/);
   assert.match(projectSettingsForm, /name="autoDeploy"/);
 });
@@ -94,6 +97,7 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(serviceAgent, /--file "\$\{build_dockerfile\}"/);
   assert.match(serviceAgent, /deployment_type = request\["deploymentType"\]/);
   assert.match(serviceAgent, /"deploymentType": deployment_type/);
+  assert.match(serviceAgent, /build_output_directory/);
   assert.match(serviceAgent, /CMD \["node", "server\.js"\]/);
   assert.match(serviceAgent, /CMD \["python", "main\.py"\]/);
   assert.match(serviceAgent, /C\+\+ requiere un Dockerfile/);
@@ -159,6 +163,8 @@ test("manager image includes the GitHub and project-archive modules imported by 
     assert.ok(runtimeCopy.split(/\s+/).includes(moduleName), `${moduleName} must be copied into the runtime image`);
   }
   assert.ok(runtimeCopy.split(/\s+/).includes("project-archive-validation.mjs"));
+  assert.match(server, /from "\.\/public\/project-archive\.mjs"/);
+  assert.match(dockerfile, /^COPY public\/project-archive\.mjs \.\/public\/project-archive\.mjs$/m);
 });
 
 test("browser application script has no duplicate function declarations", async () => {
