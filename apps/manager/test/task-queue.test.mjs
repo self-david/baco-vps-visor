@@ -368,9 +368,12 @@ test("builds and deploys the exact commit from an authenticated production push"
     serviceId: "service-id",
   });
   assert.deepEqual(buildSources, [{
+    projectId,
+    projectName: "Website",
     repository: "vpsadmin/project",
     branch: "main",
     commitSha,
+    sourceType: "github",
   }]);
   assert.deepEqual(requests.map(({ operation }) => operation), ["stage", "build", "remove", "deploy"]);
   assert.equal(requests[1].sha, commitSha);

@@ -186,6 +186,48 @@ export async function recordGiteaWebhookDelivery({ deliveryId, event, repository
   return taskStore.recordGiteaWebhookDelivery({ deliveryId, event, repository, ref, commitSha });
 }
 
+export async function recordGithubWebhookDelivery({ deliveryId, event, repository, ref, commitSha }) {
+  return taskStore.recordGithubWebhookDelivery({ deliveryId, event, repository, ref, commitSha });
+}
+
+export async function saveGithubInstallation({ installationId, accountLogin, accountType }) {
+  const result = await pool.query(`
+    INSERT INTO github_installations (installation_id, account_login, account_type)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (installation_id) DO UPDATE
+    SET account_login = EXCLUDED.account_login,
+        account_type = EXCLUDED.account_type,
+        updated_at = now()
+    RETURNING installation_id, account_login, account_type
+  `, [installationId, accountLogin, accountType]);
+  return {
+    installationId: Number(result.rows[0].installation_id),
+    accountLogin: result.rows[0].account_login,
+    accountType: result.rows[0].account_type,
+  };
+}
+
+export async function getGithubInstallations() {
+  const result = await pool.query(`
+    SELECT installation_id, account_login, account_type
+    FROM github_installations
+    ORDER BY lower(account_login), installation_id
+  `);
+  return result.rows.map((row) => ({
+    installationId: Number(row.installation_id),
+    accountLogin: row.account_login,
+    accountType: row.account_type,
+  }));
+}
+
+export async function deleteGithubInstallation(installationId) {
+  const result = await pool.query(
+    "DELETE FROM github_installations WHERE installation_id = $1 RETURNING installation_id",
+    [installationId],
+  );
+  return result.rowCount > 0;
+}
+
 function mapProject(row) {
   return {
     id: row.id,
@@ -193,6 +235,13 @@ function mapProject(row) {
     description: row.description,
     repository: row.repository,
     productionBranch: row.production_branch,
+    githubInstallationId: row.github_installation_id === null ? null : Number(row.github_installation_id),
+    sourceType: row.source_type,
+    buildStrategy: row.build_strategy,
+    buildContext: row.build_context,
+    dockerfilePath: row.dockerfile_path,
+    internalPort: row.internal_port,
+    autoDeploy: row.auto_deploy,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -200,7 +249,8 @@ function mapProject(row) {
 
 export async function getProjects() {
   const result = await pool.query(`
-    SELECT id, name, description, repository, production_branch, created_at, updated_at
+    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+      build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     FROM projects
     ORDER BY lower(name), id
   `);
@@ -209,7 +259,8 @@ export async function getProjects() {
 
 export async function getProject(id) {
   const result = await pool.query(`
-    SELECT id, name, description, repository, production_branch, created_at, updated_at
+    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+      build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     FROM projects
     WHERE id = $1
   `, [id]);
@@ -221,10 +272,26 @@ export async function createProject(project) {
   try {
     await client.query("BEGIN");
     const result = await client.query(`
-      INSERT INTO projects (name, description, repository, production_branch)
-      VALUES ($1, $2, $3, $4)
-      RETURNING id, name, description, repository, production_branch, created_at, updated_at
-    `, [project.name, project.description, project.repository, project.productionBranch]);
+      INSERT INTO projects (
+        name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+        build_context, dockerfile_path, internal_port, auto_deploy
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+        build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
+    `, [
+      project.name,
+      project.description,
+      project.repository,
+      project.productionBranch,
+      project.sourceType,
+      project.githubInstallationId,
+      project.buildStrategy,
+      project.buildContext,
+      project.dockerfilePath,
+      project.internalPort,
+      project.autoDeploy,
+    ]);
     const created = mapProject(result.rows[0]);
     await insertAuditEvent(client, {
       action: "project.created",
@@ -248,10 +315,26 @@ export async function updateProject(id, project) {
     await client.query("BEGIN");
     const result = await client.query(`
       UPDATE projects
-      SET name = $2, description = $3, repository = $4, production_branch = $5, updated_at = now()
+      SET name = $2, description = $3, repository = $4, production_branch = $5,
+          source_type = $6, github_installation_id = $7, build_strategy = $8, build_context = $9,
+          dockerfile_path = $10, internal_port = $11, auto_deploy = $12, updated_at = now()
       WHERE id = $1
-      RETURNING id, name, description, repository, production_branch, created_at, updated_at
-    `, [id, project.name, project.description, project.repository, project.productionBranch]);
+      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+        build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
+    `, [
+      id,
+      project.name,
+      project.description,
+      project.repository,
+      project.productionBranch,
+      project.sourceType,
+      project.githubInstallationId,
+      project.buildStrategy,
+      project.buildContext,
+      project.dockerfilePath,
+      project.internalPort,
+      project.autoDeploy,
+    ]);
     if (result.rowCount === 0) {
       await client.query("COMMIT");
       return null;
@@ -271,6 +354,54 @@ export async function updateProject(id, project) {
   } finally {
     client.release();
   }
+}
+
+export async function recordProjectUploadSource(projectId, sourceDigest, sizeBytes) {
+  const result = await pool.query(`
+    INSERT INTO project_source_uploads (project_id, source_digest, size_bytes)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (project_id, source_digest) DO UPDATE
+    SET size_bytes = EXCLUDED.size_bytes
+    RETURNING project_id, source_digest, size_bytes, created_at
+  `, [projectId, sourceDigest, sizeBytes]);
+  return {
+    projectId: result.rows[0].project_id,
+    sourceDigest: result.rows[0].source_digest,
+    sizeBytes: Number(result.rows[0].size_bytes),
+    createdAt: result.rows[0].created_at.toISOString(),
+  };
+}
+
+export async function getLatestProjectUploadSource(projectId) {
+  const result = await pool.query(`
+    SELECT project_id, source_digest, size_bytes, created_at
+    FROM project_source_uploads
+    WHERE project_id = $1
+    ORDER BY created_at DESC, source_digest DESC
+    LIMIT 1
+  `, [projectId]);
+  const row = result.rows[0];
+  return row ? {
+    projectId: row.project_id,
+    sourceDigest: row.source_digest,
+    sizeBytes: Number(row.size_bytes),
+    createdAt: row.created_at.toISOString(),
+  } : null;
+}
+
+export async function getProjectUploadSource(projectId, sourceDigest) {
+  const result = await pool.query(`
+    SELECT project_id, source_digest, size_bytes, created_at
+    FROM project_source_uploads
+    WHERE project_id = $1 AND source_digest = $2
+  `, [projectId, sourceDigest]);
+  const row = result.rows[0];
+  return row ? {
+    projectId: row.project_id,
+    sourceDigest: row.source_digest,
+    sizeBytes: Number(row.size_bytes),
+    createdAt: row.created_at.toISOString(),
+  } : null;
 }
 
 function mapProjectDomain(row) {
@@ -935,14 +1066,18 @@ export async function createSwarmNodeEnrollTask(task) {
 }
 
 export async function createProjectBuildTask(task) {
+  const sourceType = task.sourceType ?? "github";
   return createTask({
     id: task.id,
     type: "project.build",
     payload: {
       projectId: task.projectId,
       projectName: task.projectName,
-      repository: task.repository,
-      branch: task.branch,
+      sourceType,
+      ...(sourceType === "github"
+        ? { repository: task.repository, branch: task.branch }
+        : { sourceDigest: task.sourceDigest }),
+      ...(task.commitSha ? { commitSha: task.commitSha } : {}),
     },
     maxAttempts: 1,
   });

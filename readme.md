@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. La pestaña Proyectos presenta la estructura inicial para fuentes como GitHub o archivos cargados y tipos de aplicaciones web; la conexión de fuentes, builds y despliegues todavía están pendientes.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub App o cargar archivos ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. La integración debe validarse en un VPS antes de considerarse lista para producción.
 
 ---
 
@@ -225,7 +225,7 @@ El panel incluye **Diagnóstico del sistema**, una comprobación bajo demanda de
 
 La desinstalación retira el servicio del registro privado, pero conserva su volumen de imágenes y secretos por defecto. `sudo vps-manager-uninstall --purge-secrets` también retira sus secretos de autenticación; no elimina el volumen persistente del registro.
 
-El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. La pestaña Proyectos es por ahora una estructura inicial con fuentes previstas (GitHub y carga de archivos) y tipos de aplicaciones (sitios estáticos, SSR y APIs). Los flujos de conexión, build y despliegue se implementarán en etapas posteriores. El instalador solo crea el nodo inicial del Swarm; los nodos de VPS adicionales deben incorporarse manualmente antes de solicitar despliegues distribuidos.
+El dashboard organiza sus módulos en pestañas por categoría: resumen, Docker, proyectos, aplicaciones, monitoreo, dominios, logs, tareas, seguridad, sistema y configuración. Las categorías aún no implementadas muestran su alcance planeado; la pestaña Tareas muestra la cola persistente y sus intentos. Astro genera la página y los assets estáticos; React gestiona la navegación accesible entre pestañas y Tailwind aporta las utilidades de layout. Proyectos permite conectar GitHub, cargar ZIPs, construir, desplegar y consultar el historial/rollback. El instalador solo crea el nodo inicial del Swarm; los nodos de VPS adicionales deben incorporarse manualmente antes de solicitar despliegues distribuidos.
 
 Para desarrollar el frontend desde `apps/manager`, ejecuta `npm ci` y `npm run dev`; `npm run build` genera `dist/` y `npm test` ejecuta las pruebas del backend. La imagen Docker construye el frontend en una etapa separada y publica únicamente los archivos generados junto al backend.
 
@@ -394,7 +394,7 @@ Mostrar:
 
 ### Proyectos
 
-Estructura inicial para aplicaciones web desarrolladas por el usuario.
+Configurar, construir y desplegar proyectos propios desde GitHub o archivos ZIP.
 
 ### Aplicaciones
 
@@ -448,37 +448,74 @@ Configuración general del VPS Manager.
 
 # 5. Proyectos y despliegues
 
-La pestaña Proyectos contiene la estructura inicial para registrar aplicaciones
-propias y desplegarlas en el VPS. Las fuentes previstas son GitHub y carga de
-archivos; aún no se conectan repositorios ni se reciben proyectos.
+La pestaña **Proyectos** permite configurar y desplegar código propio en
+Docker Swarm. Cada proyecto conserva su fuente y configuración de build,
+variables, dominios, estado y despliegues anteriores.
 
-## 5.1. Fuentes y tipos de aplicación
+## 5.1. Fuentes y configuración
 
-Las fuentes previstas para una etapa posterior son:
+Se admiten dos fuentes:
 
-- Repositorio de GitHub.
-- Archivos del proyecto cargados desde el equipo.
+- **GitHub:** una GitHub App instalada en la cuenta que contiene el repositorio.
+  Se seleccionan repositorio y rama de producción; `main` es la rama inicial
+  sugerida y puede cambiarse. La aplicación necesita permisos de solo lectura
+  para Contents y Metadata y debe suscribirse al evento Push.
+- **Archivo ZIP:** se carga una copia del código del proyecto y se construye
+  manualmente. El límite de carga es 32 MiB.
 
-Los tipos de aplicación considerados inicialmente son:
+La llave privada de GitHub App y el secreto de webhook se cifran con AES-256-GCM
+usando la llave de respaldos del VPS Manager y se guardan fuera de PostgreSQL.
+El callback de instalación es `/api/github/callback` y el webhook público es
+`/api/webhooks/github`. El endpoint de webhook valida la firma antes de encolar
+un despliegue.
 
-- Sitio web estático.
-- Aplicación web con SSR.
-- API de Node.js.
-- API de Python.
+## 5.2. Builds y despliegues
 
-La interfaz actual solo presenta estas opciones como estructura. No ofrece
-builds, almacenamiento de proyectos, despliegues, variables ni asignación de
-dominios a proyectos.
+Cada proyecto puede usar uno de estos métodos:
 
-## 5.2. Registro de proyectos
+- **Dockerfile:** ruta del Dockerfile y directorio de contexto configurables.
+- **Railpack:** autodetección de la aplicación con Railpack 0.43.0.
 
-El panel todavía no registra proyectos ni almacena su código. En una etapa
-posterior, cada proyecto tendrá una fuente, un tipo de aplicación y la
-configuración necesaria para construirlo y desplegarlo. El servicio actual no
-crea builds, imágenes o tareas de despliegue a partir de proyectos.
+El agente del VPS obtiene el código, construye con Docker Buildx/BuildKit y
+publica la imagen en el registro privado configurado. Los despliegues se crean
+como servicios Swarm administrados, sin publicar puertos en el host; la
+publicación web se realiza por Traefik. Se configura el puerto HTTP interno y
+se pueden asociar dominios conectados desde la pestaña Dominios.
 
-En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar
-más adelante. La página incluye instrucciones para delegar nameservers a
+En proyectos GitHub se puede habilitar el despliegue automático al recibir un
+push a la rama de producción. El webhook despliega el commit exacto del evento.
+Los proyectos ZIP no reciben despliegues automáticos.
+
+## 5.3. Variables, dominios e historial
+
+Las variables se guardan en un archivo del VPS con permisos restringidos y se
+aplican al desplegar. Swarm guarda las variables en la especificación del
+servicio, por lo que cualquier administrador con acceso Docker/Swarm puede
+leerlas. No uses esta interfaz para secretos; los montajes de Docker Secrets
+por proyecto aún no están implementados.
+
+Los dominios asociados se enrutan mediante Traefik. Las zonas raíz se conectan
+en **Dominios**; esa vista comprueba que Cloudflare exponga la zona como activa,
+pero no comprueba por sí sola la propagación DNS pública ni HTTPS.
+
+El historial registra los intentos de despliegue y permite volver a una imagen
+de un despliegue exitoso anterior. El rollback conserva la configuración actual
+del proyecto (variables, dominio y puerto) y solo restaura la imagen anterior.
+Las imágenes deben seguir disponibles en el registro privado.
+
+## 5.4. Límites y validación pendiente
+
+Los ZIP tienen un máximo de 32 MiB; el agente valida la extracción para impedir
+salidas del directorio, enlaces simbólicos, archivos especiales y archivos
+descomprimidos que excedan los límites definidos. Los builds requieren que el
+registro privado esté configurado y accesible por los nodos.
+
+La implementación tiene pruebas automatizadas, pero aún debe validarse en un
+VPS de pruebas con GitHub App, recepción de webhook, build, despliegue,
+actualización y rollback antes de usarse en producción.
+
+En **Dominios**, conecta los dominios raíz que quieras reconocer y reutilizar.
+La página incluye instrucciones para delegar nameservers a
 Cloudflare y crear un token con permisos `Zone:Read` y `DNS:Edit`. La conexión
 comprueba que Cloudflare exponga la zona como activa y guarda el token en el VPS
 con permisos restringidos; no lo guarda en PostgreSQL ni en el historial de
@@ -493,15 +530,7 @@ disponible.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
-Cloudflare como Full (strict). La asignación de dominios a proyectos está
-pendiente.
-
-Las variables de entorno se guardan por proyecto en un archivo del VPS con
-permisos restringidos; no se incluyen en PostgreSQL, auditoría ni payloads de
-tareas. Swarm guarda estas variables en la especificación del servicio, por lo
-que cualquier administrador con acceso Docker/Swarm puede leerlas. No uses
-esta interfaz para secretos; los montajes de secretos aún no están
-implementados.
+Cloudflare como Full (strict).
 
 Swarm requiere conectividad entre nodos para administración y redes overlay
 (TCP 2377, TCP/UDP 7946 y UDP 4789, salvo configuración distinta). Limita esas
@@ -525,7 +554,7 @@ como secreto Swarm. Al reconfigurar se ingresa una contraseña nueva. Los builds
 de distintos proyectos reutilizan este registro, pero siguen siendo tareas
 manuales e independientes.
 
-La ficha de proyecto implementada cubre estos datos:
+La ficha de proyecto permite configurar estos datos:
 
 - Nombre.
 - Descripción.
@@ -535,70 +564,10 @@ La ficha de proyecto implementada cubre estos datos:
 - Dominios asociados y puertos HTTP internos.
 - Historial de despliegues exitosos y rollback.
 
-La interfaz aún no registra estos datos ni configura despliegues; son parte del
-alcance futuro de Proyectos.
-
-El modelo completo previsto incluye:
-
-- Tipo de proyecto.
-- Método de construcción.
-- Dockerfile o configuración de build.
-- Dominio.
-- Puerto interno.
-- Variables de entorno.
-- Redes.
-- Volúmenes.
-- Política de reinicio.
-- Configuración de salud.
-- Recursos asignados.
-- Estado.
-- Historial de despliegues.
-
-## 5.3. Configuración de la fuente
-
-La conexión a GitHub y la carga de archivos están planeadas, pero aún no se
-implementan. La interfaz no solicita credenciales ni copia archivos.
-
-## 5.4. Flujo de despliegue
-
-La integración de fuentes, build, despliegue y seguimiento del estado se
-definirá e implementará en fases posteriores. No hay webhooks ni despliegues
-automáticos de proyectos habilitados.
-
-## 5.5. Construcción de proyectos
-
-Soportar inicialmente:
-
-- Dockerfile.
-- Dockerfile con ruta personalizada.
-- Aplicaciones Node.js.
-- Aplicaciones Astro.
-- Aplicaciones React.
-- Aplicaciones estáticas.
-- Aplicaciones con múltiples servicios mediante definición Swarm.
-
-La plataforma no debe asumir que todos los proyectos utilizan el mismo framework.
-
-El usuario debe poder definir:
-
-- Directorio de trabajo.
-- Dockerfile.
-- Build arguments.
-- Puerto interno.
-- Comando de inicio, cuando corresponda.
-- Variables de entorno.
-- Volúmenes.
-- Recursos.
-
-## 5.6. Versiones y rollback
-
-La vista inicial no administra versiones ni ofrece rollback. El producto está
-planteado para mantener la versión estable desplegada de cada proyecto.
-
-## 5.7. Estado del proyecto
-
-La lista de proyectos y los estados de build y despliegue se implementarán
-cuando estén disponibles las fuentes de código.
+Cada ficha también incluye método de build, directorio de contexto, puerto
+interno, despliegue automático para GitHub y registro histórico. Las opciones de
+volúmenes, recursos, healthchecks y Docker Secrets por proyecto no están
+disponibles todavía.
 
 ---
 
@@ -1600,10 +1569,13 @@ Preparar:
 
 ## 19.3. Pruebas de proyectos
 
-- Conectar una fuente de GitHub.
-- Cargar archivos del proyecto.
-- Construir y desplegar cada tipo de aplicación.
-- Confirmar logs y estados de despliegue.
+- Configurar e instalar GitHub App y comprobar que la llave y el secreto quedan cifrados.
+- Crear un proyecto GitHub con rama `main`, cambiar la rama y verificar selección de repositorio.
+- Cargar ZIPs válidos y rechazar archivos demasiado grandes o rutas de extracción inseguras.
+- Construir con Dockerfile y Railpack; desplegar desde GitHub y ZIP.
+- Confirmar que un push firmado a la rama configurada construye el commit exacto.
+- Comprobar variables, dominios, historial, fallos y rollback manteniendo la configuración actual.
+- Validar logs y estados de despliegue.
 
 ## 19.4. Pruebas Docker
 
@@ -1716,25 +1688,26 @@ El desarrollo debe ser incremental.
 
 ## Fase 4 — Proyectos
 
-- [x] Crear la estructura inicial de la pestaña Proyectos.
-- [x] Mostrar fuentes y tipos de aplicaciones previstos.
-- [ ] Implementar conexión con GitHub y carga de archivos.
-- [ ] Implementar builds y despliegues por tipo de aplicación.
+- [x] Crear la pestaña de configuración de proyectos.
+- [x] Conectar repositorios GitHub mediante una GitHub App.
+- [x] Admitir carga de archivos ZIP con límites y extracción segura.
+- [x] Configurar Dockerfile/Railpack, rama, variables, dominios e historial.
+- [ ] Validar en un VPS la conexión GitHub y el flujo de ZIP de extremo a extremo.
 
-**Resultado:** despliegue de proyectos propios desde distintas fuentes.
+**Resultado:** proyectos configurables desde GitHub o ZIP.
 
-## Fase 5 — Deploy automático
+## Fase 5 — Builds, despliegues y rollback
 
-- [x] Integrar BuildKit.
-- [x] Construir y publicar imágenes manualmente.
-- [x] Configurar registro privado desde el navegador.
-- [ ] Desplegar proyectos como servicios Swarm internos, sin puertos publicados.
-- [ ] Configurar variables y dominios por proyecto.
+- [x] Construir y publicar imágenes de proyectos con BuildKit.
+- [x] Desplegar servicios administrados de Swarm sin puertos publicados y enrutar con Traefik.
+- [x] Configurar variables y dominios por proyecto.
+- [x] Registrar despliegues y volver a una imagen exitosa anterior conservando la configuración actual.
+- [x] Desplegar automáticamente el commit exacto al recibir un push autenticado en la rama configurada.
+- [ ] Validar builds, despliegues, actualización y rollback en un VPS.
 - [ ] Aplicar configuración genérica a aplicaciones del catálogo.
 - [ ] Gestionar secretos mediante Docker Secrets.
-- [ ] Desplegar automáticamente al recibir un push.
 
-**Resultado:** los proyectos podrán construirse y desplegarse desde la fuente seleccionada.
+**Resultado:** despliegues manuales desde GitHub/ZIP y automáticos por push para GitHub.
 
 ## Fase 6 — Catálogo
 

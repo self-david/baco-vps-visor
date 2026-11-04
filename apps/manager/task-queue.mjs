@@ -390,13 +390,24 @@ export function createProjectBuildHandler({
     throw new TypeError("The project image build task handler configuration is invalid.");
   }
   return async (task, signal) => {
-    const { projectId, projectName, repository, branch, commitSha } = task.payload ?? {};
+    const {
+      projectId,
+      projectName,
+      repository = "",
+      branch = "",
+      commitSha,
+      sourceType = "github",
+      sourceDigest,
+    } = task.payload ?? {};
     if (task.type !== "project.build"
       || typeof projectId !== "string"
       || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId)
       || typeof projectName !== "string"
-      || typeof repository !== "string"
-      || typeof branch !== "string"
+      || !["github", "upload"].includes(sourceType)
+      || (sourceType === "github"
+        && (typeof repository !== "string" || typeof branch !== "string"))
+      || (sourceType === "upload"
+        && (typeof sourceDigest !== "string" || !/^[a-f0-9]{64}$/i.test(sourceDigest)))
       || (commitSha !== undefined && (typeof commitSha !== "string"
         || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha)))) {
       throw new TaskExecutionError("La tarea contiene una configuración de proyecto inválida.", { retryable: false });
@@ -406,16 +417,29 @@ export function createProjectBuildHandler({
     let staged = false;
     const deadline = Date.now() + maximumDurationMs;
     try {
-      const source = await getBuildSource({ repository, branch, commitSha });
+      const source = await getBuildSource({
+        ...task.payload,
+        projectId,
+        repository,
+        branch,
+        commitSha,
+        sourceType,
+        ...(sourceDigest ? { sourceDigest } : {}),
+      });
       if (!source || typeof source.commitSha !== "string"
         || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(source.commitSha)
         || !Buffer.isBuffer(source.archive)
         || (commitSha !== undefined && source.commitSha.toLowerCase() !== commitSha.toLowerCase())) {
-        throw new TaskExecutionError("Gitea devolvió una fuente inválida para construir.", { retryable: false });
+        throw new TaskExecutionError("El proveedor devolvió una fuente inválida para construir.", { retryable: false });
       }
       await agent.stageProjectBuildArchive(task.id, source.archive);
       staged = true;
-      await agent.requestProjectBuild(projectId, source.commitSha, task.id);
+      const buildConfiguration = {
+        buildStrategy: source.buildStrategy,
+        buildContext: source.buildContext,
+        dockerfilePath: source.dockerfilePath,
+      };
+      await agent.requestProjectBuild(projectId, source.commitSha, task.id, buildConfiguration);
 
       while (!signal.aborted) {
         const operation = await agent.getStatus();
@@ -427,10 +451,12 @@ export function createProjectBuildHandler({
           }
           if (operation.state === "succeeded") {
             return {
-              message: `Imagen construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`,
+              message: branch
+                ? `Imagen construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`
+                : `Imagen construida para ${projectName} · ${source.commitSha.slice(0, 12)}.`,
               image: operation.image,
               commitSha: source.commitSha,
-              branch,
+              ...(branch ? { branch } : {}),
             };
           }
           if (operation.state === "failed") {

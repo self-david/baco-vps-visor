@@ -1,44 +1,81 @@
-import { validateRepositoryReference } from "./gitea-client.mjs";
-
 const projectNamePattern = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,99}$/;
 const projectIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 export function validateProjectInput(body) {
-  const allowedKeys = ["name", "description", "repository", "productionBranch"];
+  const allowedKeys = [
+    "name",
+    "description",
+    "sourceType",
+    "githubInstallationId",
+    "repository",
+    "productionBranch",
+    "buildStrategy",
+    "buildContext",
+    "dockerfilePath",
+    "internalPort",
+    "autoDeploy",
+  ];
   if (!body || typeof body !== "object" || Array.isArray(body)
     || Object.keys(body).some((key) => !allowedKeys.includes(key))
     || typeof body.name !== "string"
-    || typeof body.repository !== "string"
-    || typeof body.productionBranch !== "string"
     || (body.description !== undefined
-      && (typeof body.description !== "string" || body.description.length > 500))) {
-    const invalid = new TypeError("Proporciona un nombre, repositorio, rama y una descripción de hasta 500 caracteres.");
+      && (typeof body.description !== "string" || body.description.length > 500))
+    || (body.sourceType !== undefined && !["github", "upload"].includes(body.sourceType))
+    || (body.githubInstallationId !== undefined
+      && (!Number.isSafeInteger(body.githubInstallationId) || body.githubInstallationId < 1))
+    || (body.repository !== undefined && typeof body.repository !== "string")
+    || (body.productionBranch !== undefined
+      && (typeof body.productionBranch !== "string" || /[\u0000-\u001f\u007f]/.test(body.productionBranch)))
+    || (body.buildStrategy !== undefined && !["dockerfile", "railpack"].includes(body.buildStrategy))
+    || (body.buildContext !== undefined && typeof body.buildContext !== "string")
+    || (body.dockerfilePath !== undefined && typeof body.dockerfilePath !== "string")
+    || (body.internalPort !== undefined
+      && (!Number.isInteger(body.internalPort) || body.internalPort < 1 || body.internalPort > 65535))
+    || (body.autoDeploy !== undefined && typeof body.autoDeploy !== "boolean")) {
+    const invalid = new TypeError("Proporciona una configuración de proyecto válida y una descripción de hasta 500 caracteres.");
     invalid.code = "INVALID_PROJECT";
     throw invalid;
   }
   const name = body.name.trim();
   const description = body.description?.trim() ?? "";
-  let repository;
-  try {
-    repository = validateRepositoryReference(body.repository);
-  } catch {
-    const invalid = new TypeError("Selecciona un repositorio válido de Gitea.");
+  const sourceType = body.sourceType ?? "github";
+  const githubInstallationId = body.githubInstallationId ?? null;
+  const repository = body.repository?.trim() ?? "";
+  const productionBranch = body.productionBranch?.trim() || "main";
+  const buildContext = body.buildContext?.trim() || ".";
+  const dockerfilePath = body.dockerfilePath?.trim() || "Dockerfile";
+  if ((sourceType === "github" && (!repositoryPattern.test(repository) || githubInstallationId === null))
+    || (sourceType === "upload" && repository)
+    || (sourceType === "upload" && githubInstallationId !== null)
+    || !/^[A-Za-z0-9._/-]{1,255}$/.test(buildContext)
+    || buildContext.startsWith("/")
+    || buildContext.split("/").some((part) => part === ".." || part === "")
+    || !/^[A-Za-z0-9._/-]{1,255}$/.test(dockerfilePath)
+    || dockerfilePath.startsWith("/")
+    || dockerfilePath.split("/").some((part) => part === ".." || part === "")
+    || (productionBranch.length > 255 || /[\u0000-\u001f\u007f]/.test(productionBranch))) {
+    const invalid = new TypeError("Selecciona una fuente y rutas de build válidas.");
     invalid.code = "INVALID_PROJECT";
     throw invalid;
   }
-  if (!projectNamePattern.test(name) || name.includes("..")
-    || typeof body.productionBranch !== "string"
-    || body.productionBranch.length < 1 || body.productionBranch.length > 255
-    || /[\u0000-\u001f\u007f]/.test(body.productionBranch)) {
-    const invalid = new TypeError("El nombre admite hasta 100 caracteres seguros y la rama debe ser válida.");
+  if (!projectNamePattern.test(name) || name.includes("..")) {
+    const invalid = new TypeError("El nombre admite hasta 100 caracteres seguros.");
     invalid.code = "INVALID_PROJECT";
     throw invalid;
   }
   return {
     name,
     description,
-    repository: repository.fullName,
-    productionBranch: body.productionBranch,
+    sourceType,
+    githubInstallationId,
+    repository: repository || null,
+    productionBranch,
+    buildStrategy: body.buildStrategy ?? "dockerfile",
+    buildContext,
+    dockerfilePath,
+    internalPort: body.internalPort ?? 3000,
+    autoDeploy: body.autoDeploy ?? true,
   };
 }
 

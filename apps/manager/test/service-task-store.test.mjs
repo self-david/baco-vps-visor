@@ -33,19 +33,24 @@ function createFakePool({ projects = [] } = {}) {
             return { rowCount: 0 };
           }
           if (sql.includes("pg_advisory_xact_lock")) return { rowCount: 1 };
-          if (sql.includes("INSERT INTO gitea_webhook_deliveries")) {
+          if (sql.includes("INSERT INTO gitea_webhook_deliveries")
+            || sql.includes("INSERT INTO github_webhook_deliveries")) {
             if (deliveries.has(values[0])) return { rowCount: 0, rows: [] };
             deliveries.add(values[0]);
             return { rowCount: 1, rows: [{ delivery_id: values[0] }] };
           }
           if (sql.includes("SELECT id, name") && sql.includes("FROM projects")) {
             if (sql.includes("WHERE id = $1")) {
+              const provider = values[3];
               const project = projects.find((item) => item.id === values[0]
-                && item.repository === values[1] && item.productionBranch === values[2]);
+                && item.repository === values[1] && item.productionBranch === values[2]
+                && (provider === "gitea" || (item.sourceType === "github" && item.autoDeploy)));
               return { rowCount: project ? 1 : 0, rows: project ? [{ id: project.id, name: project.name }] : [] };
             }
+            const provider = values[2];
             const matches = projects.filter((project) =>
-              project.repository === values[0] && project.productionBranch === values[1]);
+              project.repository === values[0] && project.productionBranch === values[1]
+              && (provider === "gitea" || (project.sourceType === "github" && project.autoDeploy)));
             return { rowCount: matches.length, rows: matches.map(({ id, name }) => ({ id, name })) };
           }
           if (sql.includes("FROM projects")) return { rowCount: 1, rows: [{ id: values[0] }] };
@@ -196,6 +201,15 @@ function createFakePool({ projects = [] } = {}) {
               && candidate.result?.commitSha),
         };
       }
+      if (sql.includes("FROM tasks") && sql.includes("type IN ('project.deploy', 'project.push-deploy')")) {
+        const projectIds = values[0];
+        return {
+          rows: [...tasks.values()]
+            .filter((candidate) => ["project.deploy", "project.push-deploy"].includes(candidate.type)
+              && projectIds.includes(candidate.payload.projectId))
+            .sort((left, right) => right.created_at - left.created_at || right.id.localeCompare(left.id)),
+        };
+      }
       if (sql.includes("SELECT DISTINCT ON (payload->>'projectId')")) {
         const projectIds = values[0];
         return {
@@ -292,6 +306,47 @@ test("records Gitea deliveries and queues only production-branch deployments ato
     commitSha,
   }), true);
   assert.equal(tasks.size, 1);
+});
+
+test("records GitHub deliveries and queues only enabled production-branch projects", async () => {
+  const projectId = "6a07c6bf-bb29-4e8f-a41f-8347b04d7601";
+  const commitSha = "a".repeat(40);
+  const { store, tasks } = createFakePool({
+    projects: [
+      {
+        id: projectId,
+        name: "Website",
+        repository: "example-org/site",
+        productionBranch: "main",
+        sourceType: "github",
+        autoDeploy: true,
+      },
+      {
+        id: "72a6e6cd-5adf-465f-97db-17960a941fb2",
+        name: "Preview",
+        repository: "example-org/site",
+        productionBranch: "main",
+        sourceType: "github",
+        autoDeploy: false,
+      },
+    ],
+  });
+  assert.equal(await store.recordGithubWebhookDelivery({
+    deliveryId: "e3f2a4d6-1234-4abc-8def-0123456789ab",
+    event: "push",
+    repository: "example-org/site",
+    ref: "refs/heads/main",
+    commitSha,
+  }), true);
+  assert.equal(tasks.size, 1);
+  assert.equal([...tasks.values()][0].payload.projectId, projectId);
+  await assert.rejects(store.recordGithubWebhookDelivery({
+    deliveryId: "e3f2a4d6-1234-4abc-8def-0123456789ac",
+    event: "push",
+    repository: "example-org/site",
+    ref: "refs/heads/main",
+    commitSha: "b".repeat(64),
+  }), TypeError);
 });
 
 test("stores registered task types while keeping handler payloads out of public history", async () => {
@@ -431,7 +486,7 @@ test("serializes PostgreSQL install tasks without passwords in task payloads or 
   });
 });
 
-test("returns only successful deployment history for selected projects", async () => {
+test("returns complete deployment history for selected projects", async () => {
   const { store, tasks } = createFakePool();
   const projectId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";
   await store.createTask({
@@ -448,7 +503,20 @@ test("returns only successful deployment history for selected projects", async (
     serviceId,
   };
   deployed.completed_at = new Date("2026-11-03T18:02:00Z");
-  assert.equal((await store.getRecentProjectDeployments([projectId]))[0].result.commitSha, "a".repeat(40));
+  const failedId = "e3f2a4d6-1234-4abc-8def-0123456789ab";
+  await store.createTask({
+    id: failedId,
+    type: "project.deploy",
+    payload: { projectId, projectName: "web", commitSha: "b".repeat(40) },
+  });
+  const failed = tasks.get(failedId);
+  failed.status = "failed";
+  failed.error = "deployment failed";
+  failed.updated_at = new Date("2026-11-03T18:03:00Z");
+  const history = await store.getRecentProjectDeployments([projectId]);
+  assert.equal(history.length, 2);
+  assert.equal(history[0].status, "failed");
+  assert.equal(history[1].result.commitSha, "a".repeat(40));
   assert.deepEqual(await store.getRecentProjectDeployments([]), []);
   await assert.rejects(store.getRecentProjectDeployments(["invalid"]), /identifiers are invalid/);
 });

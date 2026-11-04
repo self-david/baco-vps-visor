@@ -29,6 +29,13 @@ const registryUsernamePattern = /^[A-Za-z0-9._-]{1,64}$/;
 const registryPasswordPattern = /^[A-Za-z0-9._-]{20,72}$/;
 const applicationIdPattern = /^[a-z][a-z0-9-]{0,62}$/;
 
+function safeProjectPath(value) {
+  return typeof value === "string"
+    && /^[A-Za-z0-9._/-]{1,255}$/.test(value)
+    && !value.startsWith("/")
+    && !value.split("/").some((part) => part === ".." || part === "");
+}
+
 export function isPublicHostname(hostname) {
   return typeof hostname === "string" && hostnamePattern.test(hostname)
     && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
@@ -123,6 +130,9 @@ function validateStatus(status) {
       : status.operation === "build-project"
         ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
           || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+          || !["dockerfile", "railpack"].includes(status.buildStrategy)
+          || !safeProjectPath(status.buildContext)
+          || !safeProjectPath(status.dockerfilePath)
           || (status.state === "succeeded" && typeof status.image !== "string"))
         : status.operation === "deploy-project"
           ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
@@ -225,6 +235,9 @@ export function createServiceOperationAgent({
             : queuedRequest.operation === "build-project"
               ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
+                && ["dockerfile", "railpack"].includes(queuedRequest.buildStrategy)
+                && safeProjectPath(queuedRequest.buildContext)
+                && safeProjectPath(queuedRequest.dockerfilePath)
               : queuedRequest.operation === "deploy-project"
                 ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                   && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
@@ -267,7 +280,7 @@ export function createServiceOperationAgent({
           : queuedRequest.operation === "configure-registry"
             ? ["id", "operation", "domain", "username"]
           : queuedRequest.operation === "build-project"
-            ? ["id", "operation", "projectId", "commitSha"]
+            ? ["id", "operation", "projectId", "commitSha", "buildStrategy", "buildContext", "dockerfilePath"]
           : queuedRequest.operation === "deploy-project"
             ? ["id", "operation", "projectId", "commitSha"]
             : queuedRequest.operation === "remove-project"
@@ -299,7 +312,13 @@ export function createServiceOperationAgent({
               : queuedRequest.operation === "configure-registry"
                 ? { domain: queuedRequest.domain, username: queuedRequest.username }
               : queuedRequest.operation === "build-project"
-                ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
+                ? {
+                  projectId: queuedRequest.projectId,
+                  commitSha: queuedRequest.commitSha,
+                  buildStrategy: queuedRequest.buildStrategy,
+                  buildContext: queuedRequest.buildContext,
+                  dockerfilePath: queuedRequest.dockerfilePath,
+                }
                 : queuedRequest.operation === "deploy-project"
                   ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
                   : queuedRequest.operation === "remove-project"
@@ -593,17 +612,26 @@ export function createServiceOperationAgent({
     });
   }
 
-  async function requestProjectBuild(projectId, commitSha, requestId) {
+  async function requestProjectBuild(projectId, commitSha, requestId, configuration = {}) {
+    const buildStrategy = configuration.buildStrategy ?? "dockerfile";
+    const buildContext = configuration.buildContext ?? ".";
+    const dockerfilePath = configuration.dockerfilePath ?? "Dockerfile";
     if (!requestIdPattern.test(requestId ?? "")
       || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId ?? "")
-      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")) {
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
+      || !["dockerfile", "railpack"].includes(buildStrategy)
+      || !safeProjectPath(buildContext)
+      || !safeProjectPath(dockerfilePath)) {
       throw new TypeError("Project build request fields are invalid.");
     }
     const currentStatus = await getStatus();
     if (currentStatus?.id === requestId) {
       if (currentStatus.operation !== "build-project"
         || currentStatus.projectId !== projectId
-        || currentStatus.commitSha !== commitSha) {
+        || currentStatus.commitSha !== commitSha
+        || currentStatus.buildStrategy !== buildStrategy
+        || currentStatus.buildContext !== buildContext
+        || currentStatus.dockerfilePath !== dockerfilePath) {
         throw new Error("The task identifier already belongs to a different project build.");
       }
       return currentStatus;
@@ -619,6 +647,9 @@ export function createServiceOperationAgent({
       operation: "build-project",
       projectId,
       commitSha: commitSha.toLowerCase(),
+      buildStrategy,
+      buildContext,
+      dockerfilePath,
     };
     const temporaryPath = join(directory, `.request-${requestId}.tmp`);
     try {
@@ -642,6 +673,9 @@ export function createServiceOperationAgent({
       state: "queued",
       projectId,
       commitSha: commitSha.toLowerCase(),
+      buildStrategy,
+      buildContext,
+      dockerfilePath,
       message: "Construcción aceptada; esperando al agente BuildKit del VPS.",
     };
   }

@@ -447,6 +447,9 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       operation: "build-project",
       projectId,
       commitSha,
+      buildStrategy: "dockerfile",
+      buildContext: ".",
+      dockerfilePath: "Dockerfile",
     });
     assert.equal((await fixture.agent.getStatus()).projectId, projectId);
     await assert.rejects(
@@ -461,6 +464,9 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       state: "succeeded",
       projectId,
       commitSha,
+      buildStrategy: "dockerfile",
+      buildContext: ".",
+      dockerfilePath: "Dockerfile",
       image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
       updatedAt: "2026-11-03T18:00:00Z",
       message: "Imagen construida.",

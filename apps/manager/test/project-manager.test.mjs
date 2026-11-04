@@ -2,33 +2,54 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { validateProjectId, validateProjectInput } from "../project-manager.mjs";
 
-test("validates and normalizes project metadata linked to a Gitea branch", () => {
+test("validates GitHub project configuration with a selectable production branch", () => {
   assert.deepEqual(validateProjectInput({
     name: "  my app  ",
     description: "  A test app ",
     repository: "vpsadmin/my-app",
+    githubInstallationId: 123,
     productionBranch: "release/1.0",
   }), {
     name: "my app",
     description: "A test app",
     repository: "vpsadmin/my-app",
+    sourceType: "github",
+    githubInstallationId: 123,
     productionBranch: "release/1.0",
+    buildStrategy: "dockerfile",
+    buildContext: ".",
+    dockerfilePath: "Dockerfile",
+    internalPort: 3000,
+    autoDeploy: true,
   });
-  assert.equal(validateProjectInput({
+  const project = validateProjectInput({
     name: "project",
-    repository: "vpsadmin/project",
-    productionBranch: "main",
-  }).description, "");
+    sourceType: "upload",
+    buildStrategy: "railpack",
+    internalPort: 8080,
+    autoDeploy: false,
+  });
+  assert.equal(project.description, "");
+  assert.equal(project.productionBranch, "main");
+  assert.equal(project.internalPort, 8080);
+  assert.equal(project.autoDeploy, false);
 });
 
 test("rejects unsafe or incomplete project metadata and malformed IDs", () => {
   for (const project of [
-    { name: "", repository: "vpsadmin/project", productionBranch: "main" },
-    { name: "bad/name", repository: "vpsadmin/project", productionBranch: "main" },
-    { name: "project", repository: "../project", productionBranch: "main" },
-    { name: "project", repository: "vpsadmin/project", productionBranch: "main\n" },
-    { name: "project", repository: "vpsadmin/project", productionBranch: "main", extra: true },
-    { name: "project", repository: "vpsadmin/project", productionBranch: "main", description: "x".repeat(501) },
+    { name: "", sourceType: "upload" },
+    { name: "bad/name", sourceType: "upload" },
+    { name: "project", repository: "../project", githubInstallationId: 1 },
+    { name: "project", repository: "owner/repo", githubInstallationId: 0 },
+    { name: "project", repository: "owner/repo", githubInstallationId: 1, productionBranch: "main\n" },
+    { name: "project", sourceType: "upload", repository: "owner/repo" },
+    { name: "project", sourceType: "upload", buildContext: "../escape" },
+    { name: "project", sourceType: "upload", dockerfilePath: "/etc/passwd" },
+    { name: "project", sourceType: "upload", buildStrategy: "nixpacks" },
+    { name: "project", sourceType: "upload", internalPort: 0 },
+    { name: "project", sourceType: "upload", autoDeploy: "yes" },
+    { name: "project", sourceType: "upload", extra: true },
+    { name: "project", sourceType: "upload", description: "x".repeat(501) },
   ]) {
     assert.throws(() => validateProjectInput(project), { code: "INVALID_PROJECT" });
   }

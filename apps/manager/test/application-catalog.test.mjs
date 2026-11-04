@@ -13,16 +13,18 @@ test("project deployment configuration parser imports its fingerprint dependency
   assert.match(parser[1], /^import hashlib$/m);
 });
 
-test("projects tab shows planned sources and web app types without enabling unfinished flows", async () => {
+test("projects tab exposes GitHub and ZIP deployment configuration", async () => {
   const page = await readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8");
 
   assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
-  assert.match(page, /Conectar GitHub · Próximamente/);
-  assert.match(page, /Subir archivos · Próximamente/);
-  assert.match(page, /Sitio estático/);
-  assert.match(page, /Aplicación web con SSR/);
-  assert.match(page, /API de Node\.js/);
-  assert.match(page, /API de Python/);
+  assert.match(page, /Despliega desde GitHub o desde un archivo ZIP/);
+  assert.match(page, /Configuración de GitHub App/);
+  assert.match(page, /<option value="github">GitHub<\/option>/);
+  assert.match(page, /<option value="upload">Archivo ZIP<\/option>/);
+  assert.match(page, /<option value="dockerfile">Dockerfile<\/option>/);
+  assert.match(page, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
+  assert.match(page, /name="productionBranch"/);
+  assert.match(page, /name="autoDeploy"/);
 });
 
 test("all HTML form patterns compile in modern browsers", async () => {

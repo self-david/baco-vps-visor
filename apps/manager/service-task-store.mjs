@@ -53,8 +53,9 @@ function mapTask(row, { includePayload = false } = {}) {
       ? {
         projectId: row.payload.projectId,
         projectName: row.payload.projectName,
-        repository: row.payload.repository,
-        branch: row.payload.branch,
+        ...(row.payload.repository ? { repository: row.payload.repository } : {}),
+        ...(row.payload.branch ? { branch: row.payload.branch } : {}),
+        sourceType: row.payload.sourceType ?? "github",
       }
       : {}),
     ...(row.type === "project.push-deploy"
@@ -199,15 +200,29 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || typeof payload.username !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(payload.username))) {
     throw new TypeError("Private registry configuration task fields are invalid.");
   }
-  if (type === "project.build"
-    && (Object.keys(payload).sort().join(",") !== ["branch", "projectId", "projectName", "repository"].sort().join(",")
+  if (type === "project.build") {
+    const sourceType = payload.sourceType ?? "github";
+    const sourceKeys = sourceType === "upload"
+      ? ["sourceDigest"]
+      : ["branch", "repository"];
+    const allowedKeys = ["projectId", "projectName", ...sourceKeys,
+      ...(Object.hasOwn(payload, "sourceType") ? ["sourceType"] : []),
+      ...(payload.commitSha ? ["commitSha"] : [])].sort();
+    if (!["github", "upload"].includes(sourceType)
+      || Object.keys(payload).sort().join(",") !== allowedKeys.join(",")
       || typeof payload.projectId !== "string" || !uuidPattern.test(payload.projectId)
       || typeof payload.projectName !== "string" || payload.projectName.length < 1 || payload.projectName.length > 100
-      || typeof payload.repository !== "string"
-      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(payload.repository)
-      || typeof payload.branch !== "string" || payload.branch.length < 1 || payload.branch.length > 255
-      || /[\u0000-\u001f\u007f]/.test(payload.branch))) {
-    throw new TypeError("Project image build task fields are invalid.");
+      || (sourceType === "github"
+        && (typeof payload.repository !== "string"
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(payload.repository)
+          || typeof payload.branch !== "string" || payload.branch.length < 1 || payload.branch.length > 255
+          || /[\u0000-\u001f\u007f]/.test(payload.branch)))
+      || (sourceType === "upload" && (typeof payload.sourceDigest !== "string"
+        || !/^[a-f0-9]{64}$/i.test(payload.sourceDigest)))
+      || (payload.commitSha !== undefined
+        && (typeof payload.commitSha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(payload.commitSha)))) {
+      throw new TypeError("Project image build task fields are invalid.");
+    }
   }
   if (type === "project.push-deploy"
     && (Object.keys(payload).sort().join(",")
@@ -394,20 +409,22 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     }
   }
 
-  async function recordGiteaWebhookDelivery({ deliveryId, event, repository, ref, commitSha } = {}) {
+  async function recordWebhookDelivery({ deliveryId, event, repository, ref, commitSha } = {}, provider) {
     if (typeof deliveryId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(deliveryId)
       || event !== "push"
       || typeof repository !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(repository)
       || typeof ref !== "string" || !/^refs\/(?:heads|tags)\/[^\\\u0000-\u001f\u007f]+$/.test(ref)
-      || typeof commitSha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha)) {
-      throw new TypeError("Gitea webhook delivery fields are invalid.");
+      || typeof commitSha !== "string"
+      || !(provider === "github" ? /^[a-f0-9]{40}$/i : /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i).test(commitSha)) {
+      throw new TypeError(`${provider} webhook delivery fields are invalid.`);
     }
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const inserted = await client.query(`
-        INSERT INTO gitea_webhook_deliveries (delivery_id, event, repository, ref, commit_sha)
+        INSERT INTO ${provider === "github" ? "github" : "gitea"}_webhook_deliveries
+          (delivery_id, event, repository, ref, commit_sha)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (delivery_id) DO NOTHING
         RETURNING delivery_id
@@ -423,8 +440,9 @@ export function createTaskStore({ pool, insertAuditEvent }) {
           SELECT id, name
           FROM projects
           WHERE repository = $1 AND production_branch = $2
+            AND ($3 = 'gitea' OR (source_type = 'github' AND auto_deploy = true))
           ORDER BY id
-        `, [repository, branch])
+        `, [repository, branch, provider])
         : { rows: [] };
       for (const candidate of projects.rows) {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.build:${candidate.id}`]);
@@ -432,8 +450,9 @@ export function createTaskStore({ pool, insertAuditEvent }) {
         const currentProject = await client.query(`
           SELECT id, name FROM projects
           WHERE id = $1 AND repository = $2 AND production_branch = $3
+            AND ($4 = 'gitea' OR (source_type = 'github' AND auto_deploy = true))
           FOR KEY SHARE
-        `, [candidate.id, repository, branch]);
+        `, [candidate.id, repository, branch, provider]);
         if (currentProject.rowCount === 0) continue;
         const project = currentProject.rows[0];
         const id = randomUUID();
@@ -459,6 +478,14 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     } finally {
       client.release();
     }
+  }
+
+  async function recordGiteaWebhookDelivery(delivery) {
+    return recordWebhookDelivery(delivery, "gitea");
+  }
+
+  async function recordGithubWebhookDelivery(delivery) {
+    return recordWebhookDelivery(delivery, "github");
   }
 
   async function claimNextTask(workerId, leaseSeconds = 60) {
@@ -681,16 +708,13 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     }
     if (projectIds.length === 0) return [];
     const result = await pool.query(
-      `SELECT DISTINCT ON (payload->>'projectId', result->>'commitSha')
+      `SELECT
          id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
          created_at, updated_at, started_at, completed_at
        FROM tasks
        WHERE type IN ('project.deploy', 'project.push-deploy')
-         AND status = 'completed'
          AND payload->>'projectId' = ANY($1::text[])
-         AND result->>'image' IS NOT NULL
-         AND result->>'commitSha' IS NOT NULL
-       ORDER BY payload->>'projectId', result->>'commitSha', completed_at DESC, created_at DESC, id DESC`,
+       ORDER BY created_at DESC, id DESC`,
       [projectIds],
     );
     return result.rows.map((row) => mapTask(row));
@@ -708,5 +732,6 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     getLatestProjectBuilds,
     getRecentProjectDeployments,
     recordGiteaWebhookDelivery,
+    recordGithubWebhookDelivery,
   };
 }

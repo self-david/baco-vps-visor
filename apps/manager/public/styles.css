@@ -75,7 +75,9 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .form-stack h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
 .form-stack label { color: #c4cede; font-size: .84rem; }
 .form-stack input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
+.form-stack textarea, .form-stack select { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
 .form-stack .checkbox-label input { width: auto; padding: 0; }
+.checkbox-label { display: flex; align-items: flex-start; gap: 8px; }
 .form-stack p { margin: 0; font-size: .82rem; line-height: 1.5; }
 .form-stack a { color: #9eb8ff; overflow-wrap: anywhere; }
 .credentials-list { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 12px; margin: 20px 0; }
@@ -83,6 +85,17 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .credentials-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .credentials-list code { color: #e1e9f5; user-select: all; }
 .project-source-options { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.project-list { display: grid; gap: 14px; margin-top: 16px; }
+.project-item { min-width: 0; padding: 16px; border: 1px solid #2d3a50; border-radius: 10px; background: #101722; }
+.project-item h4 { margin: 0; overflow-wrap: anywhere; }
+.project-item p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.project-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.project-fields { display: grid; gap: 10px; }
+.project-dialog { width: min(620px, calc(100% - 24px)); }
+.project-dialog .form-stack { margin-top: 8px; }
+.project-history { display: grid; gap: 8px; margin-top: 12px; padding-left: 20px; color: #aebbd0; font-size: .84rem; }
+.project-upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.project-upload-form input[type="file"] { flex: 1 1 220px; min-width: 0; color: #aebbd0; }
 .application-notice { display: flex; grid-column: 1 / -1; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid #6b4c37; border-radius: 10px; background: #211a16; color: #f2c99e; }
 .application-notice strong { font-size: .88rem; }
 .application-notice p { margin: 6px 0 0; color: #d3b99f; font-size: .82rem; line-height: 1.5; }

@@ -77,38 +77,38 @@ Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migr
 
 ---
 
-## Fase 4 — Estructura de Proyectos
+## Fase 4 — Proyectos y fuentes
 
-Estado: **estructura inicial de interfaz implementada; fuentes y despliegues pendientes**
+Estado: **implementada; pendiente validación integral en VPS**
 
-- [x] Sustituir la dependencia del servidor Git integrado por una vista neutral de proyectos.
-- [x] Mostrar fuentes previstas (GitHub y carga de archivos) y tipos de aplicaciones web.
-- [ ] Implementar conexión segura de repositorios de GitHub.
-- [ ] Implementar carga y almacenamiento temporal de archivos de proyecto.
-- [ ] Implementar builds y despliegues para sitios estáticos, SSR, Node.js y Python.
-- [ ] Permitir configurar variables, dominios y estado del despliegue por proyecto.
+- [x] Crear un flujo de proyectos propios que no depende de alojar el código fuente en el VPS.
+- [x] Configurar una GitHub App cifrando la llave privada y el secreto de webhook fuera de PostgreSQL.
+- [x] Instalar la GitHub App, seleccionar repositorios y ramas (con `main` como rama inicial).
+- [x] Recibir webhooks Push autenticados y asociarlos a la rama de producción configurada.
+- [x] Cargar archivos ZIP con límites de tamaño y extracción segura.
+- [x] Configurar Dockerfile o Railpack, contexto de build y puerto HTTP interno.
+- [x] Configurar variables de entorno, dominios conectados e historial por proyecto.
 
-**Resultado:** flujo para desplegar proyectos propios desde distintas fuentes.
+**Resultado:** proyectos configurables desde GitHub o ZIP con opciones de build y despliegue.
 
 ---
 
-## Fase 5 — Deploy automático
+## Fase 5 — Builds, despliegues y rollback
 
-Estado: **parcial** (build y despliegue manuales o automáticos por push; falta validar en un VPS)
+Estado: **implementada; pendiente validación integral en VPS**
 
-- [x] Integrar BuildKit mediante Docker Buildx para construir la imagen del panel durante la instalación.
-- [ ] Construir imágenes de proyectos desde la fuente seleccionada y publicarlas en el registro privado.
+- [x] Integrar BuildKit mediante Docker Buildx para construir imágenes del panel y de proyectos.
+- [x] Construir desde GitHub o ZIP usando Dockerfile o Railpack y publicar las imágenes en el registro privado.
 - [x] Configurar el registro privado desde el navegador, con HTTPS, autenticación y almacenamiento persistente.
-- [x] Desplegar manualmente en modo global la última imagen construida, con una tarea por nodo activo del Swarm y sin publicar puertos.
-- [x] Consultar el estado de los nodos y aprovisionar VPS Ubuntu 24.04 adicionales por SSH con fingerprint verificado, instalación de Docker y reglas UFW restringidas a una CIDR privada.
-- [x] Configurar variables de entorno por proyecto; se almacenan en archivo restringido del VPS y se aplican al desplegar.
-- [x] Administrar dominios en un panel central, conectar zonas raíz de Cloudflare una vez, sincronizar registros A y reutilizar las zonas para asignar hostnames/puertos HTTP a proyectos y elegir zona/subdominio al instalar n8n.
-- [x] Revertir un proyecto a un despliegue anterior exitoso, conservando su configuración actual.
-- [x] Encolar de forma idempotente el build y despliegue del commit exacto al recibir un push autenticado a la rama de producción.
+- [x] Desplegar proyectos como servicios Swarm administrados sin puertos publicados y enrutar HTTP por Traefik.
+- [x] Aplicar al despliegue las variables y dominios configurados para el proyecto.
+- [x] Registrar intentos de despliegue y permitir rollback a una imagen de un despliegue exitoso conservando la configuración actual.
+- [x] Encolar de forma idempotente el build/despliegue del commit exacto cuando llega un push autenticado a la rama de producción.
+- [ ] Validar extremo a extremo en un VPS: GitHub App, webhook, build, despliegue, actualización y rollback.
 
-**Alcance actual:** variables, dominios y rollback están implementados para proyectos Git. Los pushes a la rama de producción construyen y despliegan el commit recibido; las aplicaciones arbitrarias del catálogo y el montaje de secretos siguen pendientes.
+**Alcance actual:** los proyectos GitHub pueden desplegarse automáticamente al recibir pushes en su rama de producción; proyectos ZIP se despliegan manualmente. Docker Secrets por proyecto y el despliegue de aplicaciones multicontenedor del catálogo siguen pendientes.
 
-**Resultado:** `git push` despliega automáticamente proyectos registrados en su rama de producción; builds y despliegues manuales siguen disponibles.
+**Resultado:** builds y despliegues manuales desde GitHub/ZIP y despliegue automático por push.
 
 ---
 

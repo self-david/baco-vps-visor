@@ -120,6 +120,9 @@ if not re.fullmatch(
     raise SystemExit("Invalid service operation request identifier.")
 project_id = "-"
 commit_sha = "-"
+build_strategy = "-"
+build_context = "-"
+dockerfile_path = "-"
 application_id = "-"
 application_instance_id = "-"
 registry_domain = "-"
@@ -215,7 +218,10 @@ elif request.get("operation") == "configure-registry":
     registry_domain = request["domain"].lower()
     registry_username = request["username"]
 elif request.get("operation") == "build-project":
-    if set(request) != {"id", "operation", "projectId", "commitSha"}:
+    if set(request) != {
+        "id", "operation", "projectId", "commitSha",
+        "buildStrategy", "buildContext", "dockerfilePath",
+    }:
         raise SystemExit("Invalid project image build request fields.")
     if not re.fullmatch(
         r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
@@ -224,10 +230,19 @@ elif request.get("operation") == "build-project":
         raise SystemExit("Invalid project image build identifier.")
     if not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", str(request["commitSha"])):
         raise SystemExit("Invalid project image build commit.")
+    if request["buildStrategy"] not in {"dockerfile", "railpack"}:
+        raise SystemExit("Invalid project build strategy.")
+    for path_value in (request["buildContext"], request["dockerfilePath"]):
+        if not isinstance(path_value, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,255}", path_value) \
+            or path_value.startswith("/") or any(part in {"", ".."} for part in path_value.split("/")):
+            raise SystemExit("Invalid project build path.")
     service_id = "-"
     replicas = "-"
     project_id = request["projectId"].lower()
     commit_sha = request["commitSha"].lower()
+    build_strategy = request["buildStrategy"]
+    build_context = request["buildContext"]
+    dockerfile_path = request["dockerfilePath"]
 elif request.get("operation") == "deploy-project":
     if set(request) != {"id", "operation", "projectId", "commitSha"}:
         raise SystemExit("Invalid project deployment request fields.")
@@ -315,14 +330,14 @@ if request["operation"] in {"restart-service", "scale-service", "stop-container"
     r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{build_strategy}\t{build_context}\t{dockerfile_path}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id build_strategy build_context dockerfile_path <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -352,11 +367,11 @@ write_status() {
       "${request_id}" "${operation}" "${state}" "${registry_domain}" "${registry_username}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "build-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     else
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     fi
   elif [[ "${operation}" == "deploy-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
@@ -530,8 +545,18 @@ PY
     write_status "failed" "Gitea devolvió un archivo inválido o fuera de los límites seguros."
     exit 1
   fi
-  if [[ -L "${context_directory}/Dockerfile" || ! -f "${context_directory}/Dockerfile" ]]; then
-    write_status "failed" "El repositorio no contiene un Dockerfile regular en su raíz."
+  build_context_directory="${context_directory}/${build_context}"
+  if [[ -L "${build_context_directory}" || ! -d "${build_context_directory}" ]]; then
+    write_status "failed" "La ruta de contexto configurada no es un directorio válido del código."
+    exit 1
+  fi
+  if [[ "${build_strategy}" == "dockerfile" ]] \
+    && [[ -L "${build_context_directory}/${dockerfile_path}" || ! -f "${build_context_directory}/${dockerfile_path}" ]]; then
+    write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
+    exit 1
+  fi
+  if [[ "${build_strategy}" == "railpack" ]] && ! command -v railpack >/dev/null 2>&1; then
+    write_status "failed" "Railpack no está instalado en el host. Actualiza el instalador y vuelve a intentar."
     exit 1
   fi
 
@@ -588,15 +613,36 @@ PY
   fi
 
   built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
-  if ! DOCKER_CONFIG="${docker_config_directory}" docker buildx build \
-    --pull \
-    --push \
-    --tag "${built_image}" \
-    --label vps-manager.managed=true \
-    --label "vps-manager.project-id=${project_id}" \
-    --label "vps-manager.commit=${commit_sha}" \
-    --file "${context_directory}/Dockerfile" \
-    "${context_directory}"; then
+  if [[ "${build_strategy}" == "dockerfile" ]]; then
+    build_arguments=(
+      --pull
+      --push
+      --tag "${built_image}"
+      --label vps-manager.managed=true
+      --label "vps-manager.project-id=${project_id}"
+      --label "vps-manager.commit=${commit_sha}"
+      --file "${build_context_directory}/${dockerfile_path}"
+      "${build_context_directory}"
+    )
+  else
+    railpack_plan="${build_directory}/railpack-plan.json"
+    if ! railpack prepare "${build_context_directory}" --plan-out "${railpack_plan}"; then
+      write_status "failed" "Railpack no pudo detectar o preparar la configuración de build del proyecto."
+      exit 1
+    fi
+    build_arguments=(
+      --pull
+      --push
+      --tag "${built_image}"
+      --label vps-manager.managed=true
+      --label "vps-manager.project-id=${project_id}"
+      --label "vps-manager.commit=${commit_sha}"
+      --build-arg BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:v0.43.0
+      --file "${railpack_plan}"
+      "${build_context_directory}"
+    )
+  fi
+  if ! DOCKER_CONFIG="${docker_config_directory}" docker buildx build "${build_arguments[@]}"; then
     write_status "failed" "BuildKit no pudo construir o publicar la imagen en el registro privado."
     exit 1
   fi

@@ -25,9 +25,13 @@ prompt_value() {
   fi
 }
 TEMP_FILES=()
+TEMP_DIRECTORIES=()
 cleanup() {
   for temporary_file in "${TEMP_FILES[@]}"; do
     [[ -z "${temporary_file}" ]] || rm -f -- "${temporary_file}"
+  done
+  for temporary_directory in "${TEMP_DIRECTORIES[@]}"; do
+    [[ -z "${temporary_directory}" ]] || rm -rf -- "${temporary_directory}"
   done
 }
 on_error() {
@@ -153,6 +157,34 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
 docker buildx version >/dev/null 2>&1 || fail "Docker Buildx (BuildKit) no está disponible después de instalar Docker."
+
+RAILPACK_VERSION="0.43.0"
+case "$(uname -m)" in
+  x86_64)
+    RAILPACK_ASSET="railpack-v${RAILPACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+    RAILPACK_SHA256="248a8f60f36854aabed6124113631078a802de3461660855fc4de9c26065c1fb"
+    ;;
+  aarch64)
+    RAILPACK_ASSET="railpack-v${RAILPACK_VERSION}-arm64-unknown-linux-musl.tar.gz"
+    RAILPACK_SHA256="732ece14eb4f4676a43ebba19431f954edf7b130acb76159ef0f2ff86ac42ac9"
+    ;;
+esac
+RAILPACK_ARCHIVE="$(mktemp)"
+TEMP_FILES+=("${RAILPACK_ARCHIVE}")
+RAILPACK_DIRECTORY="$(mktemp -d)"
+TEMP_DIRECTORIES+=("${RAILPACK_DIRECTORY}")
+curl -fsSL --retry 3 \
+  "https://github.com/railwayapp/railpack/releases/download/v${RAILPACK_VERSION}/${RAILPACK_ASSET}" \
+  -o "${RAILPACK_ARCHIVE}"
+printf '%s  %s\n' "${RAILPACK_SHA256}" "${RAILPACK_ARCHIVE}" | sha256sum --check --status \
+  || fail "La verificación de integridad de Railpack falló."
+tar -xzf "${RAILPACK_ARCHIVE}" --no-same-owner --no-same-permissions -C "${RAILPACK_DIRECTORY}"
+RAILPACK_BINARY="$(find "${RAILPACK_DIRECTORY}" -type f -name railpack -print -quit)"
+[[ -n "${RAILPACK_BINARY}" && ! -L "${RAILPACK_BINARY}" ]] \
+  || fail "La release de Railpack no contiene el ejecutable esperado."
+install -m 0755 "${RAILPACK_BINARY}" /usr/local/bin/railpack
+railpack --version | grep -F "${RAILPACK_VERSION}" >/dev/null \
+  || fail "La versión instalada de Railpack no coincide con la versión verificada."
 
 if [[ -z "${SCRIPT_DIR}" ]]; then
   SOURCE_DIR="${INSTALL_DIR}/source"

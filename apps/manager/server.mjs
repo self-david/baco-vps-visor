@@ -1,6 +1,6 @@
-import { createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { readFile, statfs } from "node:fs/promises";
+import { readFile, statfs, unlink, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectContainerMetrics } from "./container-metrics.mjs";
@@ -22,6 +22,10 @@ import {
   createServiceRestartHandler,
   createServiceScaleHandler,
   createContainerOperationHandler,
+  createProjectBuildHandler,
+  createProjectDeployHandler,
+  createProjectPushDeployHandler,
+  createProjectUndeployHandler,
   createRegistryConfigureHandler,
   createSwarmNodeEnrollHandler,
   createTaskQueueWorker,
@@ -36,6 +40,8 @@ import {
   validateRepositoryReference,
 } from "./gitea-client.mjs";
 import { createGiteaWebhookProcessor, deriveGiteaWebhookSecret } from "./gitea-webhooks.mjs";
+import { createGithubApp } from "./github-app.mjs";
+import { createGithubWebhookProcessor } from "./github-webhooks.mjs";
 import { validateProjectId, validateProjectInput } from "./project-manager.mjs";
 import {
   getContainerMetricsHistory,
@@ -48,6 +54,12 @@ import {
   getRecentProjectDeployments,
   getProjects,
   getProject,
+  getProjectUploadSource,
+  getLatestProjectUploadSource,
+  recordProjectUploadSource,
+  getGithubInstallations,
+  saveGithubInstallation,
+  deleteGithubInstallation,
   getProjectDomains,
   getProjectDomain,
   getDomainZones,
@@ -76,6 +88,7 @@ import {
   saveContainerMetrics,
   recordAuditEvent,
   recordGiteaWebhookDelivery,
+  recordGithubWebhookDelivery,
   createGiteaInstallTask,
   createN8nInstallTask,
   createPostgresqlInstallTask,
@@ -152,6 +165,7 @@ const updateChecker = createUpdateChecker({
 const webUpdater = createWebUpdater();
 const serviceOperationAgent = createServiceOperationAgent();
 const serviceOperationsDirectory = process.env.SERVICE_OPERATIONS_DIRECTORY ?? "/var/lib/vps-manager/service-operations";
+const githubApp = createGithubApp({ directory: serviceOperationsDirectory });
 const cloudflareClient = createCloudflareClient();
 const taskQueueWorker = createTaskQueueWorker({
   store: { claimNextTask, completeTask, failTask, renewTaskLease },
@@ -166,6 +180,16 @@ const taskQueueWorker = createTaskQueueWorker({
     }),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
     "swarm.node.enroll": createSwarmNodeEnrollHandler(serviceOperationAgent),
+    "project.build": createProjectBuildHandler({
+      agent: serviceOperationAgent,
+      getBuildSource: getProjectBuildSource,
+    }),
+    "project.deploy": createProjectDeployHandler(serviceOperationAgent),
+    "project.push-deploy": createProjectPushDeployHandler({
+      agent: serviceOperationAgent,
+      getBuildSource: getProjectBuildSource,
+    }),
+    "project.undeploy": createProjectUndeployHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
 });
@@ -224,6 +248,14 @@ if (!/^[a-f0-9]{64}$/i.test(sessionKey.toString("hex"))) {
 const processGiteaWebhook = createGiteaWebhookProcessor({
   signingKey: sessionKey,
   recordDelivery: recordGiteaWebhookDelivery,
+});
+const processGithubWebhook = createGithubWebhookProcessor({
+  getSecret: async () => {
+    const configuration = await githubApp.loadConfiguration();
+    if (!configuration) throw new RequestError(503, "GitHub App no está configurada.");
+    return configuration.webhookSecret;
+  },
+  recordDelivery: recordGithubWebhookDelivery,
 });
 
 const [passwordSalt, passwordHash] = credentials.split(":");
@@ -335,7 +367,9 @@ async function readRawBody(request, maximumBytes = 1_048_576) {
   let length = 0;
   for await (const chunk of request) {
     length += chunk.length;
-    if (length > maximumBytes) throw new RequestError(413, "Request body exceeds 1 MB.");
+    if (length > maximumBytes) {
+      throw new RequestError(413, `El cuerpo supera el límite de ${maximumBytes} bytes.`);
+    }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -611,7 +645,7 @@ async function getServices() {
 
 async function getProjectDeploymentState(projects) {
   const projectIds = projects.map((project) => project.id);
-  const [builds, deploymentHistory, deploymentConfigs, services, tasks, nodes] = await Promise.all([
+  const [builds, deploymentHistory, deploymentConfigs, services, tasks, nodes, uploadedSources] = await Promise.all([
     getLatestProjectBuilds(projectIds),
     getRecentProjectDeployments(projectIds),
     Promise.all(projects.map(async (project) => [
@@ -621,6 +655,10 @@ async function getProjectDeploymentState(projects) {
     dockerGet("/services"),
     dockerGet("/tasks?desired-state=running"),
     dockerGet("/nodes"),
+    Promise.all(projects.map(async (project) => [
+      project.id,
+      await getLatestProjectUploadSource(project.id),
+    ])),
   ]);
   const readyActiveNodes = nodes.filter((node) =>
     node.Spec?.Availability === "active" && node.Status?.State === "ready").length;
@@ -638,14 +676,17 @@ async function getProjectDeploymentState(projects) {
   const deploymentsByProject = new Map();
   const deploymentConfigHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
     [projectId, config.configHash]));
+  const uploadSources = new Map(uploadedSources);
   for (const deployment of deploymentHistory) {
     const projectId = deployment.projectId;
     const history = deploymentsByProject.get(projectId) ?? [];
     history.push({
       taskId: deployment.id,
-      commitSha: deployment.result.commitSha,
-      image: deployment.result.image,
-      completedAt: deployment.completedAt,
+      status: deployment.status,
+      commitSha: deployment.result?.commitSha ?? deployment.payload.commitSha ?? null,
+      image: deployment.result?.image ?? null,
+      error: deployment.error,
+      completedAt: deployment.completedAt ?? deployment.updatedAt,
     });
     deploymentsByProject.set(projectId, history);
   }
@@ -679,6 +720,7 @@ async function getProjectDeploymentState(projects) {
   return projects.map((project) => ({
     ...project,
     latestBuild: latestBuilds.get(project.id) ?? null,
+    latestSource: uploadSources.get(project.id) ?? null,
     deployment: deployments.get(project.id) ?? null,
     deploymentHistory: deploymentsByProject.get(project.id) ?? [],
   }));
@@ -857,34 +899,76 @@ async function getGiteaApiContext() {
   return { application, client, token };
 }
 
-async function getProjectBuildSource({ repository, branch, commitSha }) {
-  const { client, token } = await getGiteaApiContext();
-  if (commitSha) {
-    return {
-      commitSha,
-      archive: await client.downloadArchive(token, repository, commitSha),
-    };
+function projectUploadSourcePath(projectId, sourceDigest) {
+  if (!/^[a-f0-9-]{36}$/i.test(projectId ?? "") || !/^[a-f0-9]{64}$/i.test(sourceDigest ?? "")) {
+    throw new TypeError("El identificador de fuente cargada no es válido.");
   }
-  const branches = await client.listBranches(token, repository);
-  if (!branches.some((item) => item.name === branch)) {
-    const invalid = new Error("La rama seleccionada ya no existe en el repositorio.");
-    invalid.code = "GITEA_BRANCH_NOT_FOUND";
-    throw invalid;
+  return join(serviceOperationsDirectory, `project-source-${projectId}-${sourceDigest}.zip`);
+}
+
+async function getProjectBuildSource({ projectId, repository, branch, commitSha, sourceType, sourceDigest }) {
+  const project = await getProject(projectId);
+  if (!project) {
+    const error = new Error("No se encontró el proyecto.");
+    error.code = "PROJECT_NOT_FOUND";
+    throw error;
   }
-  const resolvedCommit = await client.getCommit(token, repository, branch);
+  let resolvedCommit;
+  let archive;
+  if (sourceType === "upload") {
+    if (project.sourceType !== "upload" || !/^[a-f0-9]{64}$/i.test(sourceDigest ?? "")) {
+      throw new RequestError(409, "La fuente cargada ya no coincide con la configuración del proyecto.");
+    }
+    const source = await getProjectUploadSource(projectId, sourceDigest.toLowerCase());
+    if (!source) throw new RequestError(404, "No se encontró la versión cargada seleccionada.");
+    try {
+      archive = await readFile(projectUploadSourcePath(projectId, source.sourceDigest));
+    } catch (error) {
+      if (error?.code === "ENOENT") throw new Error("No se encontró el archivo fuente guardado del proyecto.", { cause: error });
+      throw error;
+    }
+    resolvedCommit = source.sourceDigest;
+  } else {
+    if (project.sourceType !== "github" || project.repository !== repository
+      || project.githubInstallationId === null) {
+      throw new RequestError(409, "La fuente GitHub no coincide con la configuración del proyecto.");
+    }
+    if (commitSha) {
+      resolvedCommit = commitSha.toLowerCase();
+    } else {
+      if (branch !== project.productionBranch) {
+        throw new RequestError(409, "La rama solicitada no es la rama de producción del proyecto.");
+      }
+      const branches = await githubApp.listBranches(project.githubInstallationId, project.repository);
+      if (!branches.some((item) => item.name === branch)) {
+        const invalid = new Error("La rama seleccionada ya no existe en el repositorio.");
+        invalid.code = "GITHUB_BRANCH_NOT_FOUND";
+        throw invalid;
+      }
+      resolvedCommit = await githubApp.getCommit(project.githubInstallationId, project.repository, branch);
+    }
+    archive = await githubApp.downloadArchive(project.githubInstallationId, project.repository, resolvedCommit);
+  }
   return {
     commitSha: resolvedCommit,
-    archive: await client.downloadArchive(token, repository, resolvedCommit),
+    archive,
+    buildStrategy: project.buildStrategy,
+    buildContext: project.buildContext,
+    dockerfilePath: project.dockerfilePath,
   };
 }
 
-async function validateProjectSource(client, token, project) {
-  const repositories = await client.listRepositories(token);
-  const repository = repositories.find((item) => item.fullName === project.repository);
-  if (!repository) {
-    throw new RequestError(404, "No se encontró el repositorio en la cuenta conectada.");
+async function validateProjectSource(project) {
+  if (project.sourceType === "upload") return;
+  const installations = await getGithubInstallations();
+  if (!installations.some((installation) => installation.installationId === project.githubInstallationId)) {
+    throw new RequestError(409, "Instala GitHub App en la cuenta que contiene el repositorio.");
   }
-  const branches = await client.listBranches(token, repository.fullName);
+  const repositories = await githubApp.listRepositories(project.githubInstallationId);
+  if (!repositories.some((item) => item.fullName === project.repository)) {
+    throw new RequestError(404, "No se encontró el repositorio en la instalación seleccionada.");
+  }
+  const branches = await githubApp.listBranches(project.githubInstallationId, project.repository);
   if (!branches.some((branch) => branch.name === project.productionBranch)) {
     throw new RequestError(409, "La rama de producción seleccionada ya no existe en el repositorio.");
   }
@@ -982,13 +1066,162 @@ async function serveStatic(pathname, response) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://localhost");
 
+  if (url.pathname === "/api/webhooks/github") {
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    try {
+      const result = await processGithubWebhook({
+        body: await readRawBody(request),
+        deliveryId: request.headers["x-github-delivery"],
+        event: request.headers["x-github-event"],
+        signature: request.headers["x-hub-signature-256"],
+      });
+      respondJson(response, 202, {
+        accepted: true,
+        duplicate: result.duplicate,
+        ignored: result.delivery.ignored === true,
+      });
+    } catch (error) {
+      const status = error?.code === "INVALID_WEBHOOK_SIGNATURE" ? 401
+        : error?.code === "INVALID_WEBHOOK" ? 400
+          : error instanceof RequestError ? error.statusCode : 503;
+      if (status === 503) console.error("Could not process GitHub webhook:", error);
+      respondJson(response, status, {
+        error: status === 503 ? "No se pudo procesar el webhook de GitHub." : error.message,
+      });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/webhooks/gitea"
     || url.pathname.startsWith("/api/system/applications/gitea")
-    || url.pathname === "/api/projects"
-    || url.pathname.startsWith("/api/projects/")
     || url.pathname.startsWith("/api/git/")) {
     respondJson(response, 410, { error: "Esta función fue retirada de VPS Manager." });
     return;
+  }
+
+  if (url.pathname.startsWith("/api/github/") || url.pathname === "/api/github/callback") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (url.pathname === "/api/github/callback") {
+      if (request.method !== "GET") {
+        respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+        return;
+      }
+      const installationId = Number(url.searchParams.get("installation_id"));
+      try {
+        if (!["install", "update"].includes(url.searchParams.get("setup_action"))
+          || !Number.isSafeInteger(installationId) || installationId < 1) {
+          throw new RequestError(400, "La respuesta de instalación de GitHub no es válida.");
+        }
+        const installation = await githubApp.completeInstallation({
+          installationId,
+          state: url.searchParams.get("state"),
+        });
+        await saveGithubInstallation(installation);
+        respond(response, 303, "", { Location: "/?github=connected" });
+      } catch (error) {
+        const status = error instanceof RequestError ? error.statusCode
+          : error?.code === "GITHUB_INSTALLATION_STATE_INVALID" ? 400
+            : error?.code === "GITHUB_INSTALLATION_INVALID" ? 400
+              : error?.code?.startsWith("GITHUB_") ? 502 : 503;
+        if (status >= 500) console.error("Could not complete the GitHub App installation:", error);
+        respondJson(response, status, {
+          error: status >= 500 ? "No se pudo completar la conexión con GitHub." : error.message,
+        });
+      }
+      return;
+    }
+    if (url.pathname === "/api/github/status" && request.method === "GET") {
+      try {
+        respondJson(response, 200, {
+          ...(await githubApp.getStatus()),
+          installations: await getGithubInstallations(),
+        });
+      } catch (error) {
+        console.error("Could not read GitHub App status:", error);
+        respondJson(response, 503, { error: "No se pudo consultar la conexión con GitHub." });
+      }
+      return;
+    }
+    if (url.pathname === "/api/github/config" && request.method === "POST") {
+      if (!hasSameOrigin(request)) {
+        respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+        return;
+      }
+      try {
+        const body = await readJson(request, 24_000);
+        await githubApp.saveConfiguration(body);
+        respondJson(response, 200, {
+          configured: true,
+          message: "La configuración cifrada de GitHub App se guardó.",
+        });
+      } catch (error) {
+        if (error instanceof TypeError || error instanceof RangeError || error instanceof RequestError) {
+          respondJson(response, error instanceof RequestError ? error.statusCode : 400, { error: error.message });
+          return;
+        }
+        console.error("Could not save GitHub App configuration:", error);
+        respondJson(response, 503, { error: "No se pudo guardar la configuración de GitHub App." });
+      }
+      return;
+    }
+    if (url.pathname === "/api/github/install" && request.method === "POST") {
+      if (!hasSameOrigin(request)) {
+        respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+        return;
+      }
+      try {
+        respondJson(response, 200, { url: await githubApp.createInstallationUrl() });
+      } catch (error) {
+        if (error?.code === "GITHUB_APP_NOT_CONFIGURED") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
+        console.error("Could not start GitHub App installation:", error);
+        respondJson(response, 503, { error: "No se pudo iniciar la instalación de GitHub App." });
+      }
+      return;
+    }
+    if (url.pathname === "/api/github/repositories" && request.method === "GET") {
+      const installationId = Number(url.searchParams.get("installationId"));
+      try {
+        if (!Number.isSafeInteger(installationId) || installationId < 1
+          || !(await getGithubInstallations()).some((item) => item.installationId === installationId)) {
+          throw new RequestError(404, "No se encontró la instalación de GitHub.");
+        }
+        respondJson(response, 200, { repositories: await githubApp.listRepositories(installationId) });
+      } catch (error) {
+        const status = error instanceof RequestError ? error.statusCode
+          : error?.code === "GITHUB_TOO_MANY_REPOSITORIES" ? 422
+            : error?.code?.startsWith("GITHUB_") ? 502 : 503;
+        if (status >= 500) console.error("Could not list GitHub repositories:", error);
+        respondJson(response, status, { error: status >= 500 ? "No se pudieron consultar los repositorios." : error.message });
+      }
+      return;
+    }
+    if (url.pathname === "/api/github/branches" && request.method === "GET") {
+      const installationId = Number(url.searchParams.get("installationId"));
+      const repository = url.searchParams.get("repository");
+      try {
+        if (!Number.isSafeInteger(installationId) || installationId < 1
+          || !(await getGithubInstallations()).some((item) => item.installationId === installationId)) {
+          throw new RequestError(404, "No se encontró la instalación de GitHub.");
+        }
+        respondJson(response, 200, { branches: await githubApp.listBranches(installationId, repository) });
+      } catch (error) {
+        const status = error instanceof RequestError ? error.statusCode
+          : error?.code === "GITHUB_TOO_MANY_BRANCHES" ? 422
+            : error?.code?.startsWith("GITHUB_") ? 502 : error instanceof TypeError ? 400 : 503;
+        if (status >= 500) console.error("Could not list GitHub branches:", error);
+        respondJson(response, status, { error: status >= 500 ? "No se pudieron consultar las ramas." : error.message });
+      }
+      return;
+    }
   }
 
   if (url.pathname === "/api/webhooks/gitea") {
@@ -1475,10 +1708,6 @@ const server = createServer(async (request, response) => {
         respondJson(response, 404, { error: "No se encontró el dominio." });
         return;
       }
-      if (!isUpdate && input.token === undefined) {
-        respondJson(response, 400, { error: "Proporciona un token de Cloudflare para conectar el dominio." });
-        return;
-      }
       if (existing && (existing.zone !== input.zone || existing.hostname !== input.hostname)) {
         respondJson(response, 409, {
           error: "Para cambiar el hostname o la zona, quita esta configuración y crea otra. El registro A anterior se conservará en Cloudflare.",
@@ -1690,22 +1919,19 @@ const server = createServer(async (request, response) => {
     }
     try {
       const projectInput = validateProjectInput(await readJson(request));
-      const { client, token } = await getGiteaApiContext();
-      await validateProjectSource(client, token, projectInput);
+      await validateProjectSource(projectInput);
       const project = await createProject(projectInput);
       respondJson(response, 201, { project });
     } catch (error) {
       const status = {
         INVALID_PROJECT: 400,
-        INVALID_REPOSITORY: 400,
-        GITEA_TOKEN_INVALID: 401,
-        GITEA_TOKEN_FORBIDDEN: 403,
-        GITEA_RESOURCE_NOT_FOUND: 404,
-        GITEA_REQUEST_CONFLICT: 409,
-        GITEA_BRANCH_NOT_FOUND: 409,
-        GITEA_TOO_MANY_REPOSITORIES: 422,
-        GITEA_TOO_MANY_BRANCHES: 422,
-        GITEA_UNAVAILABLE: 502,
+        GITHUB_TOKEN_INVALID: 401,
+        GITHUB_TOKEN_FORBIDDEN: 403,
+        GITHUB_RESOURCE_NOT_FOUND: 404,
+        GITHUB_BRANCH_NOT_FOUND: 409,
+        GITHUB_TOO_MANY_REPOSITORIES: 422,
+        GITHUB_TOO_MANY_BRANCHES: 422,
+        GITHUB_UNAVAILABLE: 502,
       }[error?.code];
       if (status) {
         respondJson(response, status, { error: error.message });
@@ -1721,6 +1947,81 @@ const server = createServer(async (request, response) => {
       }
       console.error("Could not create project:", error);
       respondJson(response, 503, { error: "No se pudo registrar el proyecto." });
+    }
+    return;
+  }
+
+  const projectSourceMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/source$/);
+  if (projectSourceMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "PUT") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "PUT" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectSourceMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      if (!["application/zip", "application/x-zip-compressed"].includes(
+        String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase(),
+      )) {
+        throw new RequestError(415, "Envía un archivo ZIP del código del proyecto.");
+      }
+      const archive = await readRawBody(request, 32 * 1024 * 1024);
+      if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) {
+        throw new RequestError(400, "El archivo no parece ser un ZIP válido.");
+      }
+      const project = await getProject(projectId);
+      if (!project) throw new RequestError(404, "No se encontró el proyecto.");
+      if (project.sourceType !== "upload") {
+        throw new RequestError(409, "Cambia la fuente del proyecto a carga de archivos antes de subir código.");
+      }
+      const sourceDigest = createHash("sha256").update(archive).digest("hex");
+      const path = projectUploadSourcePath(project.id, sourceDigest);
+      let createdFile = false;
+      try {
+        await writeFile(path, archive, { flag: "wx", mode: 0o600 });
+        createdFile = true;
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const existing = await readFile(path);
+        if (existing.length !== archive.length
+          || createHash("sha256").update(existing).digest("hex") !== sourceDigest) {
+          throw new Error("El archivo guardado no coincide con su digest.");
+        }
+      }
+      let source;
+      try {
+        source = await recordProjectUploadSource(project.id, sourceDigest, archive.length);
+      } catch (error) {
+        if (createdFile) await unlink(path);
+        throw error;
+      }
+      await recordAuditEvent({
+        action: "project.source.uploaded",
+        resourceType: "project",
+        resourceId: project.id,
+        details: { sourceDigest, sizeBytes: archive.length },
+      });
+      respondJson(response, 201, { source });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      console.error("Could not save uploaded project source:", error);
+      respondJson(response, 503, { error: "No se pudo guardar el archivo del proyecto." });
     }
     return;
   }
@@ -1748,11 +2049,8 @@ const server = createServer(async (request, response) => {
     }
     try {
       const body = await readJson(request);
-      if (!body || typeof body !== "object" || Array.isArray(body)
-        || Object.keys(body).length !== 1 || typeof body.branch !== "string"
-        || body.branch.length < 1 || body.branch.length > 255
-        || /[\u0000-\u001f\u007f]/.test(body.branch)) {
-        respondJson(response, 400, { error: "Selecciona una rama válida para construir." });
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 0) {
+        respondJson(response, 400, { error: "La construcción usa la fuente y rama configuradas en el proyecto." });
         return;
       }
       const project = await getProject(projectId);
@@ -1765,17 +2063,16 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Configura primero el registro privado en Configuración." });
         return;
       }
-      const { client, token } = await getGiteaApiContext();
-      const repositories = await client.listRepositories(token);
-      const repository = repositories.find((item) => item.fullName === project.repository);
-      if (!repository) {
-        respondJson(response, 404, { error: "No se encontró el repositorio en la cuenta conectada." });
-        return;
-      }
-      const branches = await client.listBranches(token, repository.fullName);
-      if (!branches.some((item) => item.name === body.branch)) {
-        respondJson(response, 409, { error: "La rama seleccionada ya no existe en el repositorio." });
-        return;
+      let sourceDigest;
+      if (project.sourceType === "github") {
+        await validateProjectSource(project);
+      } else {
+        const source = await getLatestProjectUploadSource(project.id);
+        if (!source) {
+          respondJson(response, 409, { error: "Sube primero un archivo ZIP del código del proyecto." });
+          return;
+        }
+        sourceDigest = source.sourceDigest;
       }
       const taskId = randomUUID();
       await createProjectBuildTask({
@@ -1783,7 +2080,9 @@ const server = createServer(async (request, response) => {
         projectId: project.id,
         projectName: project.name,
         repository: project.repository,
-        branch: body.branch,
+        branch: project.productionBranch,
+        sourceType: project.sourceType,
+        sourceDigest,
       });
       const task = await getTaskById(taskId);
       respondJson(response, 202, {
@@ -1792,17 +2091,16 @@ const server = createServer(async (request, response) => {
       });
     } catch (error) {
       const status = {
-        INVALID_REPOSITORY: 400,
-        GITEA_TOKEN_INVALID: 401,
-        GITEA_TOKEN_FORBIDDEN: 403,
-        GITEA_RESOURCE_NOT_FOUND: 404,
+        GITHUB_TOKEN_INVALID: 401,
+        GITHUB_TOKEN_FORBIDDEN: 403,
+        GITHUB_RESOURCE_NOT_FOUND: 404,
         PROJECT_NOT_FOUND: 404,
         PROJECT_BUILD_IN_PROGRESS: 409,
-        GITEA_BRANCH_NOT_FOUND: 409,
-        GITEA_TOO_MANY_REPOSITORIES: 422,
-        GITEA_TOO_MANY_BRANCHES: 422,
-        GITEA_UNAVAILABLE: 502,
-        GITEA_ARCHIVE_TOO_LARGE: 413,
+        GITHUB_BRANCH_NOT_FOUND: 409,
+        GITHUB_TOO_MANY_REPOSITORIES: 422,
+        GITHUB_TOO_MANY_BRANCHES: 422,
+        GITHUB_UNAVAILABLE: 502,
+        GITHUB_ARCHIVE_TOO_LARGE: 413,
       }[error?.code];
       if (status) {
         respondJson(response, status, { error: error.message });
@@ -1940,7 +2238,8 @@ const server = createServer(async (request, response) => {
         return;
       }
       const history = await getRecentProjectDeployments([projectId]);
-      const previousDeployment = history.find((item) => item.result?.commitSha === targetCommitSha);
+      const previousDeployment = history.find((item) =>
+        item.status === "completed" && item.result?.commitSha === targetCommitSha);
       if (!previousDeployment) {
         respondJson(response, 404, { error: "El commit no corresponde a un despliegue exitoso anterior de este proyecto." });
         return;
@@ -2096,8 +2395,7 @@ const server = createServer(async (request, response) => {
     }
     try {
       const projectInput = validateProjectInput(await readJson(request));
-      const { client, token } = await getGiteaApiContext();
-      await validateProjectSource(client, token, projectInput);
+      await validateProjectSource(projectInput);
       const project = await updateProject(projectId, projectInput);
       respondJson(response, project ? 200 : 404, project
         ? { project }
@@ -2105,15 +2403,13 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       const status = {
         INVALID_PROJECT: 400,
-        INVALID_REPOSITORY: 400,
-        GITEA_TOKEN_INVALID: 401,
-        GITEA_TOKEN_FORBIDDEN: 403,
-        GITEA_RESOURCE_NOT_FOUND: 404,
-        GITEA_REQUEST_CONFLICT: 409,
-        GITEA_BRANCH_NOT_FOUND: 409,
-        GITEA_TOO_MANY_REPOSITORIES: 422,
-        GITEA_TOO_MANY_BRANCHES: 422,
-        GITEA_UNAVAILABLE: 502,
+        GITHUB_TOKEN_INVALID: 401,
+        GITHUB_TOKEN_FORBIDDEN: 403,
+        GITHUB_RESOURCE_NOT_FOUND: 404,
+        GITHUB_BRANCH_NOT_FOUND: 409,
+        GITHUB_TOO_MANY_REPOSITORIES: 422,
+        GITHUB_TOO_MANY_BRANCHES: 422,
+        GITHUB_UNAVAILABLE: 502,
       }[error?.code];
       if (status) {
         respondJson(response, status, { error: error.message });
