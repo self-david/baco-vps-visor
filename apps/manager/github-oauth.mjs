@@ -430,6 +430,7 @@ export function createGithubOAuth({
       const current = await loadConfiguration();
       await saveConfiguration({
         ...input,
+        webhookSecret: input.webhookSecret ?? randomBytes(32).toString("hex"),
         accounts: current?.accounts ?? [],
       });
     },

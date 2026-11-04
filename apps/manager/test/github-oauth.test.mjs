@@ -118,6 +118,7 @@ test("rejects unsafe OAuth callback URLs and missing repository-hook scopes", as
       throw new Error(`Unexpected GitHub request: ${url}`);
     },
   });
+
   try {
     await oauth.saveConfiguration({
       clientId: "Iv1.exampleclientid",
@@ -136,6 +137,25 @@ test("rejects unsafe OAuth callback URLs and missing repository-hook scopes", as
       "owner/repo",
       "http://panel.example.com/api/webhooks/github",
     ), TypeError);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("generates a protected webhook secret when saving GitHub OAuth credentials", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vps-manager-github-oauth-secret-"));
+  const keyFile = join(directory, "backup-key");
+  await writeFile(keyFile, `${"e".repeat(64)}\n`);
+  const oauth = createGithubOAuth({ directory, keyFile });
+
+  try {
+    await oauth.saveConfiguration({
+      clientId: "Iv1.exampleclientid",
+      clientSecret: "client-secret-with-sufficient-length",
+    });
+
+    assert.match(await oauth.getWebhookSecret(), /^[a-f0-9]{64}$/);
+    assert.deepEqual(await oauth.getStatus(), { configured: true, clientId: "Iv1.exampleclientid" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

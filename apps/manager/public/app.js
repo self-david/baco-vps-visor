@@ -122,7 +122,6 @@ const githubConfigForm = document.querySelector("#github-config-form");
 const githubStatus = document.querySelector("#github-status");
 const githubClientIdInput = document.querySelector("#github-client-id");
 const githubClientSecretInput = document.querySelector("#github-client-secret");
-const githubWebhookSecretInput = document.querySelector("#github-webhook-secret");
 const githubCallbackUrl = document.querySelector("#github-callback-url");
 const githubImportForm = document.querySelector("#github-import-form");
 const githubImportButton = document.querySelector("#github-import-project");
@@ -2796,7 +2795,6 @@ githubConfigForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         clientId: githubClientIdInput.value.trim(),
         clientSecret: githubClientSecretInput.value,
-        webhookSecret: githubWebhookSecretInput.value,
       }),
     });
     githubConfigForm.reset();

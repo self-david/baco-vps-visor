@@ -32,10 +32,15 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectsPanel, /id="project-import-files"/);
   assert.match(projectsPanel, /id="project-zip-input"/);
   assert.match(projectsPanel, /id="github-connect-status"/);
+  assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
+  assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
+  assert.match(projectsPanel, /Guardar y continuar/);
   assert.match(page, /src="\/project-import\.js"/);
   assert.match(projectsPanel, /webkitdirectory directory multiple/);
   assert.match(projectImport, /githubConnectButton\.addEventListener\("click"/);
   assert.match(projectImport, /window\.location\.assign\(result\.url\)/);
+  assert.match(projectImport, /githubConnectButton\.textContent = !githubConfigured/);
+  assert.match(projectImport, /function openGithubSetup\(\)/);
   assert.match(projectImport, /zipInput\.addEventListener\("change"/);
   assert.match(projectImport, /folderInput\.addEventListener\("change"/);
   assert.match(projectImport, /importButton\.addEventListener\("click"/);

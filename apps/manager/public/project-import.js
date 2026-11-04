@@ -16,6 +16,8 @@ const request = async (path, options = {}) => {
 const githubConnectButton = document.querySelector("#github-install");
 const githubConnectStatus = document.querySelector("#github-connect-status");
 const githubStatus = document.querySelector("#github-status");
+const githubSettings = document.querySelector("#github-settings");
+const githubClientIdInput = document.querySelector("#github-client-id");
 const dropzone = document.querySelector("#project-dropzone");
 const zipInput = document.querySelector("#project-zip-input");
 const folderInput = document.querySelector("#project-folder-input");
@@ -27,6 +29,14 @@ const importButton = document.querySelector("#project-import-files");
 
 let selectedFiles = [];
 let importing = false;
+let githubConfigured = false;
+
+function openGithubSetup() {
+  githubSettings.open = true;
+  githubSettings.scrollIntoView({ behavior: "smooth", block: "center" });
+  githubClientIdInput.focus({ preventScroll: true });
+  githubConnectStatus.textContent = "Para conectar GitHub una sola vez, crea una OAuth App, pega su Client ID y Client Secret, y pulsa “Guardar y continuar”.";
+}
 
 function showSelection(files) {
   selectedFiles = files.filter(({ file }) => file && Number.isFinite(file.size));
@@ -150,7 +160,11 @@ async function importSelectedFiles() {
   }
 }
 
-githubConnectButton.addEventListener("click", async () => {
+async function connectGithubAccount() {
+  if (!githubConfigured) {
+    openGithubSetup();
+    return;
+  }
   githubConnectButton.disabled = true;
   githubConnectStatus.textContent = "Iniciando la autorización segura con GitHub…";
   try {
@@ -164,13 +178,20 @@ githubConnectButton.addEventListener("click", async () => {
     githubConnectStatus.textContent = `No se pudo conectar con GitHub: ${error.message}`;
     githubConnectButton.disabled = false;
   }
-});
+}
+
+githubConnectButton.addEventListener("click", () => void connectGithubAccount());
 
 async function refreshGithubStatus() {
   try {
     const result = await request("/api/github/status");
+    githubConfigured = result.configured === true;
     const callbackState = new URLSearchParams(window.location.search).get("github");
-    githubConnectButton.textContent = result.accounts?.length ? "Conectar otra cuenta" : "Conectar cuenta";
+    githubConnectButton.textContent = !githubConfigured
+      ? "Configurar GitHub"
+      : result.accounts?.length ? "Conectar otra cuenta" : "Conectar cuenta";
+    githubConnectButton.classList.toggle("secondary", !githubConfigured);
+    if (!githubConfigured) githubSettings.open = true;
     if (callbackState === "connected") {
       githubConnectStatus.textContent = "Cuenta de GitHub conectada. Selecciona la cuenta, repositorio y rama para importar.";
     } else if (callbackState === "denied") {
@@ -184,6 +205,7 @@ async function refreshGithubStatus() {
         : "Primero guarda las credenciales de una GitHub OAuth App en “Configuración de GitHub OAuth”.";
     }
   } catch (error) {
+    githubConfigured = false;
     githubConnectStatus.textContent = `No se pudo consultar la configuración OAuth: ${error.message}`;
     if (githubStatus) githubStatus.textContent = error.message;
   }
@@ -193,7 +215,10 @@ void refreshGithubStatus();
 window.addEventListener("vps-manager:auth", (event) => {
   if (event.detail.authenticated) void refreshGithubStatus();
 });
-window.addEventListener("vps-manager:github-config-updated", () => void refreshGithubStatus());
+window.addEventListener("vps-manager:github-config-updated", async () => {
+  await refreshGithubStatus();
+  if (githubConfigured) await connectGithubAccount();
+});
 
 zipInput.addEventListener("change", () => {
   const file = zipInput.files?.[0];
