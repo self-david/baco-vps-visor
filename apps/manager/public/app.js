@@ -1954,18 +1954,26 @@ function renderProjects() {
     const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     const card = document.createElement("article");
     card.className = "project-item";
-    const buildInfo = document.createElement("p");
-    buildInfo.className = "muted";
-    buildInfo.textContent = project.latestBuild
-      ? `Último build: ${project.latestBuild.commitSha.slice(0, 12)}${project.latestBuild.branch ? ` · ${project.latestBuild.branch}` : ""}`
+    const buildInfo = document.createElement("div");
+    buildInfo.className = "project-release-label";
+    const buildLabel = document.createElement("strong");
+    buildLabel.textContent = "Última construcción";
+    const buildValue = document.createElement("span");
+    buildValue.textContent = project.latestBuild
+      ? `${project.latestBuild.commitSha.slice(0, 12)}${project.latestBuild.branch ? ` · ${project.latestBuild.branch}` : ""}`
       : project.sourceType === "upload" && project.latestSource
-        ? `Archivos cargados · ${project.latestSource.sourceDigest.slice(0, 12)}`
-        : "Aún no hay un build exitoso.";
-    const deploymentInfo = document.createElement("p");
-    deploymentInfo.className = "muted";
-    deploymentInfo.textContent = project.deployment
-      ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} réplicas · ${project.deployment.image}`
-      : "No hay un servicio desplegado.";
+        ? `Código listo · ${project.latestSource.sourceDigest.slice(0, 12)}`
+        : "Todavía no construida";
+    buildInfo.replaceChildren(buildLabel, buildValue);
+    const deploymentInfo = document.createElement("div");
+    deploymentInfo.className = "project-release-label";
+    const deploymentLabel = document.createElement("strong");
+    deploymentLabel.textContent = "Versión publicada";
+    const deploymentValue = document.createElement("span");
+    deploymentValue.textContent = project.deployment
+      ? `${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} instancias activas`
+      : "Todavía no desplegada";
+    deploymentInfo.replaceChildren(deploymentLabel, deploymentValue);
     const heading = document.createElement("div");
     heading.className = "card-heading";
     const title = document.createElement("h4");
@@ -2097,6 +2105,18 @@ function renderProjects() {
         await Promise.all([loadProjects(), loadTaskHistory()]);
       } catch (error) {
         projectsStatus.textContent = error.message;
+        if (error.message.includes("Configura primero el registro privado")) {
+          const guidance = document.createElement("div");
+          guidance.className = "project-registry-guidance";
+          const explanation = document.createElement("p");
+          explanation.textContent = "La construcción también publica la imagen para que Swarm pueda distribuirla entre los nodos. Configura el registro privado y vuelve a intentarlo.";
+          const link = document.createElement("a");
+          link.className = "button secondary";
+          link.href = "/#tab-settings";
+          link.textContent = "Configurar registro";
+          guidance.append(explanation, link);
+          buildInfo.append(guidance);
+        }
       }
     }, project.sourceType === "upload" && !project.latestSource));
 

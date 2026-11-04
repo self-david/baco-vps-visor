@@ -397,6 +397,7 @@ Mostrar:
 Configurar, construir y desplegar proyectos propios desde GitHub o archivos ZIP.
 Cada proyecto tiene una vista `/projects/<id>` con pestañas de despliegue, configuración, archivos, variables, dominios e historial. Los ZIP subidos muestran el árbol de nombres sin leer ni exponer el contenido de sus archivos.
 La importación incluye plantillas predeterminadas para HTML/CSS/JavaScript vanilla, un servidor Node.js con `node:http` y un servidor Python con la biblioteca estándar. Node y Python escuchan en `0.0.0.0:3000`, leen el puerto de `PORT` y exponen `/health`; no requieren manifiestos ni dependencias. Al elegir una plantilla, crea el proyecto y luego usa **Construir** y **Desplegar** desde su vista para publicarlo.
+Antes de construir, configura el registro privado desde la pestaña general **Configuración** y dirige un registro DNS público al VPS. Cada build publica su imagen ahí para que Swarm pueda obtenerla en todos los nodos.
 
 ### Aplicaciones
 

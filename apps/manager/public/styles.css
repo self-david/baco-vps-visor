@@ -105,15 +105,33 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-fields { display: grid; gap: 10px; }
 .button-danger { border-color: #78454c; color: #ffd2d2; background: #3a2027; }
 .button-danger:hover { background: #4a2830; }
-.project-detail-view { display: grid; gap: 14px; }
-.project-detail-header { padding: 22px; }
-.project-detail-header h2 { overflow-wrap: anywhere; }
-.project-detail-header .muted { margin: 12px 0 0; }
-.project-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px; border-bottom: 1px solid #263247; }
+.project-detail-view { display: grid; gap: 16px; max-width: 1040px; margin: 0 auto; }
+.project-detail-header { display: grid; gap: 14px; padding: clamp(18px, 3vw, 28px); border-color: #354768; background: radial-gradient(ellipse at top right, rgb(82 119 188 / 16%), transparent 58%), #131b29; }
+.project-back-link { width: fit-content; color: #a9c0ff; font-size: .86rem; font-weight: 650; text-decoration: none; }
+.project-back-link:hover { color: #dce5f4; text-decoration: underline; }
+.project-detail-header h2 { margin: 0; overflow-wrap: anywhere; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.025em; }
+.project-detail-header .card-heading { align-items: center; }
+.project-detail-header .eyebrow, .project-panel-heading .eyebrow { margin-bottom: 6px; }
+.project-detail-header .muted { margin: 0; line-height: 1.55; }
+.project-operation-status:empty { display: none; }
+.project-operation-status:not(:empty) { padding: 12px 14px; border: 1px solid #354768; border-radius: 10px; background: #101722; }
+.project-tabs { position: sticky; z-index: 3; top: 0; display: flex; gap: 6px; overflow-x: auto; padding: 8px; border: 1px solid #263247; border-radius: 12px; background: rgb(14 21 33 / 94%); backdrop-filter: blur(12px); scrollbar-width: thin; }
 .project-tab { flex: 0 0 auto; padding: 9px 13px; border: 1px solid transparent; border-radius: 8px 8px 0 0; color: #9ba8bc; background: transparent; font: inherit; font-size: .86rem; font-weight: 650; cursor: pointer; }
-.project-tab[aria-selected="true"] { border-color: #34435b; border-bottom-color: #8eafff; color: #dce5f4; background: #172235; }
-.project-tab-panel { min-width: 0; padding: 22px; }
-.project-tab-panel h3 { margin-bottom: 16px; }
+.project-tab[aria-selected="true"] { border-color: #354768; border-radius: 8px; color: #e8edf5; background: #202f49; box-shadow: inset 0 0 0 1px rgb(142 175 255 / 10%); }
+.project-tab:focus-visible, .project-back-link:focus-visible { outline: 2px solid #8eafff; outline-offset: 3px; }
+.project-tab-panel { min-width: 0; padding: clamp(18px, 3vw, 28px); border-color: #2d3a50; }
+.project-tab-panel h3 { margin: 0; font-size: 1.2rem; }
+.project-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.project-panel-heading .muted { max-width: 64ch; margin: 6px 0 0; line-height: 1.55; }
+.project-release-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.project-release-card { min-width: 0; padding: 16px; border: 1px solid #2d3a50; border-radius: 10px; background: #101722; }
+.project-release-label { display: grid; gap: 8px; margin: 0; }
+.project-release-label strong { color: #8f9db3; font-size: .8rem; font-weight: 600; }
+.project-release-label span { overflow-wrap: anywhere; color: #e1e9f5; font-size: .98rem; font-weight: 650; }
+.project-release-actions { margin-top: 18px; }
+.project-release-actions .project-actions { margin-top: 0; }
+.project-registry-guidance { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 14px; border: 1px solid #6b4c37; border-radius: 10px; background: #211a16; }
+.project-registry-guidance p { flex: 1 1 360px; margin: 0; color: #f2c99e; font-size: .86rem; line-height: 1.5; }
 .project-tab-panel > div { min-width: 0; }
 .project-tab-panel > div > p { overflow-wrap: anywhere; }
 .project-tab-panel > [hidden] { display: none; }
@@ -122,6 +140,12 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-history { display: grid; gap: 8px; margin-top: 12px; padding-left: 20px; color: #aebbd0; font-size: .84rem; }
 .project-upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .project-upload-form input[type="file"] { flex: 1 1 220px; min-width: 0; color: #aebbd0; }
+@media (max-width: 640px) {
+  .project-detail-header .card-heading { align-items: flex-start; }
+  .project-release-status { grid-template-columns: 1fr; }
+  .project-tabs { margin-right: -4px; margin-left: -4px; }
+  .project-tab { padding: 9px 11px; }
+}
 .application-notice { display: flex; grid-column: 1 / -1; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid #6b4c37; border-radius: 10px; background: #211a16; color: #f2c99e; }
 .application-notice strong { font-size: .88rem; }
 .application-notice p { margin: 6px 0 0; color: #d3b99f; font-size: .82rem; line-height: 1.5; }

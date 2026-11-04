@@ -75,10 +75,13 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
   assert.match(projectsPanel, /Guardar y continuar/);
   assert.match(page, /<ProjectDetailView \/>/);
-  assert.match(projectDetailView, /data-project-tab="deploy">Deploy/);
-  assert.match(projectDetailView, /data-project-tab="settings">Configuración/);
+  assert.match(projectDetailView, /data-project-tab="deploy">Publicación/);
+  assert.match(projectDetailView, /data-project-tab="settings">Ajustes/);
   assert.match(projectDetailView, /href="\/#tab-projects"/);
   assert.match(projectDetailView, /project-detail-operation-status/);
+  assert.match(projectDetailView, /project-release-status/);
+  assert.match(projectDetailView, /Publicación/);
+  assert.match(projectDetailView, /La construcción publica la imagen en el registro privado/);
   assert.doesNotMatch(projectDetailView, /<dialog/);
   assert.doesNotMatch(projectSettingsForm, /<dialog|data-close-project-dialog/);
   assert.match(page, /src="\/project-import\.js"/);
@@ -118,6 +121,8 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /manage\.href = `\/projects\/\$\{encodeURIComponent\(project\.id\)\}`/);
   assert.match(renderer, /button-danger/);
   assert.match(renderer, /Primero retira el servicio desplegado y desasigna sus dominios/);
+  assert.match(renderer, /project-registry-guidance/);
+  assert.match(renderer, /Configurar registro/);
   assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
   assert.match(application, /dashboardTabsRoot\.hidden = showingProject/);
   assert.match(application, /function renderAssignedDomains\(domains\)/);
@@ -137,6 +142,7 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(projectDetailView, /data-project-tab-panel="deploy"/);
   assert.match(projectDetailView, /id="project-detail-file-tree"/);
   assert.match(server, /source.{0,10}files/);
+  assert.match(server, /construir también publica la imagen Docker para que Swarm pueda descargarla en todos los nodos/);
   assert.match(server, /validateProjectArchive\(archive\)/);
   assert.match(server, /projects.{0,30}0-9a-f/);
   assert.match(serviceAgent, /has_root_contents/);

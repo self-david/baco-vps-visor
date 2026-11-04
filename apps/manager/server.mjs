@@ -2602,7 +2602,9 @@ const server = createServer(async (request, response) => {
       }
       const registry = await serviceOperationAgent.getRegistryConfiguration();
       if (!registry) {
-        respondJson(response, 409, { error: "Configura primero el registro privado en Configuración." });
+        respondJson(response, 409, {
+          error: "Configura primero el registro privado en Configuración; construir también publica la imagen Docker para que Swarm pueda descargarla en todos los nodos.",
+        });
         return;
       }
       let sourceDigest;
