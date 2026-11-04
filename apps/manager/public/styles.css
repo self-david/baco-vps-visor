@@ -16,8 +16,11 @@ body {
 }
 
 button, input, select { font: inherit; }
+button { min-height: 42px; }
 
 .topbar, .section-heading, .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.shell, #dashboard-view, .dashboard-panels, .dashboard-panel, .grid, .card { min-width: 0; }
+.card-heading > * { min-width: 0; }
 .topbar { margin-bottom: 48px; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(1.7rem, 3vw, 2.4rem); letter-spacing: -0.04em; }
@@ -104,7 +107,7 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .task-detail { white-space: normal; }
 .task-result { color: #9fe2b5; font-size: .8rem; overflow-wrap: anywhere; }
 .task-result.status-error { color: #ff9a9a; }
-.container-heading-actions { display: flex; align-items: center; gap: 8px; }
+.container-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .metrics-status { min-height: 1.2em; margin: 8px 0 0; font-size: .78rem; }
 .metrics-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 10px; }
 .metrics-group { display: grid; gap: 4px; min-width: 0; padding: 9px 10px; border: 1px solid #263247; border-radius: 8px; background: #0e1521; }
@@ -173,9 +176,10 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .stack-service-name { overflow: hidden; color: #cbd6e7; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
 .stack-service-info { overflow: hidden; color: #8f9db3; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .footnote { margin: 18px 0 0; font-size: .82rem; }
-.logs-dialog { width: min(900px, calc(100% - 28px)); max-height: min(80vh, 760px); padding: 22px; border: 1px solid #34435b; border-radius: 14px; color: #e8edf5; background: #131b29; box-shadow: 0 24px 80px rgb(0 0 0 / 55%); }
+.logs-dialog { position: fixed; inset: 0; width: min(900px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: auto; overscroll-behavior: contain; margin: auto; padding: clamp(16px, 4vw, 22px); border: 1px solid #34435b; border-radius: 14px; color: #e8edf5; background: #131b29; box-shadow: 0 24px 80px rgb(0 0 0 / 55%); }
 .logs-dialog::backdrop { background: rgb(3 7 13 / 75%); }
 .logs-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.logs-heading > * { min-width: 0; }
 .logs-heading h2 { overflow-wrap: anywhere; }
 .logs-content { min-height: 180px; max-height: 55vh; overflow: auto; padding: 14px; border: 1px solid #263247; border-radius: 8px; color: #d3deef; background: #0a0f18; font: .8rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .hidden { display: none !important; }
@@ -184,7 +188,17 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 @media (max-width: 720px) {
   .topbar { margin-bottom: 32px; }
   .dashboard-tabs { margin-right: -14px; margin-left: -14px; padding-right: 14px; padding-left: 14px; }
-  .section-heading { align-items: flex-start; }
+  .topbar, .section-heading, .card-heading { align-items: flex-start; flex-wrap: wrap; }
+  .topbar, .section-heading { gap: 14px; }
+  .grid > .card { padding: 18px; }
+  .resource { flex-wrap: wrap; }
+  .resource-actions { flex: 1 1 100%; }
+  .dialog-actions { flex-wrap: wrap; }
+  .dialog-actions .button { flex: 1 1 auto; }
+}
+
+@media (max-width: 900px) {
+  .card-heading { align-items: flex-start; flex-wrap: wrap; }
 }
 
 @media (max-width: 420px) {
@@ -194,4 +208,8 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
   .metrics-settings-status, #metrics-settings-status { grid-column: auto; }
   .section-heading { gap: 10px; }
   .dashboard-tab { padding: 9px 11px; }
+  .container-heading-actions { width: 100%; }
+  .container-heading-actions .button { flex: 1 1 130px; }
+  .resource-actions .button { flex: 1 1 110px; }
+  .logs-heading { gap: 12px; }
 }
