@@ -110,7 +110,7 @@ services:
         - vps-manager.component=database
 
   manager:
-    image: vps-manager:${VPS_MANAGER_IMAGE_TAG:-${VPS_MANAGER_VERSION:-0.1.0}}
+    image: vps-manager:${VPS_MANAGER_IMAGE_TAG:-0.1.0}
     environment:
       PORT: "3000"
       DOCKER_API_URL: http://docker-proxy:2375
