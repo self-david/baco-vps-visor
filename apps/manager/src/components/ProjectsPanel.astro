@@ -10,14 +10,17 @@
                   </div>
                   <button id="refresh-projects" class="button secondary" type="button">Actualizar</button>
                 </div>
-                <p class="muted">Conecta GitHub para elegir un repositorio y desplegar sus cambios automáticamente, o arrastra un ZIP/carpeta para crear un proyecto con sus archivos.</p>
+                <p class="muted">Conecta GitHub o importa los archivos de un proyecto.</p>
                 <p id="projects-status" class="muted" role="status" aria-live="polite">Cargando proyectos…</p>
                 <div id="projects-list" class="project-list"></div>
                 <section class="project-import" aria-labelledby="project-upload-title">
-                  <h4 id="project-upload-title">Crear proyecto desde archivos</h4>
+                  <div class="card-heading">
+                    <h4 id="project-upload-title">Crear proyecto desde archivos</h4>
+                    <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-project-files" data-guide-title="Crear un proyecto desde archivos" aria-label="Ayuda para crear un proyecto desde archivos" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
+                  </div>
                   <div id="project-dropzone" class="project-dropzone" tabindex="0">
                     <strong>Arrastra aquí un archivo ZIP o una carpeta</strong>
-                    <span class="muted">El ZIP puede tener una carpeta o archivos directamente en la raíz. También puedes cargar una carpeta o archivos individuales. Máximo 32 MiB.</span>
+                    <span class="muted">ZIP, carpeta o archivos individuales (máximo 32 MiB).</span>
                     <div class="project-actions">
                       <label class="button secondary project-file-button" for="project-zip-input">Elegir ZIP</label>
                       <input id="project-zip-input" class="visually-hidden" type="file" accept=".zip,application/zip">
@@ -26,6 +29,10 @@
                       <label class="button secondary project-file-button" for="project-files-input">Elegir archivos</label>
                       <input id="project-files-input" class="visually-hidden" type="file" multiple>
                     </div>
+                    <template id="guide-project-files">
+                      <p>Arrastra un archivo ZIP o una carpeta, o usa los botones para seleccionar ZIP, carpeta o archivos individuales. El ZIP puede contener una carpeta superior o tener los archivos directamente en la raíz; el límite es 32 MiB.</p>
+                      <p>Elige el tipo de despliegue según el contenido: estático para HTML/CSS/JavaScript, dinámico para un servidor como Node o Python, y Build para compilar y publicar la carpeta de salida.</p>
+                    </template>
                   </div>
                   <div id="project-selection" class="project-selection hidden" aria-live="polite">
                     <strong id="project-selection-name"></strong>
@@ -51,7 +58,6 @@
                 <details id="github-settings">
                   <summary id="github-settings-title">Configuración de GitHub OAuth</summary>
                   <p id="github-status" class="muted" role="status" aria-live="polite">Consultando conexión…</p>
-                  <p class="muted">Solo necesitas crear una GitHub OAuth App una vez. <a href="https://github.com/settings/applications/new" target="_blank" rel="noopener noreferrer">Crear OAuth App en GitHub</a>; usa como callback la URL que aparece abajo. El panel genera y protege automáticamente el secreto para los webhooks.</p>
                   <form id="github-config-form" class="form-stack">
                     <label for="github-client-id">Client ID</label>
                     <input id="github-client-id" name="clientId" autocomplete="off" required>
@@ -64,8 +70,16 @@
                 <div class="project-import">
                   <div class="card-heading">
                     <h4>Importar desde GitHub</h4>
-                    <button id="github-install" class="button" type="button">Conectar cuenta</button>
+                    <div class="container-heading-actions">
+                      <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-github-oauth" data-guide-title="Conectar GitHub" aria-label="Ayuda para conectar GitHub" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
+                      <button id="github-install" class="button" type="button">Conectar cuenta</button>
+                    </div>
                   </div>
+                  <template id="guide-github-oauth">
+                    <p>Conecta GitHub para elegir un repositorio y desplegar sus cambios automáticamente.</p>
+                    <p>Solo necesitas crear una GitHub OAuth App una vez. <a href="https://github.com/settings/applications/new" target="_blank" rel="noopener noreferrer">Crear OAuth App en GitHub</a> y usa como callback la URL que aparece en la configuración de GitHub OAuth.</p>
+                    <p>VPS Manager genera y protege automáticamente el secreto para los webhooks. La aplicación solicita los permisos <code>repo</code> y <code>admin:repo_hook</code>; los webhooks requieren una URL pública HTTPS y los despliegues requieren configurar el registro privado.</p>
+                  </template>
                   <p id="github-connect-status" class="muted" role="status" aria-live="polite"></p>
                   <form id="github-import-form" class="form-stack">
                     <label for="project-installation">Cuenta conectada</label>

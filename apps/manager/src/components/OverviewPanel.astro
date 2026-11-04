@@ -21,8 +21,12 @@
                 <div id="swarm-nodes-list" class="resource-list"></div>
                 <details class="node-enroll-details">
                   <summary>Incorporar VPS por SSH</summary>
+                  <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-node-enrollment" data-guide-title="Incorporar un VPS al Swarm" aria-label="Ayuda para incorporar un VPS al Swarm" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
+                  <template id="guide-node-enrollment">
+                    <p>Solo Ubuntu Server 24.04. El panel instalará Docker y añadirá reglas UFW para el tráfico Swarm en la red privada. UFW debe estar activo en el manager y el destino; no se habilita ni se reinicia automáticamente. Permite también esos puertos en el firewall del proveedor y en los nodos ya existentes.</p>
+                    <p>Usa un usuario SSH con sudo sin contraseña, verifica el fingerprint desde la consola del VPS y proporciona una llave dedicada sin passphrase. No uses una llave personal.</p>
+                  </template>
                   <form id="node-enroll-form" class="form-stack">
-                    <p class="muted">Solo Ubuntu Server 24.04. El panel instalará Docker y añadirá reglas UFW para el tráfico Swarm en la red privada. UFW debe estar activo en el manager y el destino; no se habilita ni se reinicia automáticamente. Asegúrate de permitir esos puertos también en el firewall del proveedor y en los nodos ya existentes.</p>
                     <label for="node-address">IP privada del VPS destino</label>
                     <input id="node-address" name="address" type="text" inputmode="decimal" placeholder="10.10.0.12" required>
                     <label for="node-manager-address">IP privada anunciada por el manager</label>

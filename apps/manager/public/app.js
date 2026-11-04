@@ -133,6 +133,9 @@ const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
 const dashboardPanels = document.querySelector("#dashboard-panels");
 const projectDetailView = document.querySelector("#project-detail-view");
+const guideDialog = document.querySelector("#guide-dialog");
+const guideDialogTitle = document.querySelector("#guide-dialog-title");
+const guideDialogContent = document.querySelector("#guide-dialog-content");
 const projectEnvironmentDialog = document.querySelector("#project-environment-dialog");
 const projectEnvironmentForm = document.querySelector("#project-environment-form");
 const projectEnvironmentId = document.querySelector("#project-environment-id");
@@ -1797,6 +1800,20 @@ function setProjectTab(tabName) {
   }
 }
 
+document.addEventListener("click", (event) => {
+  const trigger = event.target instanceof Element ? event.target.closest("[data-guide-target]") : null;
+  if (!trigger) return;
+  const template = document.querySelector(trigger.dataset.guideTarget);
+  if (!(template instanceof HTMLTemplateElement)) {
+    throw new Error(`No se encontró la guía ${trigger.dataset.guideTarget}.`);
+  }
+  guideDialogTitle.textContent = trigger.dataset.guideTitle;
+  guideDialogContent.replaceChildren(template.content.cloneNode(true));
+  guideDialog.showModal();
+});
+
+document.querySelector("#close-guide-dialog").addEventListener("click", () => guideDialog.close());
+
 function renderProjectFileTree(paths, list) {
   const root = { children: new Map() };
   for (const path of paths) {
@@ -2319,8 +2336,7 @@ function renderProjects() {
     });
     document.querySelector("#project-detail-environment").append(environmentForm);
   }
-  const project = renderProjectRoute();
-  if (project) setProjectTab("deploy");
+  renderProjectRoute();
 }
 
 function resetDomainZoneForm() {

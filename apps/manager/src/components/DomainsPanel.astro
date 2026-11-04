@@ -7,6 +7,7 @@
                     <p class="muted">Conecta tus dominios raíz aquí. Después podrás asignar el dominio raíz o crear subdominios para tus proyectos desde la pestaña Proyectos.</p>
                   </div>
                   <div class="container-heading-actions">
+                    <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-domain-connect" data-guide-title="Conectar un dominio con Cloudflare" aria-label="Ayuda para conectar un dominio" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
                     <button id="open-domain-zone-dialog" class="button resource-action" type="button">Conectar nuevo dominio</button>
                     <button id="refresh-domains" class="button secondary resource-action" type="button">Actualizar</button>
                   </div>
@@ -20,23 +21,31 @@
                 <div id="assigned-domains-list" class="resource-list"></div>
               </section>
               <section class="card">
-                <h3>Cloudflare Tunnel</h3>
-                <p class="muted">Publica tus servicios sin abrir puertos en el router. VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Elige cómo Cloudflare Tunnel se conecta a Traefik: HTTP local dentro de Swarm o HTTPS al origen. Los visitantes acceden mediante HTTPS en ambos casos. Los tokens por zona conectada se siguen usando para editar DNS.</p>
-                <ol class="roadmap-list">
+                <div class="card-heading">
+                  <h3>Cloudflare Tunnel</h3>
+                  <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-cloudflare-tunnel" data-guide-title="Configurar Cloudflare Tunnel" aria-label="Ayuda para configurar Cloudflare Tunnel" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
+                </div>
+                <p class="muted">Publica tus servicios sin abrir puertos en el router. Configura el API Token y el origen mediante la ayuda.</p>
+                <template id="guide-cloudflare-tunnel">
+                  <p>VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Elige cómo Cloudflare Tunnel se conecta a Traefik: HTTP local dentro de Swarm o HTTPS al origen. Los visitantes acceden mediante HTTPS en ambos casos. Los tokens por zona conectada se siguen usando para editar DNS.</p>
+                  <p>HTTP local solo está disponible en modo de prueba; en producción elige HTTPS. El modo HTTPS no valida el certificado del origen. Si un proyecto ya estaba desplegado antes de esta actualización, vuelve a desplegarlo para que tenga su router HTTP local.</p>
+                  <ol class="roadmap-list">
                   <li>En Cloudflare, abre tu perfil y ve a <strong>API Tokens → Create Token → Create Custom Token → Get started</strong>.</li>
                   <li>Asigna un nombre, por ejemplo <code>VPS Manager Tunnel</code>.</li>
                   <li>En <strong>Permissions</strong>, selecciona <code>Account</code>, <code>Cloudflare Tunnel</code> y <code>Edit</code>.</li>
                   <li>En <strong>Account Resources</strong>, incluye únicamente la cuenta donde crearás el túnel, en lugar de todas las cuentas.</li>
                   <li>Elige una caducidad (por ejemplo, <strong>1 año</strong>). Deja vacío el filtro de IP del cliente, salvo que quieras restringir deliberadamente desde qué IP se usa el token.</li>
                   <li>Revisa el resumen y crea el token. Cópialo directamente en el formulario de abajo; Cloudflare solo lo muestra una vez.</li>
-                </ol>
+                  </ol>
+                  <p>Usa el API Token que acabas de crear. No uses el token del conector que aparece en el comando <code>docker run … tunnel … --token</code>; ese token solo sirve para ejecutar un túnel ya creado.</p>
+                </template>
                 <p id="cloudflare-tunnel-status" class="muted" role="status" aria-live="polite">No hay un túnel configurado.</p>
                 <label for="cloudflare-tunnel-origin">Conexión del túnel a Traefik</label>
                 <select id="cloudflare-tunnel-origin" disabled>
                   <option value="http">Local: HTTP interno de Swarm (puerto 80)</option>
                   <option value="https">HTTPS al origen (puerto 443)</option>
                 </select>
-                <p id="cloudflare-tunnel-origin-status" class="muted" role="status" aria-live="polite">Elige el protocolo del origen después de crear el túnel. HTTP local solo está disponible en modo de prueba; en producción elige HTTPS. El modo HTTPS no valida el certificado del origen. Si un proyecto ya estaba desplegado antes de esta actualización, vuelve a desplegarlo para que tenga su router HTTP local.</p>
+                <p id="cloudflare-tunnel-origin-status" class="muted" role="status" aria-live="polite">Elige cómo el túnel se conecta a Traefik. Los visitantes acceden mediante HTTPS en ambos casos.</p>
                 <form id="cloudflare-tunnel-form" class="form-stack">
                   <label for="cloudflare-tunnel-account">Account ID</label>
                   <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" pattern="[A-Fa-f0-9]{32}" title="Debe tener exactamente 32 caracteres hexadecimales." required>
@@ -44,7 +53,6 @@
                   <input id="cloudflare-tunnel-name" name="name" type="text" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_\x2d]{0,62}" required>
                   <label for="cloudflare-tunnel-token">API Token de Cloudflare</label>
                   <input id="cloudflare-tunnel-token" name="token" type="password" autocomplete="new-password" required>
-                  <p class="muted">Usa el API Token que acabas de crear. No uses el token del conector que aparece en el comando <code>docker run … tunnel … --token</code>; ese token solo sirve para ejecutar un túnel ya creado.</p>
                   <div class="container-heading-actions">
                     <button id="cloudflare-tunnel-save" class="button" type="submit">Crear y conectar túnel</button>
                   </div>
@@ -63,8 +71,8 @@
                   <p id="domains-ingress-ip-status" class="muted" role="status" aria-live="polite"></p>
                 </form>
               </section>
-              <section class="card backups-card">
-                <h3>Guía para conectar un dominio con Cloudflare</h3>
+              <template id="guide-domain-connect">
+                <p>Añade el dominio raíz a Cloudflare (no un subdominio), revisa los registros DNS detectados y conserva los que necesites para tu web y correo.</p>
                 <ol class="roadmap-list">
                   <li><strong>Añade el dominio a Cloudflare.</strong> En Cloudflare, elige agregar un sitio e introduce el dominio raíz, por ejemplo <code>midominio.com</code>. No introduzcas un subdominio.</li>
                   <li><strong>Confirma los registros DNS.</strong> Revisa o importa los registros que Cloudflare detecte. Mantén los registros existentes que necesites para tu web y correo.</li>
@@ -74,6 +82,6 @@
                   <li><strong>Conéctalo en VPS Manager.</strong> Pulsa <em>Conectar nuevo dominio</em>, escribe el dominio raíz y pega el token. El panel verifica que la zona activa esté disponible en esa cuenta y guarda el token de forma protegida en el VPS.</li>
                 </ol>
                 <p class="muted">Esta conexión registra la zona y las credenciales de Cloudflare. La asignación de dominios y subdominios a proyectos se configura desde la pestaña Proyectos.</p>
-              </section>
+              </template>
             </div>
           </section>

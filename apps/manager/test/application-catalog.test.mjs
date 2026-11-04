@@ -37,6 +37,9 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /id="project-files-input"/);
   assert.match(projectsPanel, /id="project-selection-tree"/);
   const domainsPanel = await readFile(new URL("../src/components/DomainsPanel.astro", import.meta.url), "utf8");
+  const dialogs = await readFile(new URL("../src/components/DashboardDialogs.astro", import.meta.url), "utf8");
+  const guideDialog = await readFile(new URL("../src/components/GuideDialog.astro", import.meta.url), "utf8");
+  const overviewPanel = await readFile(new URL("../src/components/OverviewPanel.astro", import.meta.url), "utf8");
   assert.match(domainsPanel, /id="domain-zones-list"/);
   assert.match(domainsPanel, /id="assigned-domains-list"/);
   assert.match(domainsPanel, /id="cloudflare-tunnel-status"/);
@@ -49,6 +52,15 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /Account Resources/);
   assert.match(domainsPanel, /No uses el token del conector/);
   assert.match(domainsPanel, /solo sirve para ejecutar un túnel ya creado/);
+  assert.match(domainsPanel, /data-guide-target="#guide-cloudflare-tunnel"/);
+  assert.match(domainsPanel, /data-guide-target="#guide-domain-connect"/);
+  assert.match(projectsPanel, /data-guide-target="#guide-project-files"/);
+  assert.match(projectsPanel, /data-guide-target="#guide-github-oauth"/);
+  assert.match(projectDetailView, /data-guide-target="#guide-deployment-types"/);
+  assert.match(overviewPanel, /data-guide-target="#guide-node-enrollment"/);
+  assert.match(dialogs, /<GuideDialog \/>/);
+  assert.match(guideDialog, /<dialog id="guide-dialog"/);
+  assert.match(guideDialog, /id="close-guide-dialog"/);
   assert.match(domainsPanel, /pattern="\[A-Fa-f0-9\]\{32\}"/);
   assert.match(projectsPanel, /id="github-connect-status"/);
   assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
@@ -90,6 +102,8 @@ test("project file selection displays a nested filename tree and project cards o
   const rendererEnd = application.indexOf("function resetDomainZoneForm()", rendererStart);
   const renderer = application.slice(rendererStart, rendererEnd);
 
+  assert.doesNotMatch(renderer, /setProjectTab\("deploy"\)/);
+  assert.match(application, /guideDialog\.showModal\(\)/);
   assert.match(importer, /function renderFileTree\(paths\)/);
   assert.match(importer, /filesInput\.addEventListener\("change"/);
   assert.match(importer, /selectedArchiveInfo\.paths/);

@@ -8,6 +8,20 @@
     gap: 0.75rem;
   }
 
+  .guide-trigger {
+    display: inline-grid;
+    width: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    place-items: center;
+    padding: 0;
+    border-radius: 9999px;
+  }
+
+  .guide-dialog-content {
+    margin-top: 1rem;
+  }
+
   @media (max-width: 640px) {
     .project-domain-assignment {
       grid-template-columns: 1fr;

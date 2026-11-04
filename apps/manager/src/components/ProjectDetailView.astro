@@ -23,10 +23,15 @@ import ProjectSettingsForm from "./ProjectSettingsForm.astro";
     <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-history" data-project-tab="history">Historial</button>
   </nav>
   <section id="project-tab-deploy" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="deploy">
-    <h3>Opciones de despliegue</h3>
+    <div class="card-heading">
+      <h3>Opciones de despliegue</h3>
+      <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-deployment-types" data-guide-title="Tipos de despliegue" aria-label="Ayuda sobre los tipos de despliegue" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
+    </div>
     <div id="project-detail-build-info"></div>
     <div id="project-detail-deployment-info"></div>
-    <p class="muted">Los sitios con index.html se sirven con Nginx; server.js y main.py sueltos tienen un runtime básico. package.json y manifiestos compatibles usan Railpack. C++ requiere un Dockerfile que compile el código y exponga un servidor HTTP.</p>
+    <template id="guide-deployment-types">
+      <p>Los sitios con <code>index.html</code> se sirven con Nginx; <code>server.js</code> y <code>main.py</code> sueltos tienen un runtime básico. <code>package.json</code> y manifiestos compatibles usan Railpack. C++ requiere un Dockerfile que compile el código y exponga un servidor HTTP.</p>
+    </template>
     <div id="project-detail-actions"></div>
   </section>
   <section id="project-tab-settings" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="settings" hidden>
