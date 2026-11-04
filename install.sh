@@ -323,17 +323,24 @@ fi
 docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
 manager_image_ready=false
 for attempt in $(seq 1 90); do
-  running_manager_images="$(docker service ps "${STACK_NAME}_manager" \
-    --filter desired-state=running --format '{{.Image}}' 2>/dev/null | sort -u)"
-  if [[ "${running_manager_images}" == "${IMAGE_NAME}" ]]; then
-    manager_image_ready=true
-    break
+  service_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "${STACK_NAME}_manager" 2>/dev/null || true)"
+  if [[ "${service_image}" == "${IMAGE_NAME}" ]]; then
+    mapfile -t running_manager_tasks < <(docker service ps "${STACK_NAME}_manager" --format '{{.CurrentState}} {{.Image}}' 2>/dev/null || true)
+    for task_line in "${running_manager_tasks[@]}"; do
+      task_state="${task_line%% *}"
+      task_image="${task_line#* }"
+      if [[ "${task_state}" == Running* && "${task_image}" == "${IMAGE_NAME}" ]]; then
+        manager_image_ready=true
+        break 2
+      fi
+    done
   fi
   sleep 2
 done
 if [[ "${manager_image_ready}" != "true" ]]; then
   docker service ps "${STACK_NAME}_manager" --no-trunc || true
-  fail "El servicio del panel no inició la imagen esperada ${IMAGE_NAME}."
+  printf 'Estado de percepción del manager: %s\n' "$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "${STACK_NAME}_manager" 2>/dev/null || echo 'sin-información')" >&2
+  fail "El servicio del panel no llegó a la imagen esperada ${IMAGE_NAME}. Revisar los estados de la tarea y el log del servicio."
 fi
 
 managed_service_names="$(docker service ls --filter label=vps-manager.managed=true --format '{{.Name}}')" \
