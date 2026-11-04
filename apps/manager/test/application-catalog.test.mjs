@@ -108,6 +108,12 @@ test("all HTML form patterns compile in modern browsers", async () => {
   }
 });
 
+test("manager serves browser ES modules with a JavaScript content type", async () => {
+  const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+
+  assert.match(server, /"\.mjs":\s*"text\/javascript; charset=utf-8"/);
+});
+
 test("n8n is pinned to a versioned image and declares managed persistence and HTTPS", async () => {
   const n8n = applicationCatalog.find((application) => application.id === "n8n");
   const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
