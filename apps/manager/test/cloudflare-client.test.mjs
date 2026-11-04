@@ -184,3 +184,19 @@ test("converts only a tracked A record to a proxied tunnel CNAME", async () => {
   assert.match(calls[2].options.body, new RegExp(`${tunnelId}\\.cfargotunnel\\.com`));
   assert.match(calls[2].options.body, /"proxied":true/);
 });
+
+test("includes Cloudflare's API reason when a Tunnel operation is rejected", async () => {
+  const client = createCloudflareClient({
+    fetchImpl: async () => Response.json({
+      success: false,
+      errors: [{ code: 10000, message: "Authentication error: invalid API token." }],
+    }, { status: 403 }),
+  });
+
+  await assert.rejects(
+    client.getTunnelToken("test-cloudflare-api-key-value-123456789", "a".repeat(32), "11111111-1111-4111-8111-111111111111"),
+    (error) => error.code === "CLOUDFLARE_TOKEN_INVALID"
+      && error.message.includes("permiso Account")
+      && error.message.includes("invalid API token"),
+  );
+});

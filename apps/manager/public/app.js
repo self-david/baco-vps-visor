@@ -1,4 +1,5 @@
 const dashboardView = document.querySelector("#dashboard-view");
+const dashboardTabsRoot = document.querySelector("#dashboard-tabs-root");
 const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
@@ -149,6 +150,8 @@ const openDomainZoneDialogButton = document.querySelector("#open-domain-zone-dia
 const closeDomainZoneDialogButton = document.querySelector("#close-domain-zone-dialog");
 const domainZonesStatus = document.querySelector("#domain-zones-status");
 const domainZonesList = document.querySelector("#domain-zones-list");
+const assignedDomainsStatus = document.querySelector("#assigned-domains-status");
+const assignedDomainsList = document.querySelector("#assigned-domains-list");
 const refreshDomainsButton = document.querySelector("#refresh-domains");
 const ingressIpForm = document.querySelector("#domains-ingress-ip-form");
 const ingressIpInput = document.querySelector("#domains-ingress-ip");
@@ -1827,6 +1830,7 @@ function renderProjectRoute() {
   const projectId = routeMatch?.[1].toLowerCase() ?? null;
   const project = projectId ? projects.find((item) => item.id.toLowerCase() === projectId) : null;
   const showingProject = Boolean(routeMatch);
+  dashboardTabsRoot.hidden = showingProject;
   dashboardPanels.classList.toggle("hidden", showingProject);
   projectDetailView.classList.toggle("hidden", !showingProject);
   projectDetailView.hidden = !showingProject;
@@ -2420,6 +2424,30 @@ function renderDomainZones(zones) {
   }
 }
 
+function renderAssignedDomains(domains) {
+  assignedDomainsList.replaceChildren();
+  if (domains.length === 0) {
+    assignedDomainsStatus.textContent = "No hay dominios asignados a proyectos o aplicaciones.";
+    return;
+  }
+  assignedDomainsStatus.textContent = `${domains.length} dominio${domains.length === 1 ? "" : "s"} asignado${domains.length === 1 ? "" : "s"}.`;
+  for (const domain of domains) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = domain.hostname;
+    const detail = document.createElement("div");
+    detail.className = "resource-detail domain-zone-detail";
+    detail.textContent = `${domain.zone} · ${domain.projectName} · Cloudflare${domain.proxied ? " Proxy" : ""}`;
+    main.append(name, detail);
+    row.append(main);
+    assignedDomainsList.append(row);
+  }
+}
+
 async function loadDomains() {
   domainZonesStatus.textContent = "Consultando dominios conectados…";
   try {
@@ -2427,8 +2455,9 @@ async function loadDomains() {
     domainData = result;
     ingressIpInput.value = result.ingressIp ?? "";
     ingressIpCard.hidden = result.ingressMode === "cloudflare-tunnel";
-    renderCloudflareTunnel(result.tunnel);
+    renderCloudflareTunnel(result.tunnel, result.tunnelStatusError);
     renderDomainZones(result.zones);
+    renderAssignedDomains(result.domains);
     if (["pending", "in_progress"].includes(result.tunnel?.latestTask?.status)) {
       if (cloudflareTunnelPollTimer !== undefined) clearTimeout(cloudflareTunnelPollTimer);
       cloudflareTunnelPollTimer = setTimeout(() => {
@@ -2442,20 +2471,19 @@ async function loadDomains() {
     if (projects.length) renderProjects();
   } catch (error) {
     domainZonesList.replaceChildren();
+    assignedDomainsList.replaceChildren();
     domainZonesStatus.textContent = error.message;
+    assignedDomainsStatus.textContent = error.message;
+    cloudflareTunnelStatus.textContent = `No se pudo consultar el estado: ${error.message}`;
   }
 }
 
-function renderCloudflareTunnel(tunnel) {
+function renderCloudflareTunnel(tunnel, tunnelStatusError) {
   const task = tunnel?.latestTask;
-  const statusText = {
-    pending: "Creando el conector en el VPS…",
-    in_progress: "Configurando el conector de Cloudflare en Swarm…",
-    completed: "Túnel configurado y conector activo en Swarm.",
-    failed: `Falló la configuración del conector: ${task.error ?? "revisa el historial de tareas."}`,
-  };
+  cloudflareTunnelStatus.setAttribute("role", task?.status === "failed" || tunnelStatusError ? "alert" : "status");
   if (!tunnel) {
-    cloudflareTunnelStatus.textContent = "No hay un túnel configurado. Puedes crear uno para publicar servicios sin IPv4 pública ni puertos abiertos.";
+    cloudflareTunnelStatus.textContent = tunnelStatusError
+      ?? "No hay un túnel configurado. Puedes crear uno para publicar servicios sin IPv4 pública ni puertos abiertos.";
     cloudflareTunnelAccountInput.readOnly = false;
     cloudflareTunnelNameInput.readOnly = false;
     cloudflareTunnelSaveButton.textContent = "Crear y conectar túnel";
@@ -2466,11 +2494,24 @@ function renderCloudflareTunnel(tunnel) {
   cloudflareTunnelAccountInput.readOnly = true;
   cloudflareTunnelNameInput.readOnly = true;
   cloudflareTunnelSaveButton.textContent = "Actualizar token y reconectar";
+  const taskStatus = tunnel.lastError
+    ? `Falló la última configuración. Motivo: ${tunnel.lastError}`
+    : task?.status === "pending"
+    ? "Solicitud aceptada; esperando que el agente del VPS tome la tarea."
+    : task?.status === "in_progress"
+      ? "El agente está configurando el conector de Cloudflare en Swarm."
+      : task?.status === "completed"
+        ? `Conectado correctamente. ${task.result?.message ?? "El conector de Cloudflare está activo en Swarm."}`
+        : task?.status === "failed"
+          ? `Falló la conexión. Motivo: ${task.error || "la tarea falló sin proporcionar detalles."}`
+              : "El túnel está creado; todavía no hay una tarea de conexión registrada.";
   cloudflareTunnelStatus.textContent = [
     `Cloudflare Tunnel “${tunnel.name}” (${tunnel.tunnelId}).`,
     tunnel.configured ? "API Token protegido." : "Falta el API Token protegido; vuelve a introducirlo.",
-    task ? statusText[task.status] ?? task.status : "Esperando la primera activación del conector.",
-  ].join(" ");
+    taskStatus,
+    task?.id ? `Tarea: ${task.id}.` : "",
+    tunnelStatusError ?? "",
+  ].filter(Boolean).join(" ");
 }
 
 function openNewDomainZoneDialog() {
@@ -3145,6 +3186,7 @@ cloudflareTunnelForm.addEventListener("submit", async (event) => {
     await loadDomains();
   } catch (error) {
     cloudflareTunnelStatus.textContent = error.message;
+    cloudflareTunnelStatus.setAttribute("role", "alert");
   } finally {
     cloudflareTunnelSaveButton.disabled = false;
   }

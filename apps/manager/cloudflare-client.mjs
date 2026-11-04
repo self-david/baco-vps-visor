@@ -142,7 +142,19 @@ export function createCloudflareClient({
       throw new Error("Cloudflare devolvió una respuesta inválida.");
     }
     if (!response.ok || payload?.success !== true) {
-      const error = new Error("Cloudflare rechazó la operación. Verifica el token y sus permisos de lectura de zona y edición DNS.");
+      const details = Array.isArray(payload?.errors)
+        ? payload.errors
+          .map((item) => typeof item?.message === "string"
+            ? item.message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 240)
+            : "")
+          .filter(Boolean)
+          .slice(0, 3)
+          .join("; ")
+        : "";
+      const message = response.status === 401 || response.status === 403
+        ? "Cloudflare rechazó el API Token. Comprueba que sea válido y tenga permiso Account → Cloudflare Tunnel → Edit."
+        : "Cloudflare rechazó la operación.";
+      const error = new Error(details ? `${message} Motivo de Cloudflare: ${details}` : message);
       error.code = response.status === 401 || response.status === 403
         ? "CLOUDFLARE_TOKEN_INVALID"
         : "CLOUDFLARE_REQUEST_FAILED";

@@ -36,6 +36,10 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /id="project-zip-input"/);
   assert.match(projectsPanel, /id="project-files-input"/);
   assert.match(projectsPanel, /id="project-selection-tree"/);
+  const domainsPanel = await readFile(new URL("../src/components/DomainsPanel.astro", import.meta.url), "utf8");
+  assert.match(domainsPanel, /id="domain-zones-list"/);
+  assert.match(domainsPanel, /id="assigned-domains-list"/);
+  assert.match(domainsPanel, /id="cloudflare-tunnel-status"/);
   assert.match(projectsPanel, /id="github-connect-status"/);
   assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
@@ -83,6 +87,10 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /button-danger/);
   assert.match(renderer, /Primero retira el servicio desplegado y desasigna sus dominios/);
   assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
+  assert.match(application, /dashboardTabsRoot\.hidden = showingProject/);
+  assert.match(application, /function renderAssignedDomains\(domains\)/);
+  assert.match(application, /Conectado correctamente\./);
+  assert.match(application, /Falló la conexión\. Motivo:/);
   assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
   assert.match(application, /function updateProjectDeploymentFields\(\)/);
   assert.match(application, /connectDomains\.href = "\/#tab-domains"/);

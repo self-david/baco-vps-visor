@@ -1344,25 +1344,37 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const [domains, domainZones, projects, ingressIp, tunnel] = await Promise.all([
+      const [domains, domainZones, projects, ingressIp] = await Promise.all([
         getProjectDomains(),
         getDomainZones(),
         getProjects(),
         getIngressIp(),
-        getCloudflareTunnelSettings(),
       ]);
+      let tunnel = null;
+      let tunnelStatusError = null;
+      try {
+        const settings = await getCloudflareTunnelSettings();
+        if (settings) {
+          tunnel = {
+            provider: "cloudflare",
+            name: settings.name,
+            tunnelId: settings.tunnelId,
+            accountId: settings.accountId,
+            lastError: typeof settings.lastError === "string" ? settings.lastError : null,
+            configured: await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
+            latestTask: await getLatestTaskByType("cloudflare.tunnel.configure"),
+          };
+        }
+      } catch (error) {
+        console.error("Could not retrieve Cloudflare Tunnel status:", error);
+        tunnelStatusError = "No se pudo consultar el estado de Cloudflare Tunnel; la lista de dominios sigue disponible.";
+      }
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       respondJson(response, 200, {
         ingressIp,
         ingressMode: tunnel ? "cloudflare-tunnel" : "direct",
-        tunnel: tunnel ? {
-          provider: "cloudflare",
-          name: tunnel.name,
-          tunnelId: tunnel.tunnelId,
-          accountId: tunnel.accountId,
-          configured: await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
-          latestTask: await getLatestTaskByType("cloudflare.tunnel.configure"),
-        } : null,
+        tunnel,
+        tunnelStatusError,
         zones: await Promise.all(domainZones.map(async (domainZone) => {
           const tokenConfigured = await hasCloudflareToken(
             serviceOperationsDirectory,
@@ -1407,7 +1419,11 @@ const server = createServer(async (request, response) => {
       });
     } catch (error) {
       console.error("Could not retrieve project domains:", error);
-      respondJson(response, 503, { error: "No se pudieron consultar los dominios." });
+      respondJson(response, 503, {
+        error: error instanceof Error
+          ? `No se pudieron consultar los dominios: ${error.message}`
+          : "No se pudieron consultar los dominios por un error desconocido.",
+      });
     }
     return;
   }
@@ -1426,6 +1442,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     let taskId;
+    let attemptedTunnel;
     try {
       const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)
@@ -1472,12 +1489,16 @@ const server = createServer(async (request, response) => {
           body.name,
           randomBytes(32).toString("base64"),
         );
-      await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
-      await saveCloudflareTunnelSettings({
+      attemptedTunnel = {
         provider: "cloudflare",
         accountId: body.accountId.toLowerCase(),
         tunnelId: tunnel.id,
         name: body.name,
+      };
+      await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
+      await saveCloudflareTunnelSettings({
+        ...attemptedTunnel,
+        lastError: null,
       });
       for (const domain of domains) {
         const domainZone = domainZones.find((candidate) =>
@@ -1523,12 +1544,24 @@ const server = createServer(async (request, response) => {
         },
       });
     } catch (error) {
+      if (attemptedTunnel) {
+        try {
+          const message = error instanceof Error ? error.message.slice(0, 1000) : "Error desconocido al activar el túnel.";
+          await saveCloudflareTunnelSettings({ ...attemptedTunnel, lastError: message });
+        } catch (saveError) {
+          console.error("Could not persist Cloudflare Tunnel setup failure:", saveError);
+        }
+      }
       if (error?.code === "CLOUDFLARE_TOKEN_INVALID" || error instanceof TypeError) {
         respondJson(response, 400, { error: error.message });
         return;
       }
       if (error?.code === "CLOUDFLARE_RECORD_EXISTS") {
         respondJson(response, 409, { error: error.message });
+        return;
+      }
+      if (error?.code === "CLOUDFLARE_UNAVAILABLE" || error?.code === "CLOUDFLARE_REQUEST_FAILED") {
+        respondJson(response, 502, { error: error.message });
         return;
       }
       if (error?.code === "ENOENT") {
@@ -1540,7 +1573,11 @@ const server = createServer(async (request, response) => {
         return;
       }
       console.error("Could not configure Cloudflare Tunnel:", error);
-      respondJson(response, 502, { error: "No se pudo configurar Cloudflare Tunnel. Revisa los permisos del API Token y los logs de tareas." });
+      respondJson(response, 502, {
+        error: error instanceof Error
+          ? `No se pudo configurar Cloudflare Tunnel: ${error.message}`
+          : "No se pudo configurar Cloudflare Tunnel por un error desconocido. Revisa los logs del servidor.",
+      });
     } finally {
       cloudflareTunnelConfigurationPending = false;
     }
