@@ -1762,6 +1762,7 @@ function renderProjects() {
   }
   projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada se despliegan automáticamente cuando GitHub OAuth y el webhook público están disponibles.`;
   for (const project of projects) {
+    const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     const card = document.createElement("article");
     card.className = "project-item";
     const heading = document.createElement("div");
@@ -1942,15 +1943,17 @@ function renderProjects() {
 
     const domainsDetails = document.createElement("details");
     const domainsSummary = document.createElement("summary");
-    const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     domainsSummary.textContent = `Dominios (${assignedDomains.length})`;
     domainsDetails.append(domainsSummary);
+    const routeIsReady = Boolean(currentDeployment?.configurationCurrent && currentDeployment.runningReplicas > 0);
     for (const domain of assignedDomains) {
       const domainRow = document.createElement("div");
       domainRow.className = "project-actions";
-      const hostname = document.createElement("span");
-      hostname.className = "muted";
-      hostname.textContent = `${domain.hostname} → puerto ${domain.port}`;
+      const hostname = document.createElement("a");
+      hostname.href = `https://${domain.hostname}/`;
+      hostname.target = "_blank";
+      hostname.rel = "noopener noreferrer";
+      hostname.textContent = `https://${domain.hostname}/`;
       const removeDomain = document.createElement("button");
       removeDomain.className = "button secondary";
       removeDomain.type = "button";
@@ -1963,7 +1966,24 @@ function renderProjects() {
           projectsStatus.textContent = error.message;
         }
       });
-      domainRow.append(hostname, removeDomain);
+      domainRow.append(hostname);
+      if (routeIsReady) {
+        const openSite = document.createElement("a");
+        openSite.className = "button secondary";
+        openSite.href = hostname.href;
+        openSite.target = "_blank";
+        openSite.rel = "noopener noreferrer";
+        openSite.textContent = "Ver sitio";
+        domainRow.append(openSite);
+      } else {
+        const routeStatus = document.createElement("span");
+        routeStatus.className = "muted";
+        routeStatus.textContent = currentDeployment
+          ? "Redespliega el proyecto para activar esta ruta."
+          : "Construye y despliega el proyecto para activar esta ruta.";
+        domainRow.append(routeStatus);
+      }
+      domainRow.append(removeDomain);
       domainsDetails.append(domainRow);
     }
     const availableZones = domainData.zones.filter((zone) =>
@@ -1974,33 +1994,52 @@ function renderProjects() {
     zoneSelect.setAttribute("aria-label", `Zona de dominio para ${project.name}`);
     zoneSelect.add(new Option("Selecciona dominio conectado", ""));
     for (const zone of availableZones) zoneSelect.add(new Option(zone.zone, zone.zone));
-    const hostnameInput = document.createElement("input");
-    hostnameInput.type = "text";
-    hostnameInput.placeholder = "app.midominio.com";
-    hostnameInput.autocomplete = "url";
-    hostnameInput.required = true;
-    hostnameInput.setAttribute("aria-label", `Hostname del proyecto ${project.name}`);
+    const subdomainInput = document.createElement("input");
+    subdomainInput.type = "text";
+    subdomainInput.placeholder = "www (o @ para usar el dominio raíz)";
+    subdomainInput.autocomplete = "off";
+    subdomainInput.required = true;
+    subdomainInput.setAttribute("aria-label", `Subdominio del proyecto ${project.name}`);
+    const hostnamePreview = document.createElement("span");
+    hostnamePreview.className = "muted";
+    const updateHostnamePreview = () => {
+      const zone = zoneSelect.value;
+      const subdomain = subdomainInput.value.trim();
+      hostnamePreview.textContent = zone
+        ? `Dirección: ${subdomain === "@" ? zone : subdomain ? `${subdomain}.${zone}` : zone}`
+        : "Selecciona un dominio conectado para ver la dirección.";
+    };
+    zoneSelect.addEventListener("change", updateHostnamePreview);
+    subdomainInput.addEventListener("input", updateHostnamePreview);
     const addDomain = document.createElement("button");
     addDomain.className = "button secondary";
     addDomain.type = "submit";
     addDomain.textContent = "Asignar dominio";
     addDomain.disabled = availableZones.length === 0;
-    domainForm.append(zoneSelect, hostnameInput, addDomain);
+    domainForm.append(zoneSelect, subdomainInput, hostnamePreview, addDomain);
     domainForm.addEventListener("submit", async (event) => {
       event.preventDefault();
+      const zone = zoneSelect.value;
+      const subdomain = subdomainInput.value.trim();
+      if (!zone || !subdomain) {
+        projectsStatus.textContent = "Selecciona un dominio conectado e indica un subdominio o @ para el dominio raíz.";
+        return;
+      }
+      const hostname = subdomain === "@" ? zone : `${subdomain}.${zone}`;
       addDomain.disabled = true;
       try {
-        await request("/api/domains", {
+        const result = await request("/api/domains", {
           method: "POST",
           body: JSON.stringify({
-            zone: zoneSelect.value,
-            hostname: hostnameInput.value.trim(),
+            zone,
+            hostname,
             projectId: project.id,
             port: project.internalPort,
-            proxied: availableZones.find((zone) => zone.zone === zoneSelect.value)?.proxied ?? false,
+            proxied: availableZones.find((candidate) => candidate.zone === zone)?.proxied ?? false,
           }),
         });
         await Promise.all([loadDomains(), loadProjects()]);
+        projectsStatus.textContent = result.message;
       } catch (error) {
         projectsStatus.textContent = error.message;
       } finally {

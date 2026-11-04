@@ -45,6 +45,30 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectSettingsDialog, /name="autoDeploy"/);
 });
 
+test("uploaded projects render assigned domains and provide root/subdomain assignment", async () => {
+  const [application, domainsPanel] = await Promise.all([
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/DomainsPanel.astro", import.meta.url), "utf8"),
+  ]);
+  const rendererStart = application.indexOf("function renderProjects() {");
+  const rendererEnd = application.indexOf("function resetDomainZoneForm()", rendererStart);
+  const renderer = rendererStart >= 0 && rendererEnd > rendererStart
+    ? application.slice(rendererStart, rendererEnd)
+    : "";
+
+  assert.ok(renderer, "project renderer should exist");
+  assert.ok(
+    renderer.indexOf("const assignedDomains =") < renderer.indexOf("assignedDomains.length"),
+    "assigned domains must be loaded before the delete action reads them",
+  );
+  assert.match(renderer, /https:\/\/\$\{domain\.hostname\}/);
+  assert.match(renderer, /currentDeployment\?\.configurationCurrent/);
+  assert.match(renderer, /subdomainInput\.placeholder = "www \(o @ para usar el dominio raíz\)"/);
+  assert.match(renderer, /subdomain === "@" \? zone : `\$\{subdomain\}\.\$\{zone\}`/);
+  assert.match(renderer, /"Ver sitio"/);
+  assert.match(domainsPanel, /asignar el dominio raíz o crear subdominios para tus proyectos/);
+});
+
 test("login bootstrap is independent from dashboard initialization", async () => {
   const [page, accessHeader, login, application] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),

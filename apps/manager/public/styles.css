@@ -97,6 +97,8 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-selection strong, .project-selection span { overflow-wrap: anywhere; }
 .project-file-button { display: inline-flex; align-items: center; justify-content: center; }
 .project-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.project-actions a:not(.button) { color: #9eb8ff; overflow-wrap: anywhere; }
+.project-actions a.button { text-decoration: none; }
 .project-fields { display: grid; gap: 10px; }
 .project-dialog { width: min(620px, calc(100% - 24px)); }
 .project-dialog .form-stack { margin-top: 8px; }
