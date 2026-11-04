@@ -1198,12 +1198,15 @@ const server = createServer(async (request, response) => {
         return;
       }
       try {
+        if (!testMode && !isPublicHostname(managerDomain)) {
+          throw new RequestError(409, "Configura primero un dominio público HTTPS para registrar el callback de GitHub OAuth.");
+        }
         const scheme = testMode ? "http" : "https";
         const redirectUri = `${scheme}://${managerDomain}/api/github/callback`;
         respondJson(response, 200, { url: await githubOAuth.createAuthorizationUrl(redirectUri) });
       } catch (error) {
-        if (error?.code === "GITHUB_OAUTH_NOT_CONFIGURED" || error instanceof TypeError) {
-          respondJson(response, 409, { error: error.message });
+        if (error?.code === "GITHUB_OAUTH_NOT_CONFIGURED" || error instanceof TypeError || error instanceof RequestError) {
+          respondJson(response, error instanceof RequestError ? error.statusCode : 409, { error: error.message });
           return;
         }
         console.error("Could not start GitHub OAuth authorization:", error);

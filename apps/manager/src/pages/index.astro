@@ -185,6 +185,11 @@ import "../styles/tailwind.css";
                       <input id="project-folder-input" class="visually-hidden" type="file" webkitdirectory directory multiple>
                     </div>
                   </div>
+                  <div id="project-selection" class="project-selection hidden" aria-live="polite">
+                    <strong id="project-selection-name"></strong>
+                    <span id="project-selection-details" class="muted"></span>
+                    <button id="project-import-files" class="button" type="button">Continuar y crear proyecto</button>
+                  </div>
                   <p id="project-upload-status" class="muted" role="status" aria-live="polite"></p>
                 </section>
               </section>
@@ -209,6 +214,7 @@ import "../styles/tailwind.css";
                     <h4>Importar desde GitHub</h4>
                     <button id="github-install" class="button secondary" type="button">Conectar cuenta</button>
                   </div>
+                  <p id="github-connect-status" class="muted" role="status" aria-live="polite"></p>
                   <form id="github-import-form" class="form-stack">
                     <label for="project-installation">Cuenta conectada</label>
                     <select id="project-installation" name="accountId" required></select>
@@ -619,6 +625,7 @@ import "../styles/tailwind.css";
     </dialog>
     <script is:inline type="module" src="/login.js"></script>
     <script is:inline type="module" src="/app.js"></script>
+    <script is:inline type="module" src="/project-import.js"></script>
     <script>
       import "../scripts/hydrate-dashboard-tabs.js";
     </script>

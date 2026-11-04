@@ -93,6 +93,8 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-dropzone { display: grid; gap: 10px; min-width: 0; margin-top: 12px; padding: 18px; border: 1px dashed #51698e; border-radius: 10px; background: #101722; text-align: center; }
 .project-dropzone.is-dragging { border-color: #9eb8ff; background: #18243a; }
 .project-dropzone strong { overflow-wrap: anywhere; }
+.project-selection { display: grid; gap: 8px; min-width: 0; margin-top: 12px; padding: 14px; border: 1px solid #354768; border-radius: 8px; background: #18243a; }
+.project-selection strong, .project-selection span { overflow-wrap: anywhere; }
 .project-file-button { display: inline-flex; align-items: center; justify-content: center; }
 .project-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
 .project-fields { display: grid; gap: 10px; }

@@ -14,7 +14,10 @@ test("project deployment configuration parser imports its fingerprint dependency
 });
 
 test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => {
-  const page = await readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8");
+  const [page, projectImport] = await Promise.all([
+    readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
+    readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
+  ]);
 
   assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
   assert.match(page, /Conecta GitHub para elegir un repositorio/);
@@ -22,8 +25,17 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(page, /id="github-config-form"/);
   assert.match(page, /id="github-import-form"/);
   assert.match(page, /id="project-dropzone"/);
+  assert.match(page, /id="project-selection"/);
+  assert.match(page, /id="project-import-files"/);
   assert.match(page, /id="project-zip-input"/);
+  assert.match(page, /id="github-connect-status"/);
+  assert.match(page, /src="\/project-import\.js"/);
   assert.match(page, /webkitdirectory directory multiple/);
+  assert.match(projectImport, /githubConnectButton\.addEventListener\("click"/);
+  assert.match(projectImport, /window\.location\.assign\(result\.url\)/);
+  assert.match(projectImport, /zipInput\.addEventListener\("change"/);
+  assert.match(projectImport, /folderInput\.addEventListener\("change"/);
+  assert.match(projectImport, /importButton\.addEventListener\("click"/);
   assert.match(page, /<option value="dockerfile">Dockerfile<\/option>/);
   assert.match(page, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
   assert.match(page, /name="productionBranch"/);

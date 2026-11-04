@@ -83,8 +83,6 @@ const manualApplicationForm = document.querySelector("#manual-application-form")
 const manualApplicationStatus = document.querySelector("#manual-app-status");
 const manualApplicationSubmit = document.querySelector("#manual-app-submit");
 const manualApplicationsList = document.querySelector("#manual-applications-list");
-import { createProjectZip, inspectProjectZip } from "/project-archive.mjs";
-
 const manualApplicationsStatus = document.querySelector("#manual-applications-status");
 const manualApplicationServerSelect = document.querySelector("#manual-app-server");
 const projectApplicationsList = document.querySelector("#project-applications-list");
@@ -122,7 +120,6 @@ const projectBuildStrategySelect = document.querySelector("#project-build-strate
 const projectDockerfileField = document.querySelector("#project-dockerfile-field");
 const githubConfigForm = document.querySelector("#github-config-form");
 const githubStatus = document.querySelector("#github-status");
-const githubInstallButton = document.querySelector("#github-install");
 const githubClientIdInput = document.querySelector("#github-client-id");
 const githubClientSecretInput = document.querySelector("#github-client-secret");
 const githubWebhookSecretInput = document.querySelector("#github-webhook-secret");
@@ -130,10 +127,6 @@ const githubCallbackUrl = document.querySelector("#github-callback-url");
 const githubImportForm = document.querySelector("#github-import-form");
 const githubImportButton = document.querySelector("#github-import-project");
 const githubImportStatus = document.querySelector("#github-import-status");
-const projectDropzone = document.querySelector("#project-dropzone");
-const projectZipInput = document.querySelector("#project-zip-input");
-const projectFolderInput = document.querySelector("#project-folder-input");
-const projectUploadStatus = document.querySelector("#project-upload-status");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
@@ -1637,102 +1630,6 @@ async function loadProjects() {
 
 let githubInstallations = [];
 let currentProjectEdit = null;
-let projectImportInProgress = false;
-
-function safeProjectName(root) {
-  const name = root
-    .replace(/[^A-Za-z0-9._ -]/g, "-")
-    .replace(/\.\.+/g, "-")
-    .trim()
-    .replace(/^[^A-Za-z0-9]+|[.-]+$/g, "")
-    .slice(0, 100);
-  return name || "proyecto";
-}
-
-function readDroppedEntry(entry, parentPath = "") {
-  const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-  if (entry.isFile) {
-    return new Promise((resolve, reject) => {
-      entry.file((file) => resolve([{ file, path }]), reject);
-    });
-  }
-  if (!entry.isDirectory) return Promise.resolve([]);
-  const reader = entry.createReader();
-  return new Promise((resolve, reject) => {
-    const files = [];
-    const readBatch = () => reader.readEntries(async (entries) => {
-      if (!entries.length) {
-        resolve(files);
-        return;
-      }
-      try {
-        const batches = await Promise.all(entries.map((child) => readDroppedEntry(child, path)));
-        for (const batch of batches) files.push(...batch);
-        readBatch();
-      } catch (error) {
-        reject(error);
-      }
-    }, reject);
-    readBatch();
-  });
-}
-
-async function uploadProjectImport(files) {
-  if (!files.length || projectImportInProgress) return;
-  projectImportInProgress = true;
-  projectUploadStatus.textContent = "Preparando los archivos…";
-  try {
-    let archive;
-    let root;
-    let hasDockerfile = false;
-    const zipFiles = files.filter(({ file }) => /\.zip$/i.test(file.name));
-    if (zipFiles.length) {
-      if (files.length !== 1 || zipFiles.length !== 1) {
-        throw new Error("Selecciona un único ZIP o una carpeta, no ambos.");
-      }
-      if (zipFiles[0].file.size > 32 * 1024 * 1024) {
-        throw new Error("El ZIP supera el límite de 32 MiB.");
-      }
-      const inspected = await inspectProjectZip(zipFiles[0].file);
-      root = inspected.root;
-      hasDockerfile = inspected.hasDockerfile;
-      archive = zipFiles[0].file;
-    } else {
-      const paths = files.map(({ file, path }) => path || file.webkitRelativePath || file.name);
-      const roots = new Set(paths.map((path) => path.split("/")[0]));
-      if (roots.size !== 1) throw new Error("Arrastra una sola carpeta de proyecto cada vez.");
-      root = [...roots][0];
-      hasDockerfile = paths.some((path) => {
-        const parts = path.split("/");
-        return parts.length === 2 && parts[1] === "Dockerfile";
-      });
-      archive = await createProjectZip(files.map(({ file, path }, index) => ({
-        file,
-        path: path || file.webkitRelativePath || paths[index],
-      })), root);
-    }
-
-    projectUploadStatus.textContent = "Creando el proyecto y guardando sus archivos…";
-    const name = safeProjectName(root);
-    const result = await request("/api/projects/import", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/zip",
-        "X-Project-Name": name,
-        "X-Build-Strategy": hasDockerfile ? "dockerfile" : "railpack",
-      },
-      body: archive,
-    });
-    projectUploadStatus.textContent = `${result.project.name} se creó con sus archivos. Configura el puerto y pulsa “Construir” cuando esté listo.`;
-    await loadProjects();
-  } catch (error) {
-    projectUploadStatus.textContent = error.message;
-  } finally {
-    projectImportInProgress = false;
-    projectZipInput.value = "";
-    projectFolderInput.value = "";
-  }
-}
 
 async function loadGithubStatus() {
   githubCallbackUrl.textContent = new URL("/api/github/callback", window.location.href).href;
@@ -1742,8 +1639,6 @@ async function loadGithubStatus() {
     githubStatus.textContent = result.configured
       ? `GitHub OAuth configurado · ${githubInstallations.length} cuenta${githubInstallations.length === 1 ? "" : "s"} conectada${githubInstallations.length === 1 ? "" : "s"}.`
       : "Guarda las credenciales de una GitHub OAuth App para conectar tu cuenta.";
-    githubInstallButton.disabled = !result.configured;
-    githubInstallButton.textContent = githubInstallations.length ? "Conectar otra cuenta" : "Conectar cuenta";
     populateProjectInstallations();
     const query = new URLSearchParams(window.location.search);
     const callbackState = query.get("github");
@@ -2810,44 +2705,7 @@ projectInstallationSelect.addEventListener("change", async () => {
 });
 projectRepositorySelect.addEventListener("change", () => void loadProjectBranches("main"));
 refreshProjectsButton.addEventListener("click", () => void loadProjects());
-projectZipInput.addEventListener("change", () => {
-  const file = projectZipInput.files?.[0];
-  if (file) void uploadProjectImport([{ file, path: file.name }]);
-});
-projectFolderInput.addEventListener("change", () => {
-  const files = Array.from(projectFolderInput.files ?? []).map((file) => ({
-    file,
-    path: file.webkitRelativePath,
-  }));
-  void uploadProjectImport(files);
-});
-for (const eventName of ["dragenter", "dragover"]) {
-  projectDropzone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    projectDropzone.classList.add("is-dragging");
-  });
-}
-for (const eventName of ["dragleave", "drop"]) {
-  projectDropzone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    projectDropzone.classList.remove("is-dragging");
-  });
-}
-projectDropzone.addEventListener("drop", async (event) => {
-  const items = Array.from(event.dataTransfer?.items ?? []);
-  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
-  if (entries.length) {
-    try {
-      const groups = await Promise.all(entries.map((entry) => readDroppedEntry(entry)));
-      void uploadProjectImport(groups.flat());
-    } catch (error) {
-      projectUploadStatus.textContent = error.message;
-    }
-    return;
-  }
-  const files = Array.from(event.dataTransfer?.files ?? []).map((file) => ({ file, path: file.name }));
-  void uploadProjectImport(files);
-});
+window.addEventListener("vps-manager:projects-updated", () => void loadProjects());
 projectBuildStrategySelect.addEventListener("change", () => {
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
 });
@@ -2904,6 +2762,7 @@ githubConfigForm.addEventListener("submit", async (event) => {
     });
     githubConfigForm.reset();
     const result = await loadGithubStatus();
+    window.dispatchEvent(new CustomEvent("vps-manager:github-config-updated"));
     githubStatus.textContent = result?.configured
       ? "Configuración OAuth guardada cifrada. Ya puedes conectar tu cuenta."
       : "No se pudo confirmar la configuración OAuth.";
@@ -2911,17 +2770,6 @@ githubConfigForm.addEventListener("submit", async (event) => {
     githubStatus.textContent = error.message;
   } finally {
     submit.disabled = false;
-  }
-});
-
-githubInstallButton.addEventListener("click", async () => {
-  githubInstallButton.disabled = true;
-  try {
-    const result = await request("/api/github/connect", { method: "POST" });
-    window.location.assign(result.url);
-  } catch (error) {
-    githubStatus.textContent = error.message;
-    githubInstallButton.disabled = false;
   }
 });
 
