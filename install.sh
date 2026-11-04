@@ -314,6 +314,21 @@ else
 fi
 docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
 
+managed_service_ids="$(docker service ls --no-trunc --filter label=vps-manager.managed=true --format '{{.ID}}')" \
+  || fail "No se pudieron consultar los servicios administrados para activar su recuperación automática."
+while IFS= read -r managed_service_id; do
+  [[ -n "${managed_service_id}" ]] || continue
+  [[ "${managed_service_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] \
+    || fail "Docker devolvió un identificador de servicio administrado no válido."
+  restart_condition="$(docker service inspect --format '{{.Spec.TaskTemplate.RestartPolicy.Condition}}' "${managed_service_id}")" \
+    || fail "No se pudo consultar la política de reinicio de un servicio administrado."
+  if [[ "${restart_condition}" != "any" ]]; then
+    log "Activando recuperación automática para el servicio ${managed_service_id}."
+    docker service update --restart-condition any --detach=true "${managed_service_id}" \
+      || fail "No se pudo activar la recuperación automática para el servicio ${managed_service_id}."
+  fi
+done <<< "${managed_service_ids}"
+
 log "Esperando que los servicios de Swarm inicien."
 service_total=0
 service_count=0

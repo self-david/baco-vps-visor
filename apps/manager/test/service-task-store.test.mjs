@@ -4,19 +4,22 @@ import { createTaskStore } from "../service-task-store.mjs";
 
 const taskId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";
 const workerId = "a3f51b09-13bf-4c7a-9b03-9ba000000002";
-const serviceId = "9a7f51bdff120d8d0d48d4ca5";
+const serviceId = "7p9aac885t16uxz1f5gdftz17";
 
-function createFakePool() {
+function createFakePool({ projects = [] } = {}) {
   const tasks = new Map();
+  const deliveries = new Set();
   const auditEvents = [];
   const pool = {
     async connect() {
       let snapshot;
+      let deliverySnapshot;
       let auditSize;
       return {
         async query(sql, values = []) {
           if (sql === "BEGIN") {
             snapshot = structuredClone(tasks);
+            deliverySnapshot = new Set(deliveries);
             auditSize = auditEvents.length;
             return { rowCount: 0 };
           }
@@ -24,22 +27,49 @@ function createFakePool() {
           if (sql === "ROLLBACK") {
             tasks.clear();
             for (const [id, task] of snapshot ?? []) tasks.set(id, task);
+            deliveries.clear();
+            for (const id of deliverySnapshot ?? []) deliveries.add(id);
             auditEvents.length = auditSize ?? auditEvents.length;
             return { rowCount: 0 };
           }
           if (sql.includes("pg_advisory_xact_lock")) return { rowCount: 1 };
+          if (sql.includes("INSERT INTO gitea_webhook_deliveries")) {
+            if (deliveries.has(values[0])) return { rowCount: 0, rows: [] };
+            deliveries.add(values[0]);
+            return { rowCount: 1, rows: [{ delivery_id: values[0] }] };
+          }
+          if (sql.includes("SELECT id, name") && sql.includes("FROM projects")) {
+            if (sql.includes("WHERE id = $1")) {
+              const project = projects.find((item) => item.id === values[0]
+                && item.repository === values[1] && item.productionBranch === values[2]);
+              return { rowCount: project ? 1 : 0, rows: project ? [{ id: project.id, name: project.name }] : [] };
+            }
+            const matches = projects.filter((project) =>
+              project.repository === values[0] && project.productionBranch === values[1]);
+            return { rowCount: matches.length, rows: matches.map(({ id, name }) => ({ id, name })) };
+          }
           if (sql.includes("FROM projects")) return { rowCount: 1, rows: [{ id: values[0] }] };
           if (sql.includes("SELECT id FROM tasks") && sql.includes("status IN")) {
-            const active = [...tasks.values()].find((task) =>
-              (sql.includes("type IN ('project.deploy', 'project.undeploy')")
-                ? ["project.deploy", "project.undeploy"].includes(task.type)
-                : task.type === values[0])
-              && task.payload.projectId === values[sql.includes("type IN ('project.deploy', 'project.undeploy')") ? 0 : 1]
-              && ["pending", "in_progress"].includes(task.status));
+            const isProjectBuildLock = sql.includes("type IN ('project.build', 'project.push-deploy')");
+            const isProjectDeployLock = sql.includes("'project.undeploy', 'project.push-deploy')");
+            const active = [...tasks.values()].find((task) => {
+              const matchesType = isProjectBuildLock
+                ? ["project.build", "project.push-deploy"].includes(task.type)
+                : isProjectDeployLock
+                  ? ["project.deploy", "project.undeploy", "project.push-deploy"].includes(task.type)
+                  : task.type === values[0];
+              return matchesType
+                && task.payload.projectId === (isProjectBuildLock || isProjectDeployLock ? values[0] : values[1])
+                && ["pending", "in_progress"].includes(task.status);
+            });
             return { rowCount: active ? 1 : 0, rows: active ? [{ id: active.id }] : [] };
           }
           if (sql.includes("INSERT INTO tasks")) {
-            const [id, type, payload, maxAttempts] = values;
+            const isPushDeploy = sql.includes("'project.push-deploy'");
+            const [id, typeOrPayload, payloadOrMaxAttempts, maxAttemptsValue] = values;
+            const type = isPushDeploy ? "project.push-deploy" : typeOrPayload;
+            const payload = isPushDeploy ? typeOrPayload : payloadOrMaxAttempts;
+            const maxAttempts = isPushDeploy ? payloadOrMaxAttempts : maxAttemptsValue;
             tasks.set(id, {
               id,
               type,
@@ -159,7 +189,7 @@ function createFakePool() {
         const projectIds = values[0];
         return {
           rows: [...tasks.values()]
-            .filter((candidate) => candidate.type === "project.deploy"
+            .filter((candidate) => ["project.deploy", "project.push-deploy"].includes(candidate.type)
               && candidate.status === "completed"
               && projectIds.includes(candidate.payload.projectId)
               && candidate.result?.image
@@ -170,7 +200,7 @@ function createFakePool() {
         const projectIds = values[0];
         return {
           rows: [...tasks.values()]
-            .filter((candidate) => candidate.type === "project.build"
+            .filter((candidate) => ["project.build", "project.push-deploy"].includes(candidate.type)
               && candidate.status === "completed"
               && projectIds.includes(candidate.payload.projectId)
               && candidate.result?.image
@@ -184,7 +214,7 @@ function createFakePool() {
     pool,
     insertAuditEvent: async (_client, event) => auditEvents.push(event),
   });
-  return { pool, store, tasks, auditEvents };
+  return { pool, store, tasks, deliveries, auditEvents };
 }
 
 test("persists service requests and audit events in one transaction", async () => {
@@ -203,6 +233,65 @@ test("persists service requests and audit events in one transaction", async () =
     serviceName: "vps-manager_manager",
     taskId,
   });
+});
+
+test("records Gitea deliveries and queues only production-branch deployments atomically", async () => {
+  const projectId = "6a07c6bf-bb29-4e8f-a41f-8347b04d7601";
+  const deliveryId = "e3f2a4d6-1234-4abc-8def-0123456789ab";
+  const commitSha = "a".repeat(40);
+  const { store, tasks, deliveries, auditEvents } = createFakePool({
+    projects: [
+      { id: projectId, name: "Website", repository: "vpsadmin/project", productionBranch: "main" },
+      { id: "72a6e6cd-5adf-465f-97db-17960a941fb2", name: "Preview", repository: "vpsadmin/project", productionBranch: "preview" },
+    ],
+  });
+
+  assert.equal(await store.recordGiteaWebhookDelivery({
+    deliveryId,
+    event: "push",
+    repository: "vpsadmin/project",
+    ref: "refs/heads/main",
+    commitSha,
+  }), true);
+  assert.equal(deliveries.has(deliveryId), true);
+  assert.equal(tasks.size, 1);
+  const [task] = tasks.values();
+  assert.equal(task.type, "project.push-deploy");
+  assert.deepEqual(task.payload, {
+    projectId,
+    projectName: "Website",
+    repository: "vpsadmin/project",
+    branch: "main",
+    commitSha,
+  });
+  assert.equal(auditEvents[0].action, "project.push-deploy.requested");
+  task.status = "completed";
+  task.result = { message: "Deploy completo.", image: `registry.example.com/project:${commitSha}`, commitSha, serviceId };
+  assert.equal((await store.getLatestProjectBuilds([projectId]))[0].type, "project.push-deploy");
+  assert.equal((await store.getRecentProjectDeployments([projectId]))[0].result.serviceId, serviceId);
+
+  assert.equal(await store.recordGiteaWebhookDelivery({
+    deliveryId,
+    event: "push",
+    repository: "vpsadmin/project",
+    ref: "refs/heads/main",
+    commitSha,
+  }), false);
+  assert.equal(await store.recordGiteaWebhookDelivery({
+    deliveryId: "e3f2a4d6-1234-4abc-8def-0123456789ac",
+    event: "push",
+    repository: "vpsadmin/project",
+    ref: "refs/heads/feature",
+    commitSha,
+  }), true);
+  assert.equal(await store.recordGiteaWebhookDelivery({
+    deliveryId: "e3f2a4d6-1234-4abc-8def-0123456789ad",
+    event: "push",
+    repository: "vpsadmin/project",
+    ref: "refs/tags/v1.0.0",
+    commitSha,
+  }), true);
+  assert.equal(tasks.size, 1);
 });
 
 test("stores registered task types while keeping handler payloads out of public history", async () => {
@@ -246,6 +335,31 @@ test("persists original and desired replica counts for service scale tasks", asy
       originalReplicas: 2,
       desiredReplicas: 101,
     },
+  }), /fields are invalid/);
+});
+
+test("persists bounded operations for managed containers", async () => {
+  const { store, tasks } = createFakePool();
+  const payload = {
+    serviceId,
+    serviceName: "api",
+    containerId: "a".repeat(64),
+    containerName: "api.1.example",
+    action: "stop",
+  };
+  await store.createTask({
+    id: taskId,
+    type: "container.operation",
+    payload,
+  });
+  assert.deepEqual(tasks.get(taskId).payload, payload);
+  const [historyTask] = await store.listRecentTasks();
+  assert.equal(historyTask.containerAction, "stop");
+  assert.equal(historyTask.containerName, "api.1.example");
+  await assert.rejects(store.createTask({
+    id: workerId,
+    type: "container.operation",
+    payload: { ...payload, action: "delete" },
   }), /fields are invalid/);
 });
 

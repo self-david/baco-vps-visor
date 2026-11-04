@@ -5,6 +5,8 @@ const templateFields = new Set([
   "description",
   "category",
   "image",
+  "port",
+  "volumeTarget",
   "environment",
 ]);
 const environmentFields = new Set([
@@ -19,6 +21,8 @@ const idPattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const imagePattern = /^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9]\d{0,4})?\/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})$/;
 const environmentNamePattern = /^[A-Z_][A-Z0-9_]{0,127}$/;
+const domainPattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const swarmIdPattern = /^[a-z0-9]{25,64}$/i;
 
 function assertExactFields(value, fields, label, requiredFields = fields) {
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -36,7 +40,7 @@ function assertText(value, label, maximumLength) {
 }
 
 export function validateApplicationTemplate(input) {
-  assertExactFields(input, templateFields, "Application template");
+  assertExactFields(input, templateFields, "Application template", ["id", "version", "name", "description", "category", "image", "environment"]);
   if (typeof input.id !== "string" || !idPattern.test(input.id)) {
     throw new TypeError("Application template id is invalid.");
   }
@@ -48,6 +52,16 @@ export function validateApplicationTemplate(input) {
   assertText(input.category, "Application template category", 100);
   if (typeof input.image !== "string" || !imagePattern.test(input.image)) {
     throw new TypeError("Application template image must include a valid tag or sha256 digest.");
+  }
+  if (input.port !== undefined
+    && (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535)) {
+    throw new TypeError("Application template port is invalid.");
+  }
+  if (input.volumeTarget !== undefined
+    && (typeof input.volumeTarget !== "string" || input.volumeTarget.length > 255
+      || !/^\/(?:[A-Za-z0-9._-]+\/?)*$/.test(input.volumeTarget)
+      || input.volumeTarget.includes(".."))) {
+    throw new TypeError("Application template volume target is invalid.");
   }
   if (!Array.isArray(input.environment) || input.environment.length > 128) {
     throw new TypeError("Application template environment declarations are invalid.");
@@ -80,4 +94,73 @@ export function validateApplicationTemplate(input) {
   });
 
   return { ...input, environment };
+}
+
+export function validateManualApplicationInput(input) {
+  const allowedFields = new Set([
+    ...templateFields,
+    "domain",
+    "serverNodeId",
+    "environmentValues",
+    "secretValues",
+  ]);
+  assertExactFields(input, allowedFields, "Manual application", [
+    "id", "version", "name", "description", "category", "image", "port",
+    "domain", "serverNodeId", "environmentValues", "secretValues",
+  ]);
+  const template = validateApplicationTemplate({
+    id: input.id,
+    version: input.version,
+    name: input.name,
+    description: input.description,
+    category: input.category,
+    image: input.image,
+    port: input.port,
+    volumeTarget: input.volumeTarget || undefined,
+    environment: [],
+  });
+  if (!isPublicHostname(input.domain)) {
+    throw new TypeError("Application domain must be a public hostname.");
+  }
+  if (typeof input.serverNodeId !== "string" || !swarmIdPattern.test(input.serverNodeId)) {
+    throw new TypeError("Application server node identifier is invalid.");
+  }
+
+  function validateValues(values, label) {
+    if (!values || typeof values !== "object" || Array.isArray(values)
+      || Object.keys(values).length > 100) {
+      throw new TypeError(`${label} must be an object with at most 100 entries.`);
+    }
+    let totalBytes = 0;
+    for (const [name, value] of Object.entries(values)) {
+      if (!environmentNamePattern.test(name) || typeof value !== "string"
+        || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) || value.length > 8192) {
+        throw new TypeError(`${label} contains an invalid variable.`);
+      }
+      totalBytes += Buffer.byteLength(name) + Buffer.byteLength(value);
+    }
+    if (totalBytes > 24576) throw new TypeError(`${label} is too large.`);
+    return { ...values };
+  }
+
+  const environmentValues = validateValues(input.environmentValues, "Application environment");
+  const secretValues = validateValues(input.secretValues, "Application secrets");
+  if (Object.keys(environmentValues).some((name) => Object.hasOwn(secretValues, name))) {
+    throw new TypeError("Application variable names must not overlap between values and secrets.");
+  }
+
+  return {
+    ...template,
+    volumeTarget: template.volumeTarget ?? "",
+    domain: input.domain.toLowerCase(),
+    serverNodeId: input.serverNodeId.toLowerCase(),
+    environmentValues,
+    secretValues,
+  };
+}
+
+function isPublicHostname(value) {
+  return typeof value === "string" && domainPattern.test(value)
+    && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)
+    && !/\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$/i.test(value);
 }

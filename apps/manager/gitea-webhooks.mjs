@@ -61,7 +61,7 @@ export function parseGiteaPushWebhook({ body, deliveryId, event, signature, sign
     event,
     repository: repository.fullName,
     ref,
-    commitSha,
+    commitSha: commitSha.toLowerCase(),
   };
 }
 

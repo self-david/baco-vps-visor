@@ -81,6 +81,14 @@ const supabaseConfigurationForm = document.querySelector("#supabase-configuratio
 const supabaseConfigurationStatus = document.querySelector("#supabase-configuration-status");
 const supabaseServerNodeSelect = document.querySelector("#supabase-server-node");
 const saveSupabaseConfigurationButton = document.querySelector("#save-supabase-configuration");
+const manualApplicationForm = document.querySelector("#manual-application-form");
+const manualApplicationStatus = document.querySelector("#manual-app-status");
+const manualApplicationSubmit = document.querySelector("#manual-app-submit");
+const manualApplicationsList = document.querySelector("#manual-applications-list");
+const manualApplicationsStatus = document.querySelector("#manual-applications-status");
+const manualApplicationServerSelect = document.querySelector("#manual-app-server");
+const projectApplicationsList = document.querySelector("#project-applications-list");
+const projectApplicationsStatus = document.querySelector("#project-applications-status");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
 const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
 const giteaTokenForm = document.querySelector("#gitea-token-form");
@@ -471,6 +479,17 @@ function renderFilteredResources() {
     (item) => item.state,
     (container) => showResourceLogs(container, "containers"),
     containers.length === 0 && containerHasFilters ? "No hay contenedores que coincidan con los filtros." : "No hay contenedores.",
+    (container) => {
+      const service = resourceData.services.find((item) =>
+        item.managed && container.serviceId?.startsWith(item.id));
+      if (!service || container.state !== "running") return undefined;
+      return [
+        ...(service.component === "api"
+          ? []
+          : [{ label: "Detener (Swarm lo repondrá)", onClick: requestContainerStop }]),
+        { label: "Reiniciar", onClick: requestContainerRestart },
+      ];
+    },
   );
   updateResourceCount("#container-count", containers.length, resourceData.containers.length);
 
@@ -530,7 +549,7 @@ async function loadServiceOperationStatus() {
     if (operation) {
       serviceOperationStatus.textContent = operation.message;
     } else {
-      serviceOperationStatus.textContent = "Solo se pueden reiniciar o escalar servicios administrados por VPS Manager.";
+      serviceOperationStatus.textContent = "Los controles solo operan servicios administrados; Swarm repone automáticamente las tareas detenidas.";
     }
     if (serviceOperationPending) {
       scheduleServiceOperationPoll();
@@ -539,8 +558,12 @@ async function loadServiceOperationStatus() {
       serviceOperationPollTimer = undefined;
     }
     if (previousPending && !serviceOperationPending) {
-      const result = await request("/api/docker/services");
-      resourceData.services = result.services;
+      const [containersResult, servicesResult] = await Promise.all([
+        request("/api/docker/containers"),
+        request("/api/docker/services"),
+      ]);
+      resourceData.containers = containersResult.containers;
+      resourceData.services = servicesResult.services;
       renderFilteredResources();
       await loadTaskHistory();
     }
@@ -572,6 +595,8 @@ async function loadTaskHistory() {
       title.className = "resource-name";
       title.textContent = task.type === "application.gitea.install"
         ? "Instalación de Gitea"
+        : task.type === "application.custom.deploy"
+          ? `Despliegue de ${task.applicationName}`
         : task.type === "application.n8n.install"
           ? "Instalación de n8n"
           : task.type === "application.postgresql.install"
@@ -584,6 +609,8 @@ async function loadTaskHistory() {
           ? `Construcción de ${task.projectName} · ${task.branch}`
         : task.type === "project.deploy"
           ? `Despliegue de ${task.projectName} · ${task.commitSha?.slice(0, 12) ?? ""}`
+          : task.type === "project.push-deploy"
+            ? `Despliegue automático de ${task.projectName} · ${task.commitSha?.slice(0, 12) ?? ""}`
           : task.type === "project.undeploy"
             ? `Retiro del servicio de ${task.projectName}`
         : task.type === "service.restart"
@@ -645,6 +672,39 @@ async function requestServiceRestart(service) {
     renderFilteredResources();
     await loadServiceOperationStatus();
   }
+}
+
+async function requestContainerOperation(container, action) {
+  const actionLabel = action === "stop" ? "detener" : "reiniciar";
+  const confirmation = action === "stop"
+    ? `¿Detener temporalmente ${container.name}? Swarm creará automáticamente una tarea de reemplazo.`
+    : `¿Reiniciar ${container.name}? Swarm mantendrá el servicio en su estado deseado.`;
+  if (!window.confirm(confirmation)) return;
+
+  serviceOperationPending = true;
+  serviceOperationStatus.textContent = `Solicitando ${actionLabel} ${container.name}…`;
+  renderFilteredResources();
+  try {
+    const result = await request(`/api/docker/containers/${encodeURIComponent(container.id)}/${action}`, {
+      method: "POST",
+    });
+    serviceOperationStatus.textContent = result.operation.message;
+    await loadTaskHistory();
+    scheduleServiceOperationPoll();
+  } catch (error) {
+    serviceOperationPending = false;
+    serviceOperationStatus.textContent = error.message;
+    renderFilteredResources();
+    await loadServiceOperationStatus();
+  }
+}
+
+function requestContainerStop(container) {
+  return requestContainerOperation(container, "stop");
+}
+
+function requestContainerRestart(container) {
+  return requestContainerOperation(container, "restart");
 }
 
 async function requestServiceScale(service) {
@@ -1358,7 +1418,7 @@ function renderProjects() {
     projectsStatus.textContent = "Todavía no hay proyectos registrados.";
     return;
   }
-  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} registrado${projects.length === 1 ? "" : "s"}. Los pushes no despliegan aplicaciones.`;
+  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} registrado${projects.length === 1 ? "" : "s"}. Los pushes a la rama de producción se construyen y despliegan automáticamente cuando el webhook de Gitea está configurado.`;
   for (const project of projects) {
     const row = document.createElement("div");
     row.className = "resource";
@@ -1444,14 +1504,16 @@ function renderProjects() {
     const deploy = document.createElement("button");
     deploy.className = "button secondary resource-action";
     deploy.type = "button";
-    const deploymentIsCurrent = project.deployment?.commitSha === project.latestBuild?.commitSha
-      && project.deployment.mode === "global"
+    const deploymentMatchesLatestBuild = Boolean(project.latestBuild)
+      && project.deployment?.commitSha === project.latestBuild.commitSha;
+    const deploymentIsCurrent = deploymentMatchesLatestBuild
+      && project.deployment?.mode === "global"
       && project.deployment.desiredReplicas > 0
       && project.deployment.runningReplicas === project.deployment.desiredReplicas
       && project.deployment.configurationCurrent === true;
     deploy.textContent = deploymentIsCurrent
       ? "Ya desplegado"
-      : project.deployment?.commitSha === project.latestBuild?.commitSha
+      : deploymentMatchesLatestBuild
         ? project.deployment.configurationCurrent === false
           ? "Aplicar configuración"
           : "Reintentar despliegue"
@@ -1839,6 +1901,106 @@ function renderSupabaseInstances(instances) {
   }
 }
 
+function parseManualEnvironment(value, label) {
+  const entries = {};
+  for (const [index, rawLine] of value.split(/\r?\n/).entries()) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separator = line.indexOf("=");
+    if (separator < 1) throw new Error(`${label}: la línea ${index + 1} debe tener formato NOMBRE=valor.`);
+    const name = line.slice(0, separator).trim();
+    const entryValue = line.slice(separator + 1);
+    if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(name) || Object.hasOwn(entries, name)) {
+      throw new Error(`${label}: nombre inválido o repetido en la línea ${index + 1}.`);
+    }
+    entries[name] = entryValue;
+  }
+  return entries;
+}
+
+function renderManualApplications(catalog, instances, servers) {
+  manualApplicationsList.replaceChildren();
+  const definitions = catalog.filter((application) => application.serviceManifest?.manual === true);
+  const definitionById = new Map(definitions.map((application) => [application.id, application]));
+  const deployedInstances = instances.filter((instance) => definitionById.has(instance.applicationId));
+  const readyServers = servers.filter((server) => server.state === "ready" && server.availability === "active");
+  manualApplicationServerSelect.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = readyServers.length ? "Selecciona un VPS activo" : "No hay VPS activos";
+  manualApplicationServerSelect.append(placeholder);
+  for (const server of readyServers) {
+    const option = document.createElement("option");
+    option.value = server.id;
+    option.textContent = `${server.hostname} · ${server.role}`;
+    manualApplicationServerSelect.append(option);
+  }
+  manualApplicationSubmit.disabled = readyServers.length === 0;
+  if (deployedInstances.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Aún no has agregado aplicaciones manuales.";
+    manualApplicationsList.append(empty);
+  } else {
+    for (const instance of deployedInstances) {
+      const application = definitionById.get(instance.applicationId);
+      const row = document.createElement("div");
+      row.className = "resource";
+      const main = document.createElement("div");
+      main.className = "resource-main";
+      const name = document.createElement("div");
+      name.className = "resource-name";
+      name.textContent = application.name;
+      const detail = document.createElement("div");
+      detail.className = "resource-detail";
+      const secretNames = instance.configuration.secretNames?.length
+        ? ` · Secretos Swarm: ${instance.configuration.secretNames.join(", ")}`
+        : "";
+      detail.textContent = `${instance.serverHostname} · ${instance.status} · ${instance.configuration.domain} · ${application.serviceManifest.image}${secretNames}`;
+      main.append(name, detail);
+      row.append(main);
+      if (instance.configuration.domain && instance.status === "installed") {
+        const open = document.createElement("a");
+        open.className = "button secondary resource-action";
+        open.href = `https://${instance.configuration.domain}/`;
+        open.target = "_blank";
+        open.rel = "noopener noreferrer";
+        open.textContent = "Abrir";
+        row.append(open);
+      }
+      manualApplicationsList.append(row);
+    }
+  }
+  manualApplicationsStatus.textContent = `${definitions.length} aplicación${definitions.length === 1 ? "" : "es"} manual${definitions.length === 1 ? "" : "es"} en el catálogo; ${deployedInstances.length} instalación${deployedInstances.length === 1 ? "" : "es"}.`;
+}
+
+function renderProjectApplications(projects) {
+  projectApplicationsList.replaceChildren();
+  const deployed = projects.filter((project) => project.deployment);
+  if (deployed.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No hay proyectos desplegados.";
+    projectApplicationsList.append(empty);
+  }
+  for (const project of deployed) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = project.name;
+    const detail = document.createElement("div");
+    detail.className = "resource-detail";
+    detail.textContent = `${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} nodos activos · ${project.deployment.image}`;
+    main.append(name, detail);
+    row.append(main);
+    projectApplicationsList.append(row);
+  }
+  projectApplicationsStatus.textContent = `${deployed.length} proyecto${deployed.length === 1 ? "" : "s"} desplegado${deployed.length === 1 ? "" : "s"}.`;
+}
+
 function renderSupabaseCatalog(catalog, servers, instances) {
   const entry = catalog.find((application) => application.id === "supabase");
   supabaseApplicationData = { catalogEntry: entry, catalog, servers, instances };
@@ -1880,12 +2042,23 @@ function renderSupabaseCatalog(catalog, servers, instances) {
 
 async function loadSupabaseApplications() {
   supabaseStatus.textContent = "Consultando catálogo y servidores Swarm…";
+  manualApplicationsStatus.textContent = "Consultando aplicaciones…";
+  projectApplicationsStatus.textContent = "Consultando proyectos…";
   try {
     const result = await request("/api/applications");
-    renderSupabaseCatalog(result.catalog, result.servers, result.instances);
+    renderSupabaseCatalog(
+      result.catalog,
+      result.servers,
+      result.instances.filter((instance) => instance.applicationId === "supabase"),
+    );
+    renderManualApplications(result.catalog, result.instances, result.servers);
+    renderProjectApplications(result.projects ?? []);
   } catch (error) {
     configureSupabaseButton.disabled = true;
     supabaseStatus.textContent = error.message;
+    manualApplicationSubmit.disabled = true;
+    manualApplicationsStatus.textContent = error.message;
+    projectApplicationsStatus.textContent = error.message;
   }
 }
 
@@ -1993,6 +2166,31 @@ async function pollSwarmNodeEnrollment(taskId) {
     nodeEnrollStatus.textContent = error.message;
     nodeEnrollSubmit.disabled = false;
     nodeEnrollmentPollTimer = undefined;
+  }
+}
+
+async function pollManualApplicationDeployment(taskId, applicationName) {
+  try {
+    const result = await request("/api/system/tasks");
+    const task = result.tasks.find((candidate) => candidate.id === taskId);
+    if (task?.status === "completed") {
+      manualApplicationStatus.textContent = task.result?.message
+        ?? `${applicationName} se desplegó correctamente.`;
+      await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
+      manualApplicationSubmit.disabled = false;
+      return;
+    }
+    if (task?.status === "failed") {
+      manualApplicationStatus.textContent = `No se pudo desplegar ${applicationName}: ${task.error ?? "error desconocido"}`;
+      await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
+      manualApplicationSubmit.disabled = false;
+      return;
+    }
+    manualApplicationStatus.textContent = `Desplegando ${applicationName} en el VPS…`;
+    setTimeout(() => void pollManualApplicationDeployment(taskId, applicationName), 2500);
+  } catch (error) {
+    manualApplicationStatus.textContent = `No se pudo consultar el despliegue: ${error.message}`;
+    manualApplicationSubmit.disabled = false;
   }
 }
 
@@ -2529,6 +2727,40 @@ registryForm.addEventListener("submit", async (event) => {
   } catch (error) {
     registryFormStatus.textContent = error.message;
     registrySaveButton.disabled = false;
+  }
+});
+manualApplicationForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  manualApplicationSubmit.disabled = true;
+  manualApplicationStatus.textContent = "Validando configuración y solicitando el despliegue…";
+  try {
+    const form = new FormData(manualApplicationForm);
+    const result = await request("/api/applications", {
+      method: "POST",
+      body: JSON.stringify({
+        id: form.get("id").trim(),
+        version: form.get("version").trim(),
+        name: form.get("name").trim(),
+        description: form.get("description").trim(),
+        category: form.get("category").trim(),
+        image: form.get("image").trim(),
+        port: Number(form.get("port")),
+        volumeTarget: form.get("volumeTarget").trim() || undefined,
+        domain: form.get("domain").trim(),
+        serverNodeId: form.get("serverNodeId"),
+        environmentValues: parseManualEnvironment(form.get("environment"), "Variables no secretas"),
+        secretValues: parseManualEnvironment(form.get("secrets"), "Secretos"),
+      }),
+    });
+    manualApplicationForm.querySelector('[name="secrets"]').value = "";
+    manualApplicationStatus.textContent = result.message
+      ?? `${form.get("name").trim()} registrada; preparando el despliegue…`;
+    await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
+    pollManualApplicationDeployment(result.task.id, form.get("name").trim());
+  } catch (error) {
+    manualApplicationForm.querySelector('[name="secrets"]').value = "";
+    manualApplicationStatus.textContent = error.message;
+    manualApplicationSubmit.disabled = false;
   }
 });
 revealGiteaCredentialsButton.addEventListener("click", revealGiteaCredentials);

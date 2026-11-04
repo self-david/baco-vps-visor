@@ -183,13 +183,7 @@ export async function recordAuditEvent(event) {
 }
 
 export async function recordGiteaWebhookDelivery({ deliveryId, event, repository, ref, commitSha }) {
-  const result = await pool.query(`
-    INSERT INTO gitea_webhook_deliveries (delivery_id, event, repository, ref, commit_sha)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (delivery_id) DO NOTHING
-    RETURNING delivery_id
-  `, [deliveryId, event, repository, ref, commitSha]);
-  return result.rowCount === 1;
+  return taskStore.recordGiteaWebhookDelivery({ deliveryId, event, repository, ref, commitSha });
 }
 
 function mapProject(row) {
@@ -445,7 +439,7 @@ export async function deleteProject(id) {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`project.deployment:${id}`]);
     const activeTask = await client.query(
       `SELECT id FROM tasks
-       WHERE type IN ('project.build', 'project.deploy', 'project.undeploy')
+       WHERE type IN ('project.build', 'project.deploy', 'project.undeploy', 'project.push-deploy')
          AND payload->>'projectId' = $1
          AND status IN ('pending', 'in_progress')
        LIMIT 1
@@ -526,6 +520,20 @@ export async function createServiceScaleTask(task) {
   });
 }
 
+export async function createContainerOperationTask(task) {
+  return createTask({
+    id: task.id,
+    type: "container.operation",
+    payload: {
+      serviceId: task.serviceId,
+      serviceName: task.serviceName,
+      containerId: task.containerId,
+      containerName: task.containerName,
+      action: task.action,
+    },
+  });
+}
+
 export async function createGiteaInstallTask(task) {
   return createTask({
     id: task.id,
@@ -575,6 +583,8 @@ function mapApplicationInstance(row) {
     name: row.name,
     configuration: row.configuration,
     status: row.status,
+    serviceId: row.service_id,
+    deploymentTaskId: row.deployment_task_id,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -594,12 +604,100 @@ export async function getApplicationCatalog() {
 export async function getApplicationInstances(applicationId) {
   const result = await pool.query(`
     SELECT id, application_id, server_node_id, server_hostname, name,
-      configuration, status, created_at, updated_at
+      configuration, status, service_id, deployment_task_id, created_at, updated_at
     FROM application_instances
-    WHERE application_id = $1
+    WHERE $1::text IS NULL OR application_id = $1
     ORDER BY server_hostname, id
   `, [applicationId]);
   return result.rows.map(mapApplicationInstance);
+}
+
+export async function createManualApplication({ application, instance, task }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const catalog = await client.query(`
+      INSERT INTO application_catalog (
+        id, name, category, description, version, enabled, configuration_schema, service_manifest
+      )
+      VALUES ($1, $2, $3, $4, $5, true, $6::jsonb, $7::jsonb)
+      RETURNING id, name, category, description, version, enabled,
+        configuration_schema, service_manifest, updated_at
+    `, [
+      application.id,
+      application.name,
+      application.category,
+      application.description,
+      application.version,
+      JSON.stringify({
+        environment: application.environment,
+        secretNames: Object.keys(instance.secretValues).sort(),
+      }),
+      JSON.stringify({
+        manual: true,
+        image: application.image,
+        port: application.port,
+        volumeTarget: application.volumeTarget || null,
+        domain: instance.domain,
+      }),
+    ]);
+    const savedInstance = await client.query(`
+      INSERT INTO application_instances (
+        id, application_id, server_node_id, server_hostname, name,
+        configuration, status, deployment_task_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'installing', $7)
+      RETURNING id, application_id, server_node_id, server_hostname, name,
+        configuration, status, service_id, deployment_task_id, created_at, updated_at
+    `, [
+      instance.id,
+      application.id,
+      instance.serverNodeId,
+      instance.serverHostname,
+      application.name,
+      JSON.stringify({
+        domain: instance.domain,
+        port: application.port,
+        volumeTarget: application.volumeTarget || null,
+        environment: instance.environmentValues,
+        secretNames: Object.keys(instance.secretValues).sort(),
+      }),
+      task.id,
+    ]);
+    await client.query("COMMIT");
+    return {
+      application: mapApplicationCatalog(catalog.rows[0]),
+      instance: mapApplicationInstance(savedInstance.rows[0]),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateManualApplicationDeployment(instanceId, taskId, { status, serviceId = null }) {
+  const result = await pool.query(`
+    UPDATE application_instances
+    SET status = $3, service_id = $4, updated_at = now()
+    WHERE id = $1 AND deployment_task_id = $2
+    RETURNING id
+  `, [instanceId, taskId, status, serviceId]);
+  return result.rowCount === 1;
+}
+
+export async function createManualApplicationDeployTask(task) {
+  return createTask({
+    id: task.id,
+    type: "application.custom.deploy",
+    payload: {
+      instanceId: task.instanceId,
+      applicationId: task.applicationId,
+      applicationName: task.applicationName,
+    },
+    maxAttempts: 1,
+  });
 }
 
 export async function saveApplicationInstanceConfiguration(instance) {

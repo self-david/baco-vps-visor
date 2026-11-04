@@ -191,7 +191,7 @@ docker swarm join --token "\${JOIN_TOKEN}" --advertise-addr "\${node_address}" "
   || fail "Docker no pudo unir el VPS al Swarm. Revisa la conectividad privada entre nodos."
 node_id="\$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null)" \
   || fail "El VPS se unió, pero no se pudo leer su identificador de nodo."
-[[ "\${node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] || fail "Docker devolvió un identificador de nodo no válido."
+[[ "\${node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] || fail "Docker devolvió un identificador de nodo no válido."
 printf 'VPS_MANAGER_NODE_ID=%s\\n' "\${node_id}"
 EOF
 chmod 0600 "${remote_script}"
@@ -232,7 +232,7 @@ if ! ssh -i "${key_file}" -p "${ssh_port}" \
 fi
 
 node_id="$(sed -n 's/^VPS_MANAGER_NODE_ID=//p' "${ssh_output}" | tail -n 1)"
-[[ "${node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] || fail "El VPS se unió, pero no devolvió un identificador de nodo válido."
+[[ "${node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] || fail "El VPS se unió, pero no devolvió un identificador de nodo válido."
 node_state=""
 for _ in {1..30}; do
   node_state="$(docker node inspect --format '{{.Status.State}}' "${node_id}" 2>/dev/null || true)"

@@ -306,8 +306,8 @@ test("resolves a branch to a commit and downloads only a bounded same-domain arc
     domain,
     async fetchImpl(url, options) {
       calls.push({ url, options });
-      if (url.endsWith("/commits/release%2F1.0")) {
-        return Response.json({ sha: "A".repeat(40) });
+      if (url.endsWith("/commits?sha=release%2F1.0&limit=1")) {
+        return Response.json([{ sha: "A".repeat(40) }]);
       }
       const response = new Response(archive, {
         headers: { "Content-Type": "application/zip", "Content-Length": String(archive.length) },
@@ -320,7 +320,7 @@ test("resolves a branch to a commit and downloads only a bounded same-domain arc
   const commit = await client.getCommit(token, "vpsadmin/project", "release/1.0");
   assert.equal(commit, "a".repeat(40));
   assert.deepEqual(await client.downloadArchive(token, "vpsadmin/project", commit), archive);
-  assert.equal(calls[0].url, `https://${domain}/api/v1/repos/vpsadmin/project/commits/release%2F1.0`);
+  assert.equal(calls[0].url, `https://${domain}/api/v1/repos/vpsadmin/project/commits?sha=release%2F1.0&limit=1`);
   assert.equal(calls[1].url, `https://${domain}/api/v1/repos/vpsadmin/project/archive/${commit}.zip`);
   assert.equal(calls[1].options.headers.Authorization, `token ${token}`);
 

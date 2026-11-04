@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { validateSwarmNodeRequest } from "./swarm-node-manager.mjs";
 
 const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
+const serviceIdPattern = /^[a-z0-9]{25,64}$/i;
+const containerIdPattern = /^[a-f0-9]{12,64}$/i;
 const allowedOperations = new Set([
   "restart-service",
   "scale-service",
+  "stop-container",
+  "restart-container",
   "install-gitea",
   "install-n8n",
   "install-postgresql",
@@ -16,6 +19,7 @@ const allowedOperations = new Set([
   "build-project",
   "deploy-project",
   "remove-project",
+  "deploy-application",
   "enroll-swarm-node",
 ]);
 const activeStates = new Set(["queued", "running"]);
@@ -23,6 +27,7 @@ const statusStates = new Set(["running", "succeeded", "failed"]);
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 const registryUsernamePattern = /^[A-Za-z0-9._-]{1,64}$/;
 const registryPasswordPattern = /^[A-Za-z0-9._-]{20,72}$/;
+const applicationIdPattern = /^[a-z][a-z0-9-]{0,62}$/;
 
 export function isPublicHostname(hostname) {
   return typeof hostname === "string" && hostnamePattern.test(hostname)
@@ -31,7 +36,7 @@ export function isPublicHostname(hostname) {
 }
 
 export function findManagedService(services, requestedId) {
-  if (typeof requestedId !== "string" || !/^[a-f0-9]{12,64}$/i.test(requestedId)) {
+  if (typeof requestedId !== "string" || !/^[a-z0-9]{12,64}$/i.test(requestedId)) {
     throw new TypeError("A valid Docker Swarm service identifier is required.");
   }
   const normalizedId = requestedId.toLowerCase();
@@ -126,6 +131,10 @@ function validateStatus(status) {
               && (!serviceIdPattern.test(status.serviceId ?? "") || typeof status.image !== "string")))
           : status.operation === "remove-project"
             ? !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+            : status.operation === "deploy-application"
+              ? (!applicationIdPattern.test(status.applicationId ?? "")
+                || !requestIdPattern.test(status.instanceId ?? "")
+                || (status.state === "succeeded" && !serviceIdPattern.test(status.serviceId ?? "")))
             : status.operation === "enroll-swarm-node"
               ? (() => {
                 try {
@@ -146,6 +155,8 @@ function validateStatus(status) {
             : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
+    || ((status.operation === "stop-container" || status.operation === "restart-container")
+      && !containerIdPattern.test(status.containerId ?? ""))
     || (status.operation === "configure-registry"
       && Object.keys(status).sort().join(",")
         !== ["domain", "id", "message", "operation", "state", "updatedAt", "username"].sort().join(","))) {
@@ -164,6 +175,7 @@ export function createServiceOperationAgent({
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
   const postgresqlCredentialsPath = (requestId) => join(directory, `postgresql-credentials-${requestId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
+  const applicationDeploymentPath = (requestId) => join(directory, `application-deploy-${requestId}.json`);
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
   const nodeCredentialsPath = (requestId) => join(directory, `node-ssh-key-${requestId}`);
   const registryStatusPath = join(directory, "registry-status.json");
@@ -218,6 +230,9 @@ export function createServiceOperationAgent({
                   && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
                 : queuedRequest.operation === "remove-project"
                   ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
+                  : queuedRequest.operation === "deploy-application"
+                    ? applicationIdPattern.test(queuedRequest.applicationId ?? "")
+                      && requestIdPattern.test(queuedRequest.instanceId ?? "")
                   : queuedRequest.operation === "enroll-swarm-node"
                     ? (() => {
                       try {
@@ -235,7 +250,9 @@ export function createServiceOperationAgent({
                         return false;
                       }
                     })()
-                : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
+                : serviceIdPattern.test(queuedRequest.serviceId ?? "")
+                  && ((queuedRequest.operation !== "stop-container" && queuedRequest.operation !== "restart-container")
+                    || containerIdPattern.test(queuedRequest.containerId ?? ""))));
       if (!validCommonFields) {
         throw new Error("The service operation request file has an invalid format.");
       }
@@ -255,10 +272,14 @@ export function createServiceOperationAgent({
             ? ["id", "operation", "projectId", "commitSha"]
             : queuedRequest.operation === "remove-project"
               ? ["id", "operation", "projectId"]
+              : queuedRequest.operation === "deploy-application"
+                ? ["id", "operation", "applicationId", "instanceId"]
               : queuedRequest.operation === "enroll-swarm-node"
                 ? ["id", "operation", "address", "sshUser", "sshPort", "hostFingerprint", "privateCidr", "managerAddress", "role"]
         : queuedRequest.operation === "scale-service"
         ? ["id", "operation", "serviceId", "replicas"]
+        : queuedRequest.operation === "stop-container" || queuedRequest.operation === "restart-container"
+          ? ["id", "operation", "serviceId", "containerId"]
         : ["id", "operation", "serviceId"];
       if (!validScaleRequest
         || Object.keys(queuedRequest).sort().join(",") !== expectedFields.sort().join(",")) {
@@ -283,6 +304,8 @@ export function createServiceOperationAgent({
                   ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
                   : queuedRequest.operation === "remove-project"
                     ? { projectId: queuedRequest.projectId }
+                    : queuedRequest.operation === "deploy-application"
+                      ? { applicationId: queuedRequest.applicationId, instanceId: queuedRequest.instanceId }
                     : queuedRequest.operation === "enroll-swarm-node"
                       ? {
                         nodeAddress: queuedRequest.address,
@@ -295,6 +318,7 @@ export function createServiceOperationAgent({
                       }
               : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
+          ...(queuedRequest.containerId ? { containerId: queuedRequest.containerId } : {}),
           message: queuedRequest.operation === "install-gitea"
             ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
             : queuedRequest.operation === "install-n8n"
@@ -311,8 +335,14 @@ export function createServiceOperationAgent({
                   ? "Despliegue aceptado; esperando al agente Swarm del VPS."
                   : queuedRequest.operation === "remove-project"
                     ? "Retiro aceptado; esperando al agente Swarm del VPS."
+                    : queuedRequest.operation === "deploy-application"
+                      ? `Despliegue de ${queuedRequest.applicationId} aceptado; esperando al agente del VPS.`
                     : queuedRequest.operation === "enroll-swarm-node"
                       ? `Alta de nodo ${queuedRequest.address} aceptada; esperando al agente host.`
+            : queuedRequest.operation === "stop-container"
+              ? "Solicitud aceptada; Swarm repondrá el contenedor detenido."
+            : queuedRequest.operation === "restart-container"
+              ? "Solicitud aceptada; reiniciando el contenedor."
             : queuedRequest.operation === "scale-service"
             ? "Solicitud aceptada; esperando que el agente del VPS escale el servicio."
             : "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
@@ -322,7 +352,7 @@ export function createServiceOperationAgent({
     return status ?? null;
   }
 
-  async function requestOperation(operation, serviceId, requestId, replicas) {
+  async function requestOperation(operation, serviceId, requestId, replicas, containerId) {
     if (!allowedOperations.has(operation)) {
       throw new TypeError("The service operation is not allowed.");
     }
@@ -338,11 +368,17 @@ export function createServiceOperationAgent({
     if (operation === "restart-service" && replicas !== undefined) {
       throw new TypeError("The restart operation does not accept a replica count.");
     }
+    const containerOperation = operation === "stop-container" || operation === "restart-container";
+    if (containerOperation !== (containerId !== undefined)
+      || (containerOperation && !containerIdPattern.test(containerId))) {
+      throw new TypeError("A valid Docker container identifier is required for container operations.");
+    }
     const currentStatus = await getStatus();
     if (currentStatus?.id === requestId) {
       if (currentStatus.serviceId !== serviceId
         || (currentStatus.operation && currentStatus.operation !== operation)
-        || (operation === "scale-service" && currentStatus.replicas !== replicas)) {
+        || (operation === "scale-service" && currentStatus.replicas !== replicas)
+        || (containerOperation && currentStatus.containerId !== containerId)) {
         throw new Error("The task identifier already belongs to a different service operation.");
       }
       return currentStatus;
@@ -356,6 +392,9 @@ export function createServiceOperationAgent({
     const requestData = { id: requestId, operation, serviceId };
     if (operation === "scale-service") {
       requestData.replicas = replicas;
+    }
+    if (containerOperation) {
+      requestData.containerId = containerId;
     }
     const request = JSON.stringify(requestData);
     const temporaryPath = join(directory, `.request-${requestId}.tmp`);
@@ -381,9 +420,14 @@ export function createServiceOperationAgent({
       serviceId,
       operation,
       replicas,
+      ...(containerOperation ? { containerId } : {}),
       message: operation === "scale-service"
         ? "Solicitud aceptada; el escalado comenzará en el VPS."
-        : "Solicitud aceptada; el reinicio comenzará en el VPS.",
+        : operation === "stop-container"
+          ? "Solicitud aceptada; Swarm repondrá el contenedor detenido."
+          : operation === "restart-container"
+            ? "Solicitud aceptada; reiniciando el contenedor."
+            : "Solicitud aceptada; el reinicio comenzará en el VPS.",
     };
   }
 
@@ -652,6 +696,77 @@ export function createServiceOperationAgent({
       message: operation === "deploy-project"
         ? "Despliegue aceptado; el servicio se mantendrá sin puertos publicados."
         : "Retiro aceptado; el agente validará la propiedad del servicio.",
+    };
+  }
+
+  async function stageApplicationDeployment(requestId, configuration) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || !configuration || typeof configuration !== "object" || Array.isArray(configuration)
+      || !applicationIdPattern.test(configuration.applicationId ?? "")
+      || !requestIdPattern.test(configuration.instanceId ?? "")) {
+      throw new TypeError("The manual application deployment configuration is invalid.");
+    }
+    const staged = { ...configuration, taskId: requestId };
+    const serialized = `${JSON.stringify(staged)}\n`;
+    if (Buffer.byteLength(serialized) > 80_000) {
+      throw new TypeError("The manual application deployment configuration is too large.");
+    }
+    await writeFile(applicationDeploymentPath(requestId), serialized, { flag: "wx", mode: 0o600 });
+  }
+
+  async function removeApplicationDeployment(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The application deployment request identifier is invalid.");
+    }
+    await unlink(applicationDeploymentPath(requestId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
+
+  async function requestApplicationDeploy(applicationId, instanceId, requestId) {
+    if (!applicationIdPattern.test(applicationId ?? "")
+      || !requestIdPattern.test(instanceId ?? "")
+      || !requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("Manual application deployment request fields are invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "deploy-application"
+        || currentStatus.applicationId !== applicationId
+        || currentStatus.instanceId !== instanceId) {
+        throw new Error("The task identifier already belongs to a different application deployment.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const requestData = { id: requestId, operation: "deploy-application", applicationId, instanceId };
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "deploy-application",
+      state: "queued",
+      applicationId,
+      instanceId,
+      message: `Despliegue de ${applicationId} aceptado; esperando al agente del VPS.`,
     };
   }
 
@@ -965,6 +1080,8 @@ export function createServiceOperationAgent({
     consumePostgresqlCredentials,
     requestRestart: (serviceId, requestId = createId()) =>
       requestOperation("restart-service", serviceId, requestId),
+    requestContainerOperation: (operation, serviceId, containerId, requestId = createId()) =>
+      requestOperation(operation, serviceId, requestId, undefined, containerId),
     requestScale: (serviceId, replicas, requestId = createId()) =>
       requestOperation("scale-service", serviceId, requestId, replicas),
     requestGiteaInstall,
@@ -974,6 +1091,9 @@ export function createServiceOperationAgent({
     requestProjectBuild,
     requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>
       requestProjectServiceOperation("deploy-project", projectId, commitSha, requestId),
+    stageApplicationDeployment,
+    removeApplicationDeployment,
+    requestApplicationDeploy,
     requestProjectUndeploy: (projectId, requestId = createId()) =>
       requestProjectServiceOperation("remove-project", projectId, undefined, requestId),
     stageNodeCredentials,

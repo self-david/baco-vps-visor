@@ -46,6 +46,8 @@ if not re.fullmatch(
     raise SystemExit("Invalid service operation request identifier.")
 project_id = "-"
 commit_sha = "-"
+application_id = "-"
+application_instance_id = "-"
 registry_domain = "-"
 registry_username = "-"
 node_address = "-"
@@ -55,6 +57,7 @@ node_fingerprint = "-"
 node_private_cidr = "-"
 manager_private_address = "-"
 node_role = "-"
+container_id = "-"
 common_fields = {"id", "operation", "serviceId"}
 if request.get("operation") == "restart-service":
     if set(request) != common_fields:
@@ -68,6 +71,13 @@ elif request.get("operation") == "scale-service":
     if not 1 <= request["replicas"] <= 100:
         raise SystemExit("Desired replica count must be between 1 and 100.")
     replicas = request["replicas"]
+elif request.get("operation") in {"stop-container", "restart-container"}:
+    if set(request) != common_fields | {"containerId"} \
+        or not isinstance(request["containerId"], str) \
+        or not re.fullmatch(r"[a-fA-F0-9]{12,64}", request["containerId"]):
+        raise SystemExit("Invalid container operation request fields.")
+    container_id = request["containerId"]
+    replicas = "-"
 elif request.get("operation") in {"install-gitea", "install-n8n"}:
     if set(request) != {"id", "operation", "domain"}:
         raise SystemExit("Invalid application installation request fields.")
@@ -169,6 +179,20 @@ elif request.get("operation") == "remove-project":
     service_id = "-"
     replicas = "-"
     project_id = request["projectId"].lower()
+elif request.get("operation") == "deploy-application":
+    if set(request) != {"id", "operation", "applicationId", "instanceId"}:
+        raise SystemExit("Invalid manual application deployment request fields.")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(request["applicationId"])):
+        raise SystemExit("Invalid manual application identifier.")
+    if not re.fullmatch(
+        r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+        str(request["instanceId"]),
+    ):
+        raise SystemExit("Invalid manual application instance identifier.")
+    service_id = "-"
+    replicas = "-"
+    application_id = request["applicationId"]
+    application_instance_id = request["instanceId"].lower()
 elif request.get("operation") == "enroll-swarm-node":
     if set(request) != {
         "id", "operation", "address", "sshUser", "sshPort",
@@ -213,18 +237,18 @@ elif request.get("operation") == "enroll-swarm-node":
     node_role = request["role"]
 else:
     raise SystemExit("Invalid service operation request fields.")
-if request["operation"] in {"restart-service", "scale-service"} and not re.fullmatch(
-    r"[a-fA-F0-9]{25,64}", str(request["serviceId"])
+if request["operation"] in {"restart-service", "scale-service", "stop-container", "restart-container"} and not re.fullmatch(
+    r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -265,6 +289,14 @@ write_status() {
   elif [[ "${operation}" == "remove-project" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${project_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "deploy-application" ]]; then
+    if [[ "${state}" == "succeeded" ]]; then
+      printf '{"id":"%s","operation":"%s","state":"%s","applicationId":"%s","instanceId":"%s","serviceId":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${application_id}" "${application_instance_id}" "${service_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    else
+      printf '{"id":"%s","operation":"%s","state":"%s","applicationId":"%s","instanceId":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${application_id}" "${application_instance_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    fi
   elif [[ "${operation}" == "enroll-swarm-node" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
       printf '{"id":"%s","operation":"%s","state":"%s","nodeAddress":"%s","sshUser":"%s","sshPort":%s,"hostFingerprint":"%s","privateCidr":"%s","managerAddress":"%s","role":"%s","nodeId":"%s","updatedAt":"%s","message":"%s"}\n' \
@@ -276,6 +308,9 @@ write_status() {
   elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "stop-container" || "${operation}" == "restart-container" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","containerId":"%s","updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${service_id}" "${container_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   else
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -303,10 +338,16 @@ elif [[ "${operation}" == "deploy-project" ]]; then
   write_status "running" "Preparando el despliegue privado del proyecto."
 elif [[ "${operation}" == "remove-project" ]]; then
   write_status "running" "Validando el retiro del servicio del proyecto."
+elif [[ "${operation}" == "deploy-application" ]]; then
+  write_status "running" "Validando la configuración de la aplicación manual."
 elif [[ "${operation}" == "enroll-swarm-node" ]]; then
   write_status "running" "Validando red privada, UFW y acceso SSH del VPS destino."
 elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
+elif [[ "${operation}" == "stop-container" ]]; then
+  write_status "running" "Deteniendo temporalmente la tarea; Swarm la repondrá."
+elif [[ "${operation}" == "restart-container" ]]; then
+  write_status "running" "Reinicio de contenedor en curso."
 else
   write_status "running" "Reinicio de servicio en curso."
 fi
@@ -587,6 +628,7 @@ PY
       exit 1
     fi
     if ! docker service update --detach=false \
+      --restart-condition any \
       --image registry:3.0.0 \
       --secret-rm "${old_secret}" \
       --secret-add "source=${new_secret},target=htpasswd" \
@@ -920,7 +962,7 @@ PY
     --label vps-manager.component=gitea
     --limit-cpu 1
     --limit-memory 768M
-    --restart-condition on-failure
+    --restart-condition any
   )
   if [[ "${local_gitea}" == "true" ]]; then
     gitea_service_args+=(
@@ -975,7 +1017,7 @@ PY
       --filter status=running \
       --format '{{.ID}}' | head -n 1)"
     if [[ -n "${container_id}" ]] \
-      && admin_list="$(docker exec "${container_id}" gitea admin user list --admin 2>/dev/null)"; then
+      && admin_list="$(docker exec --user git "${container_id}" gitea admin user list --admin 2>/dev/null)"; then
       break
     fi
     sleep 2
@@ -988,7 +1030,7 @@ PY
 
   if [[ "${gitea_migrating}" != "true" ]] \
     && ! awk '{ for (i = 1; i <= NF; i++) if ($i == "vpsadmin") found = 1 } END { exit !found }' <<< "${admin_list}"; then
-    if ! docker exec "${container_id}" gitea admin user create \
+    if ! docker exec --user git "${container_id}" gitea admin user create \
       --username vpsadmin \
       --password "${gitea_password}" \
       --email "${gitea_admin_email}" \
@@ -1144,7 +1186,7 @@ PY
 
   manager_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null)" \
     || { write_status "failed" "No se pudo identificar el manager que conservará los datos de PostgreSQL."; exit 1; }
-  [[ "${manager_node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] \
+  [[ "${manager_node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] \
     || { write_status "failed" "Docker devolvió un identificador de manager no válido."; exit 1; }
 
   if ! docker service create \
@@ -1166,7 +1208,7 @@ PY
     --label vps-manager.component=postgresql \
     --limit-cpu 1 \
     --limit-memory 1G \
-    --restart-condition on-failure \
+    --restart-condition any \
     "${POSTGRESQL_IMAGE}" >/dev/null; then
     write_status "failed" "Swarm no pudo crear el servicio PostgreSQL; el volumen y la contraseña se conservaron."
     exit 1
@@ -1261,7 +1303,7 @@ if [[ "${operation}" == "install-n8n" ]]; then
 
   manager_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null)" \
     || { write_status "failed" "No se pudo identificar el nodo manager que conservará los datos de n8n."; exit 1; }
-  [[ "${manager_node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] \
+  [[ "${manager_node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] \
     || { write_status "failed" "Docker devolvió un identificador de manager no válido."; exit 1; }
 
   if ! docker service create \
@@ -1292,7 +1334,7 @@ if [[ "${operation}" == "install-n8n" ]]; then
     --label traefik.http.services.vps-manager-n8n.loadbalancer.server.port=5678 \
     --limit-cpu 1 \
     --limit-memory 1536M \
-    --restart-condition on-failure \
+    --restart-condition any \
     "${N8N_IMAGE}" >/dev/null; then
     write_status "failed" "Swarm no pudo crear el servicio n8n; el secreto y el volumen se conservaron."
     exit 1
@@ -1328,7 +1370,7 @@ if [[ "${operation}" == "enroll-swarm-node" ]]; then
     exit 1
   fi
   rm -f -- "${enrollment_error_file}"
-  if [[ ! "${node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]]; then
+  if [[ ! "${node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]]; then
     write_status "failed" "El VPS se unió, pero el identificador de nodo devuelto no es válido."
     exit 1
   fi
@@ -1430,6 +1472,7 @@ PY
   }
   trap cleanup_project_deployment_config EXIT
   if ! python3 - "${deployment_config_file}" "${deployment_metadata_file}" "${deployment_environment_file}" <<'PY'
+import hashlib
 import json
 import os
 import re
@@ -1580,6 +1623,7 @@ PY
     fi
     if ! DOCKER_CONFIG="${docker_config_directory}" docker service update --detach=false \
       --mode global \
+      --restart-condition any \
       --image "${built_image}" \
       --with-registry-auth \
       --force \
@@ -1604,7 +1648,7 @@ PY
     if ! DOCKER_CONFIG="${docker_config_directory}" docker service create --detach=false \
       --name "${PROJECT_SERVICE}" \
       --mode global \
-      --restart-condition on-failure \
+      --restart-condition any \
       --network vps-manager-proxy \
       --with-registry-auth \
       "${project_environment_args[@]}" \
@@ -1621,11 +1665,196 @@ PY
     fi
   fi
   if ! service_id="$(docker service inspect --format '{{.ID}}' "${PROJECT_SERVICE}")" \
-    || ! [[ "${service_id}" =~ ^[a-fA-F0-9]{25,64}$ ]]; then
+    || ! [[ "${service_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]]; then
     write_status "failed" "Swarm creó el servicio, pero no se pudo validar su identificador."
     exit 1
   fi
   write_status "succeeded" "Servicio global desplegado con una tarea por nodo Swarm activo y sin puertos publicados."
+  exit 0
+fi
+
+if [[ "${operation}" == "deploy-application" ]]; then
+  application_config="${STATE_DIRECTORY}/application-deploy-${request_id}.json"
+  temporary_directory=""
+  application_secret_names=()
+  preserve_application_secrets=false
+  cleanup_manual_application() {
+    if [[ -n "${temporary_directory}" ]]; then rm -rf -- "${temporary_directory}"; fi
+    if [[ "${preserve_application_secrets}" != "true" ]]; then
+      for secret_name in "${application_secret_names[@]}"; do
+        docker secret rm "${secret_name}" >/dev/null 2>&1 || true
+      done
+    fi
+    rm -f -- "${application_config}"
+  }
+  trap cleanup_manual_application EXIT
+  if [[ -L "${application_config}" || ! -f "${application_config}" ]]; then
+    write_status "failed" "No se encontró la configuración protegida de la aplicación."
+    exit 1
+  fi
+  temporary_directory="$(mktemp -d "${STATE_DIRECTORY}/application-deploy.XXXXXX")"
+  chmod 0700 "${temporary_directory}"
+  if ! python3 - "${application_config}" "${temporary_directory}" "${request_id}" "${application_id}" "${application_instance_id}" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+
+source_path, output_directory, task_id, expected_application_id, expected_instance_id = sys.argv[1:]
+descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 80000:
+        raise SystemExit("Invalid staged application configuration file.")
+    with os.fdopen(descriptor, encoding="utf-8") as source_file:
+        descriptor = -1
+        configuration = json.load(source_file)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+expected_fields = {
+    "taskId", "applicationId", "instanceId", "applicationName", "image",
+    "port", "domain", "serverNodeId", "volumeTarget", "environment", "secrets",
+}
+if not isinstance(configuration, dict) or set(configuration) != expected_fields \
+    or configuration["taskId"] != task_id \
+    or configuration["applicationId"] != expected_application_id \
+    or configuration["instanceId"] != expected_instance_id \
+    or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", configuration["applicationId"]) \
+    or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", configuration["instanceId"], re.IGNORECASE) \
+    or not isinstance(configuration["applicationName"], str) or not 1 <= len(configuration["applicationName"]) <= 100 \
+    or re.search(r"[\x00-\x1f\x7f]", configuration["applicationName"]) \
+    or not isinstance(configuration["image"], str) \
+    or not re.fullmatch(r"(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9]\d{0,4})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})", configuration["image"]) \
+    or not isinstance(configuration["port"], int) or isinstance(configuration["port"], bool) or not 1 <= configuration["port"] <= 65535 \
+    or not isinstance(configuration["domain"], str) \
+    or not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", configuration["domain"], re.IGNORECASE) \
+    or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", configuration["domain"]) \
+    or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", configuration["domain"], re.IGNORECASE) \
+    or not re.fullmatch(r"[a-zA-Z0-9]{25,64}", configuration["serverNodeId"]) \
+    or not isinstance(configuration["volumeTarget"], str) \
+    or (configuration["volumeTarget"] and (
+        len(configuration["volumeTarget"]) > 255
+        or not re.fullmatch(r"/(?:[A-Za-z0-9._-]+/?)*", configuration["volumeTarget"])
+        or ".." in configuration["volumeTarget"].split("/")
+    )):
+    raise SystemExit("Invalid staged manual application configuration.")
+
+name_pattern = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
+for field in ("environment", "secrets"):
+    values = configuration[field]
+    if not isinstance(values, dict) or len(values) > 100:
+        raise SystemExit("Invalid staged application environment.")
+    total = 0
+    for name, value in values.items():
+        if not isinstance(name, str) or not name_pattern.fullmatch(name) \
+            or not isinstance(value, str) or len(value.encode()) > 8192 \
+            or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", value):
+            raise SystemExit("Invalid staged application environment variable.")
+        total += len(name.encode()) + len(value.encode())
+    if total > 24576:
+        raise SystemExit("Staged application environment is too large.")
+if set(configuration["environment"]) & set(configuration["secrets"]):
+    raise SystemExit("Application environment and secret names overlap.")
+with open(os.path.join(output_directory, "metadata.json"), "w", encoding="utf-8") as metadata_file:
+    json.dump({
+        "applicationName": configuration["applicationName"],
+        "image": configuration["image"],
+        "port": configuration["port"],
+        "domain": configuration["domain"].lower(),
+        "serverNodeId": configuration["serverNodeId"].lower(),
+        "volumeTarget": configuration["volumeTarget"],
+    }, metadata_file)
+with open(os.path.join(output_directory, "environment.bin"), "wb") as environment_file:
+    for name, value in configuration["environment"].items():
+        environment_file.write(name.encode() + b"=" + value.encode() + b"\0")
+with open(os.path.join(output_directory, "secrets.bin"), "wb") as secrets_file:
+    for name, value in configuration["secrets"].items():
+        secrets_file.write(name.encode() + b"\0" + value.encode() + b"\0")
+PY
+  then
+    write_status "failed" "La configuración de la aplicación manual no pasó la validación segura."
+    exit 1
+  fi
+  read -r application_name application_image application_port application_domain application_node_id application_volume_target < <(
+    python3 - "${temporary_directory}/metadata.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as metadata_file:
+    metadata = json.load(metadata_file)
+print("\t".join(str(metadata[key]) for key in (
+    "applicationName", "image", "port", "domain", "serverNodeId", "volumeTarget",
+)))
+PY
+  )
+  mapfile -d '' -t application_environment_entries < "${temporary_directory}/environment.bin"
+  mapfile -d '' -t application_secret_entries < "${temporary_directory}/secrets.bin"
+  application_secret_args=()
+  for ((index = 0; index < ${#application_secret_entries[@]}; index += 2)); do
+    secret_variable="${application_secret_entries[$index]}"
+    secret_value="${application_secret_entries[$((index + 1))]}"
+    secret_name="vps_manager_app_${application_instance_id//-/}_${secret_variable,,}"
+    if docker secret inspect "${secret_name}" >/dev/null 2>&1; then
+      write_status "failed" "El identificador de un secreto de la aplicación ya está en uso."
+      exit 1
+    fi
+    if ! printf '%s' "${secret_value}" | docker secret create \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=application-secret \
+      --label "vps-manager.application-instance=${application_instance_id}" \
+      "${secret_name}" - >/dev/null; then
+      write_status "failed" "No se pudo guardar un secreto Swarm de la aplicación."
+      exit 1
+    fi
+    application_secret_names+=("${secret_name}")
+    application_secret_args+=(--secret "source=${secret_name},target=${secret_variable}")
+    application_environment_entries+=("${secret_variable}_FILE=/run/secrets/${secret_variable}")
+  done
+  application_environment_args=()
+  for environment_entry in "${application_environment_entries[@]}"; do
+    application_environment_args+=(--env-add "${environment_entry}")
+  done
+  application_service="vps-manager-app-${application_instance_id//-/}"
+  application_router="${application_service}"
+  application_router_args=(
+    --label-add traefik.enable=true
+    --label-add traefik.swarm.network=vps-manager-proxy
+    --label-add "traefik.http.routers.${application_router}.rule=Host(\`${application_domain}\`)"
+    --label-add "traefik.http.routers.${application_router}.entrypoints=websecure"
+    --label-add "traefik.http.routers.${application_router}.tls=true"
+    --label-add "traefik.http.routers.${application_router}.tls.certresolver=vpsmanager"
+    --label-add "traefik.http.services.${application_router}.loadbalancer.server.port=${application_port}"
+  )
+  application_volume_args=()
+  if [[ -n "${application_volume_target}" ]]; then
+    application_volume_args+=(--mount "type=volume,source=${application_service}-data,target=${application_volume_target}")
+  fi
+  if ! docker service create --detach=false \
+    --name "${application_service}" \
+    --replicas 1 \
+    --restart-condition any \
+    --constraint "node.id==${application_node_id}" \
+    --network vps-manager-proxy \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=application \
+    --label "vps-manager.application-id=${application_id}" \
+    --label "vps-manager.application-instance=${application_instance_id}" \
+    "${application_router_args[@]}" \
+    "${application_volume_args[@]}" \
+    "${application_environment_args[@]}" \
+    "${application_secret_args[@]}" \
+    "${application_image}" >/dev/null; then
+    write_status "failed" "Swarm no pudo iniciar el servicio de la aplicación."
+    exit 1
+  fi
+  preserve_application_secrets=true
+  if ! service_id="$(docker service inspect --format '{{.ID}}' "${application_service}")" \
+    || ! [[ "${service_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]]; then
+    write_status "failed" "Swarm creó la aplicación, pero no se pudo validar el identificador de servicio."
+    exit 1
+  fi
+  write_status "succeeded" "Aplicación desplegada en el VPS seleccionado; HTTPS se gestiona mediante Traefik."
   exit 0
 fi
 
@@ -1640,7 +1869,41 @@ if [[ "${inspected_id}" != "${service_id}" || "${managed_label}" != "true" ]]; t
   exit 1
 fi
 
-if [[ "${operation}" == "scale-service" ]]; then
+if [[ "${operation}" == "stop-container" || "${operation}" == "restart-container" ]]; then
+  if ! container_info="$(docker container inspect \
+    --format '{{.Id}} {{index .Config.Labels "com.docker.swarm.service.id"}} {{.State.Running}}' \
+    "${container_id}")"; then
+    write_status "failed" "No se encontró el contenedor solicitado en este VPS."
+    exit 1
+  fi
+  IFS=' ' read -r inspected_container_id container_service_id container_running <<< "${container_info}"
+  if [[ "${inspected_container_id}" != "${container_id}" || "${container_service_id}" != "${service_id}" ]]; then
+    write_status "failed" "El contenedor no pertenece al servicio solicitado."
+    echo "Rejected a container that is not a task of the requested Swarm service." >&2
+    exit 1
+  fi
+  if [[ "${container_running}" != "true" ]]; then
+    write_status "failed" "El contenedor ya no está en ejecución; Swarm administra su recuperación."
+    exit 1
+  fi
+  if [[ "${operation}" == "stop-container" && "${component_label}" == "api" ]]; then
+    write_status "failed" "No se puede detener el contenedor del panel."
+    exit 1
+  fi
+  if [[ "${operation}" == "stop-container" ]]; then
+    if docker container stop --time 10 "${container_id}" >/dev/null; then
+      write_status "succeeded" "Contenedor detenido; Swarm repondrá automáticamente la tarea."
+    else
+      write_status "failed" "Docker no pudo detener el contenedor solicitado."
+      exit 1
+    fi
+  elif docker container restart --time 10 "${container_id}" >/dev/null; then
+    write_status "succeeded" "Contenedor reiniciado correctamente."
+  else
+    write_status "failed" "Docker no pudo reiniciar el contenedor solicitado."
+    exit 1
+  fi
+elif [[ "${operation}" == "scale-service" ]]; then
   if [[ "${component_label}" == "api" && "${replicas}" != "1" ]]; then
     write_status "failed" "El servicio del panel debe conservar exactamente una réplica."
     echo "Rejected scaling the VPS Manager API away from one replica." >&2

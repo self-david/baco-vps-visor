@@ -83,11 +83,11 @@ import "../styles/tailwind.css";
                       <option value="manager">Manager</option>
                     </select>
                     <label for="node-ssh-user">Usuario SSH (requiere sudo sin contraseña)</label>
-                    <input id="node-ssh-user" name="sshUser" type="text" value="vpsadmin" pattern="[a-z_][a-z0-9_-]{0,31}" required>
+                    <input id="node-ssh-user" name="sshUser" type="text" value="vpsadmin" pattern="[a-z_][a-z0-9_\x2d]{0,31}" required>
                     <label for="node-ssh-port">Puerto SSH</label>
                     <input id="node-ssh-port" name="sshPort" type="number" min="1" max="65535" value="22" required>
                     <label for="node-host-fingerprint">Fingerprint SSH verificado desde la consola del VPS</label>
-                    <input id="node-host-fingerprint" name="hostFingerprint" type="text" placeholder="SHA256:…" pattern="SHA256:[A-Za-z0-9+/]{43}" required>
+                    <input id="node-host-fingerprint" name="hostFingerprint" type="text" placeholder="SHA256:…" pattern="SHA256:[A-Za-z0-9+\x2f]{43}" required>
                     <label for="node-private-key">Llave privada SSH dedicada y sin passphrase</label>
                     <textarea id="node-private-key" name="privateKey" rows="6" autoComplete="off" spellcheck="false" required></textarea>
                     <p class="muted">La llave se guarda temporalmente en el manager, fuera de PostgreSQL, tareas y auditoría; se elimina al terminar. La cuenta SSH podrá ejecutar comandos como root mediante sudo. No ingreses una llave personal.</p>
@@ -150,7 +150,7 @@ import "../styles/tailwind.css";
                     <option value="global">Global</option>
                   </select>
                 </div>
-                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Solo se pueden reiniciar o escalar servicios administrados por VPS Manager.</p>
+                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Los controles solo operan servicios administrados; Swarm repone automáticamente las tareas detenidas.</p>
                 <div id="services" class="resource-list"></div>
               </section>
               <section class="card roadmap-card">
@@ -178,7 +178,7 @@ import "../styles/tailwind.css";
                   <h4 id="project-form-title">Registrar proyecto</h4>
                   <input id="project-id" name="id" type="hidden">
                   <label for="project-name">Nombre</label>
-                  <input id="project-name" name="name" type="text" pattern="[A-Za-z0-9][A-Za-z0-9._ -]{0,99}" maxLength="100" required>
+                  <input id="project-name" name="name" type="text" pattern="[A-Za-z0-9][A-Za-z0-9._ \x2d]{0,99}" maxLength="100" required>
                   <label for="project-description">Descripción (opcional)</label>
                   <input id="project-description" name="description" type="text" maxLength="500">
                   <label for="project-repository">Repositorio</label>
@@ -434,12 +434,12 @@ import "../styles/tailwind.css";
                 <p id="registry-status" class="muted" aria-live="polite">La configuración se realiza aquí después de instalar VPS Manager.</p>
                 <form id="registry-configure-form" class="gitea-form">
                   <label for="registry-domain">Dominio del registro</label>
-                  <input id="registry-domain" name="domain" type="text" inputmode="url" autocomplete="url" placeholder="registry.ejemplo.com" pattern="(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}" required>
+                  <input id="registry-domain" name="domain" type="text" inputmode="url" autocomplete="url" placeholder="registry.ejemplo.com" pattern="(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}" required>
                   <p class="muted">Configura primero un registro DNS A que apunte al VPS. Traefik emitirá un certificado HTTPS para este dominio.</p>
                   <label for="registry-username">Usuario</label>
-                  <input id="registry-username" name="username" type="text" pattern="[A-Za-z0-9._-]{1,64}" maxLength="64" autocomplete="username" required>
+                  <input id="registry-username" name="username" type="text" pattern="[A-Za-z0-9._\x2d]{1,64}" maxLength="64" autocomplete="username" required>
                   <label for="registry-password">Contraseña nueva</label>
-                  <input id="registry-password" name="password" type="password" pattern="[A-Za-z0-9._-]{20,72}" minLength="20" maxLength="72" autocomplete="new-password" required>
+                  <input id="registry-password" name="password" type="password" pattern="[A-Za-z0-9._\x2d]{20,72}" minLength="20" maxLength="72" autocomplete="new-password" required>
                   <p class="muted">Usa de 20 a 72 caracteres. La contraseña se conserva en un archivo root-only del host y su hash bcrypt en un secreto Docker; nunca se vuelve a mostrar. Para cambiarla, ingresa una contraseña nueva.</p>
                   <p id="registry-form-status" class="muted" role="status" aria-live="polite"></p>
                   <button id="registry-save" class="button" type="submit">Configurar registro privado</button>

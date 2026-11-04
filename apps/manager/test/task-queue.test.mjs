@@ -6,11 +6,13 @@ import {
   createPostgresqlInstallHandler,
   createProjectBuildHandler,
   createProjectDeployHandler,
+  createProjectPushDeployHandler,
   createProjectUndeployHandler,
   createRegistryConfigureHandler,
   createSwarmNodeEnrollHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
+  createContainerOperationHandler,
   createTaskQueueWorker,
   TaskExecutionError,
 } from "../task-queue.mjs";
@@ -19,7 +21,7 @@ const task = {
   id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
   type: "service.restart",
   payload: {
-    serviceId: "9a7f51bdff120d8d0d48d4ca5",
+    serviceId: "7p9aac885t16uxz1f5gdftz17",
     serviceName: "manager",
   },
 };
@@ -115,6 +117,39 @@ test("resumes a service operation by its durable task ID and does not repeat com
     message: "Servicio reiniciado.",
   });
   assert.deepEqual(requests, [{ serviceId: task.payload.serviceId, requestId: task.id }]);
+});
+
+test("dispatches a container stop through the host agent and waits for completion", async () => {
+  const containerTask = {
+    id: task.id,
+    type: "container.operation",
+    payload: {
+      serviceId: task.payload.serviceId,
+      serviceName: task.payload.serviceName,
+      containerId: "a".repeat(64),
+      containerName: "manager.1.example",
+      action: "stop",
+    },
+  };
+  const requests = [];
+  const handler = createContainerOperationHandler({
+    async requestContainerOperation(operation, serviceId, containerId, requestId) {
+      requests.push({ operation, serviceId, containerId, requestId });
+    },
+    async getStatus() {
+      return { id: containerTask.id, state: "succeeded", message: "Swarm repondrá la tarea." };
+    },
+  });
+
+  assert.deepEqual(await handler(containerTask, new AbortController().signal), {
+    message: "Swarm repondrá la tarea.",
+  });
+  assert.deepEqual(requests, [{
+    operation: "stop-container",
+    serviceId: containerTask.payload.serviceId,
+    containerId: containerTask.payload.containerId,
+    requestId: containerTask.id,
+  }]);
 });
 
 test("dispatches scale tasks through the scale-only agent method", async () => {
@@ -265,6 +300,84 @@ test("returns Gitea HTTPS migration success without exposing new credentials", a
   });
 });
 
+test("builds and deploys the exact commit from an authenticated production push", async () => {
+  const projectId = "6a07c6bf-bb29-4e8f-a41f-8347b04d7601";
+  const commitSha = "a".repeat(40);
+  const requests = [];
+  let status;
+  const agent = {
+    async stageProjectBuildArchive(id, archive) {
+      requests.push({ operation: "stage", id, archive: archive.toString() });
+    },
+    async requestProjectBuild(id, sha, requestId) {
+      requests.push({ operation: "build", id, sha, requestId });
+      status = {
+        id: requestId,
+        operation: "build-project",
+        projectId: id,
+        commitSha: sha,
+        image: `registry.example.com/project:${sha}`,
+        state: "succeeded",
+      };
+    },
+    async removeProjectBuildArchive(id) {
+      requests.push({ operation: "remove", id });
+    },
+    async requestProjectDeploy(id, sha, requestId) {
+      requests.push({ operation: "deploy", id, sha, requestId });
+      status = {
+        id: requestId,
+        operation: "deploy-project",
+        projectId: id,
+        commitSha: sha,
+        image: `registry.example.com/project:${sha}`,
+        serviceId: "service-id",
+        state: "succeeded",
+      };
+    },
+    async getStatus() {
+      return status;
+    },
+  };
+  const buildSources = [];
+  const handler = createProjectPushDeployHandler({
+    agent,
+    async getBuildSource(source) {
+      buildSources.push(source);
+      return { commitSha, archive: Buffer.from("source archive") };
+    },
+    pollIntervalMs: 100,
+  });
+  const pushTask = {
+    id: task.id,
+    type: "project.push-deploy",
+    attempts: 1,
+    payload: {
+      projectId,
+      projectName: "Website",
+      repository: "vpsadmin/project",
+      branch: "main",
+      commitSha,
+    },
+  };
+
+  assert.deepEqual(await handler(pushTask, new AbortController().signal), {
+    message: `Push a main: Imagen construida para Website (main · ${commitSha.slice(0, 12)}). Servicio global de Website desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
+    image: `registry.example.com/project:${commitSha}`,
+    commitSha,
+    serviceId: "service-id",
+  });
+  assert.deepEqual(buildSources, [{
+    repository: "vpsadmin/project",
+    branch: "main",
+    commitSha,
+  }]);
+  assert.deepEqual(requests.map(({ operation }) => operation), ["stage", "build", "remove", "deploy"]);
+  assert.equal(requests[1].sha, commitSha);
+  assert.equal(requests[3].sha, commitSha);
+  assert.notEqual(requests[1].requestId, requests[3].requestId);
+});
+
 test("installs PostgreSQL through the fixed host-agent operation without storing credentials", async () => {
   const postgresqlTask = {
     id: task.id,
@@ -370,7 +483,7 @@ test("deploys the last successful image as a manual Swarm task", async () => {
         state: "succeeded",
         projectId,
         commitSha,
-        serviceId: "9a7f51bdff120d8d0d48d4ca5",
+        serviceId: "7p9aac885t16uxz1f5gdftz17",
         image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
         message: "Servicio desplegado.",
       };
@@ -381,7 +494,7 @@ test("deploys the last successful image as a manual Swarm task", async () => {
     message: `Servicio global de project desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
     image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
     commitSha,
-    serviceId: "9a7f51bdff120d8d0d48d4ca5",
+    serviceId: "7p9aac885t16uxz1f5gdftz17",
   });
   assert.deepEqual(calls, [["request", projectId, commitSha, deployTask.id]]);
 });
@@ -487,7 +600,7 @@ test("enrolls a Swarm node through the host agent and removes the staged SSH key
         state: "succeeded",
         nodeAddress: nodeTask.payload.address,
         role: nodeTask.payload.role,
-        nodeId: "9a7f51bdff120d8d0d48d4ca5",
+        nodeId: "7p9aac885t16uxz1f5gdftz17",
         message: "ready",
       };
     },
@@ -496,7 +609,7 @@ test("enrolls a Swarm node through the host agent and removes the staged SSH key
 
   assert.deepEqual(await handler(nodeTask, new AbortController().signal), {
     message: "El nodo 10.10.0.12 se unió al Swarm como worker.",
-    nodeId: "9a7f51bdff120d8d0d48d4ca5",
+    nodeId: "7p9aac885t16uxz1f5gdftz17",
     nodeAddress: "10.10.0.12",
   });
   assert.deepEqual(calls, [

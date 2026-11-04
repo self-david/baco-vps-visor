@@ -18,12 +18,15 @@ import {
 import {
   createGiteaInstallHandler,
   createN8nInstallHandler,
+  createManualApplicationDeployHandler,
   createPostgresqlInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
+  createContainerOperationHandler,
   createRegistryConfigureHandler,
   createProjectBuildHandler,
   createProjectDeployHandler,
+  createProjectPushDeployHandler,
   createProjectUndeployHandler,
   createSwarmNodeEnrollHandler,
   createTaskQueueWorker,
@@ -79,6 +82,9 @@ import {
   getApplicationCatalog,
   getApplicationInstances,
   saveApplicationInstanceConfiguration,
+  createManualApplication,
+  updateManualApplicationDeployment,
+  createManualApplicationDeployTask,
   createRegistryConfigureTask,
   createProjectBuildTask,
   createProjectDeployTask,
@@ -86,6 +92,7 @@ import {
   createSwarmNodeEnrollTask,
   createServiceRestartTask,
   createServiceScaleTask,
+  createContainerOperationTask,
   updateMetricAlertThresholds,
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
@@ -103,6 +110,7 @@ import {
 } from "./project-deployment-config.mjs";
 import { createCloudflareClient, isIpv4Address, validateDomainConfiguration } from "./cloudflare-client.mjs";
 import { mapSwarmNode, validateSwarmNodeEnrollment } from "./swarm-node-manager.mjs";
+import { validateManualApplicationInput } from "./application-template.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, "dist");
@@ -117,6 +125,14 @@ const testMode = process.env.VPS_MANAGER_TEST_MODE === "true";
 const metricsRetentionDays = 7;
 const backupRetentionDays = 7;
 const backupManager = createBackupManager();
+function matchDockerLogsPath(pathname) {
+  const match = pathname.match(/^\/api\/docker\/(containers|services)\/([a-z0-9]{12,64})\/logs$/i);
+  if (!match) return null;
+  const [, resource, id] = match;
+  if (resource.toLowerCase() === "containers" && !/^[a-f0-9]{12,64}$/i.test(id)) return null;
+  return { resource, id };
+}
+
 const collectDiagnostics = createDiagnosticsCollector({
   dockerGet,
   getDatabaseStatus,
@@ -136,28 +152,23 @@ const taskQueueWorker = createTaskQueueWorker({
   handlers: {
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
+    "container.operation": createContainerOperationHandler(serviceOperationAgent),
     "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
     "application.n8n.install": createN8nInstallHandler(serviceOperationAgent),
     "application.postgresql.install": createPostgresqlInstallHandler(serviceOperationAgent),
+    "application.custom.deploy": createManualApplicationDeployHandler(serviceOperationAgent, {
+      updateDeployment: updateManualApplicationDeployment,
+    }),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
     "project.build": createProjectBuildHandler({
       agent: serviceOperationAgent,
-      getBuildSource: async ({ repository, branch }) => {
-        const { client, token } = await getGiteaApiContext();
-        const branches = await client.listBranches(token, repository);
-        if (!branches.some((item) => item.name === branch)) {
-          const invalid = new Error("La rama seleccionada ya no existe en el repositorio.");
-          invalid.code = "GITEA_BRANCH_NOT_FOUND";
-          throw invalid;
-        }
-        const commitSha = await client.getCommit(token, repository, branch);
-        return {
-          commitSha,
-          archive: await client.downloadArchive(token, repository, commitSha),
-        };
-      },
+      getBuildSource: getProjectBuildSource,
     }),
     "project.deploy": createProjectDeployHandler(serviceOperationAgent),
+    "project.push-deploy": createProjectPushDeployHandler({
+      agent: serviceOperationAgent,
+      getBuildSource: getProjectBuildSource,
+    }),
     "project.undeploy": createProjectUndeployHandler(serviceOperationAgent),
     "swarm.node.enroll": createSwarmNodeEnrollHandler(serviceOperationAgent),
   },
@@ -421,6 +432,7 @@ async function getContainers() {
     image: container.Image,
     state: container.State,
     status: container.Status,
+    serviceId: container.Labels?.["com.docker.swarm.service.id"] ?? null,
     ports: (container.Ports ?? []).map(({ PublicPort, PrivatePort, Type }) => ({
       public: PublicPort,
       private: PrivatePort,
@@ -815,6 +827,27 @@ async function getGiteaApiContext() {
     ? createGiteaClient({ baseUrl: "http://vps-manager-gitea:3000" })
     : createGiteaClient({ domain: application.domain });
   return { application, client, token };
+}
+
+async function getProjectBuildSource({ repository, branch, commitSha }) {
+  const { client, token } = await getGiteaApiContext();
+  if (commitSha) {
+    return {
+      commitSha,
+      archive: await client.downloadArchive(token, repository, commitSha),
+    };
+  }
+  const branches = await client.listBranches(token, repository);
+  if (!branches.some((item) => item.name === branch)) {
+    const invalid = new Error("La rama seleccionada ya no existe en el repositorio.");
+    invalid.code = "GITEA_BRANCH_NOT_FOUND";
+    throw invalid;
+  }
+  const resolvedCommit = await client.getCommit(token, repository, branch);
+  return {
+    commitSha: resolvedCommit,
+    archive: await client.downloadArchive(token, repository, resolvedCommit),
+  };
 }
 
 async function validateProjectSource(client, token, project) {
@@ -3006,24 +3039,121 @@ const server = createServer(async (request, response) => {
       respondJson(response, 401, { error: "Sesión requerida." });
       return;
     }
-    if (request.method !== "GET") {
-      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+    if (request.method === "GET") {
+      try {
+        const [catalog, instances, nodes, projects] = await Promise.all([
+          getApplicationCatalog(),
+          getApplicationInstances(),
+          dockerGet("/nodes"),
+          getProjects(),
+        ]);
+        respondJson(response, 200, {
+          catalog,
+          instances,
+          servers: nodes.map(mapSwarmNode),
+          projects: await getProjectDeploymentState(projects),
+        });
+      } catch (error) {
+        console.error("Application catalog request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el catálogo de aplicaciones." });
+      }
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
       return;
     }
     try {
-      const [catalog, instances, nodes] = await Promise.all([
-        getApplicationCatalog(),
-        getApplicationInstances("supabase"),
-        dockerGet("/nodes"),
-      ]);
-      respondJson(response, 200, {
-        catalog,
-        instances,
-        servers: nodes.map(mapSwarmNode),
+      const input = validateManualApplicationInput(await readJson(request));
+      const nodes = await dockerGet("/nodes");
+      const node = nodes.find((item) => item.ID?.toLowerCase() === input.serverNodeId);
+      if (!node || node.Status?.State !== "ready" || node.Spec?.Availability !== "active") {
+        respondJson(response, 409, { error: "Selecciona un VPS activo y listo del Swarm." });
+        return;
+      }
+      const reservedDomains = await getProjectDomains();
+      if (reservedDomains.some((domain) => domain.hostname.toLowerCase() === input.domain)) {
+        respondJson(response, 409, { error: "El dominio ya está asignado a otro proyecto." });
+        return;
+      }
+      const instanceId = randomUUID();
+      const taskId = randomUUID();
+      const environment = [
+        ...Object.entries(input.environmentValues).map(([name]) => ({
+          name,
+          label: name,
+          description: "Variable no confidencial.",
+          required: false,
+          secret: false,
+        })),
+        ...Object.keys(input.secretValues).map((name) => ({
+          name,
+          label: name,
+          description: "Secreto Swarm montado en /run/secrets.",
+          required: false,
+          secret: true,
+        })),
+      ];
+      const application = { ...input, environment };
+      const created = await createManualApplication({
+        application,
+        instance: {
+          id: instanceId,
+          serverNodeId: input.serverNodeId,
+          serverHostname: node.Description?.Hostname ?? input.serverNodeId,
+          domain: input.domain,
+          environmentValues: input.environmentValues,
+          secretValues: input.secretValues,
+        },
+      });
+      try {
+        await serviceOperationAgent.stageApplicationDeployment(taskId, {
+          applicationId: input.id,
+          instanceId,
+          applicationName: input.name,
+          image: input.image,
+          port: input.port,
+          domain: input.domain,
+          serverNodeId: input.serverNodeId,
+          volumeTarget: input.volumeTarget,
+          environment: input.environmentValues,
+          secrets: input.secretValues,
+        });
+        await createManualApplicationDeployTask({
+          id: taskId,
+          instanceId,
+          applicationId: input.id,
+          applicationName: input.name,
+        });
+      } catch (error) {
+        await serviceOperationAgent.removeApplicationDeployment(taskId);
+        await updateManualApplicationDeployment(instanceId, taskId, { status: "failed" });
+        throw error;
+      }
+      respondJson(response, 202, {
+        application: created.application,
+        instance: created.instance,
+        task: { id: taskId, status: "queued" },
       });
     } catch (error) {
-      console.error("Application catalog request failed:", error);
-      respondJson(response, 503, { error: "No se pudo consultar el catálogo de aplicaciones." });
+      if (error instanceof TypeError || error instanceof RangeError || error instanceof RequestError) {
+        respondJson(response, error instanceof RequestError ? error.statusCode : 400, { error: error.message });
+        return;
+      }
+      if (error?.code === "23505") {
+        respondJson(response, 409, { error: "Ya existe una aplicación con ese identificador o el dominio ya está ocupado." });
+        return;
+      }
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not create and deploy manual application:", error);
+      respondJson(response, 503, { error: "No se pudo registrar o desplegar la aplicación." });
     }
     return;
   }
@@ -3046,7 +3176,7 @@ const server = createServer(async (request, response) => {
       if (!body || typeof body !== "object" || Array.isArray(body)
         || Object.keys(body).sort().join(",") !== ["configuration", "name", "serverNodeId"].sort().join(",")
         || typeof body.serverNodeId !== "string"
-        || !/^[a-f0-9]{25,64}$/i.test(body.serverNodeId)
+        || !/^[a-z0-9]{25,64}$/i.test(body.serverNodeId)
         || typeof body.name !== "string"
         || body.name.trim().length < 1 || body.name.trim().length > 100
         || /[\u0000-\u001f\u007f]/.test(body.name)) {
@@ -3188,6 +3318,85 @@ const server = createServer(async (request, response) => {
         respondJson(response, 200, { containers: await getContainers() });
         return;
       }
+      const containerOperationMatch = request.method === "POST"
+        && url.pathname.match(/^\/api\/docker\/containers\/([a-f0-9]{12,64})\/(stop|restart)$/i);
+      if (containerOperationMatch) {
+        if (!hasSameOrigin(request)) {
+          respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+          return;
+        }
+        const [, requestedContainerId, requestedAction] = containerOperationMatch;
+        const action = requestedAction.toLowerCase();
+        const matchingContainers = (await dockerGet("/containers/json?all=1")).filter((container) =>
+          typeof container.Id === "string" && container.Id.toLowerCase().startsWith(requestedContainerId.toLowerCase()));
+        if (matchingContainers.length === 0) {
+          respondJson(response, 404, { error: "No se encontró el contenedor solicitado." });
+          return;
+        }
+        if (matchingContainers.length !== 1) {
+          respondJson(response, 409, { error: "El identificador coincide con más de un contenedor." });
+          return;
+        }
+        const [container] = matchingContainers;
+        const serviceId = container.Labels?.["com.docker.swarm.service.id"];
+        if (!serviceId || container.State !== "running") {
+          respondJson(response, 409, {
+            error: "Solo se pueden operar contenedores activos que pertenezcan a un servicio Swarm administrado.",
+          });
+          return;
+        }
+        let service;
+        try {
+          service = findManagedService(await dockerGet("/services"), serviceId);
+        } catch (error) {
+          const status = {
+            SERVICE_NOT_FOUND: 404,
+            SERVICE_ID_AMBIGUOUS: 409,
+            SERVICE_NOT_MANAGED: 403,
+          }[error?.code];
+          if (status) {
+            respondJson(response, status, { error: error.message });
+            return;
+          }
+          throw error;
+        }
+        if (action === "stop" && service.Spec?.Labels?.["vps-manager.component"] === "api") {
+          respondJson(response, 409, { error: "No se puede detener el contenedor del panel; puedes reiniciarlo." });
+          return;
+        }
+        const taskId = randomUUID();
+        const containerId = container.Id;
+        const containerName = (container.Names?.[0] ?? "").replace(/^\//, "") || containerId.slice(0, 12);
+        const serviceName = service.Spec?.Name ?? "unknown";
+        try {
+          await createContainerOperationTask({
+            id: taskId,
+            serviceId: service.ID,
+            serviceName,
+            containerId,
+            containerName,
+            action,
+          });
+        } catch (error) {
+          console.error("Could not persist the container operation task:", error);
+          respondJson(response, 503, { error: "No se pudo guardar la tarea; no se envió la operación al host." });
+          return;
+        }
+        respondJson(response, 202, {
+          operation: {
+            id: taskId,
+            state: "queued",
+            serviceId: service.ID,
+            containerId,
+            message: action === "stop"
+              ? `Solicitud aceptada; Swarm repondrá el contenedor ${containerName}.`
+              : `Solicitud aceptada; reiniciando el contenedor ${containerName}.`,
+          },
+          serviceName,
+          containerName,
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/docker/container-metrics") {
         const result = await getContainerMetrics();
         for (const error of result.errors) {
@@ -3205,7 +3414,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const restartServiceMatch = request.method === "POST"
-        && url.pathname.match(/^\/api\/docker\/services\/([a-f0-9]{12,64})\/restart$/i);
+        && url.pathname.match(/^\/api\/docker\/services\/([a-z0-9]{12,64})\/restart$/i);
       if (restartServiceMatch) {
         if (!hasSameOrigin(request)) {
           respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
@@ -3247,7 +3456,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const scaleServiceMatch = request.method === "POST"
-        && url.pathname.match(/^\/api\/docker\/services\/([a-f0-9]{12,64})\/scale$/i);
+        && url.pathname.match(/^\/api\/docker\/services\/([a-z0-9]{12,64})\/scale$/i);
       if (scaleServiceMatch) {
         if (!hasSameOrigin(request)) {
           respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
@@ -3332,10 +3541,10 @@ const server = createServer(async (request, response) => {
         return;
       }
       const resourceLogsMatch = request.method === "GET"
-        && url.pathname.match(/^\/api\/docker\/(containers|services)\/([a-f0-9]{12,64})\/logs$/i);
+        && matchDockerLogsPath(url.pathname);
       if (resourceLogsMatch) {
         const logs = await dockerGetText(
-          `/${resourceLogsMatch[1]}/${resourceLogsMatch[2]}/logs?stdout=1&stderr=1&tail=100&timestamps=1`,
+          `/${resourceLogsMatch.resource}/${resourceLogsMatch.id}/logs?stdout=1&stderr=1&tail=100&timestamps=1`,
           1024 * 1024,
         );
         respond(response, 200, logs, { "Content-Type": "text/plain; charset=utf-8" });
@@ -3345,7 +3554,7 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       console.error("Docker read operation failed:", error);
       const isLogsRequest = request.method === "GET"
-        && /^\/api\/docker\/(containers|services)\/[a-f0-9]{12,64}\/logs$/i.test(url.pathname);
+        && matchDockerLogsPath(url.pathname) !== null;
       if (error?.code === "OPERATION_IN_PROGRESS") {
         respondJson(response, 409, { error: error.message });
         return;

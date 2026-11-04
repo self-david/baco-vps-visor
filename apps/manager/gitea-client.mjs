@@ -408,15 +408,17 @@ export function createGiteaClient({ domain, baseUrl, fetchImpl = fetch } = {}) {
       const repository = validateRepositoryReference(repositoryReference);
       validateBranchName(reference);
       const result = await request(
-        `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits/${encodeURIComponent(reference)}`,
+        `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits?sha=${encodeURIComponent(reference)}&limit=1`,
         token,
       );
-      if (typeof result.sha !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(result.sha)) {
+      if (!Array.isArray(result) || !result[0]
+        || typeof result[0].sha !== "string"
+        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(result[0].sha)) {
         const invalid = new Error("Gitea devolvió un identificador de commit inválido.");
         invalid.code = "GITEA_INVALID_RESPONSE";
         throw invalid;
       }
-      return result.sha.toLowerCase();
+      return result[0].sha.toLowerCase();
     },
     async downloadArchive(token, repositoryReference, commitSha) {
       const repository = validateRepositoryReference(repositoryReference);

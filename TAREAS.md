@@ -51,7 +51,9 @@ Estado: **parcial**
 - [x] Implementar reinicio y escalado autenticados y auditados de servicios administrados con confirmación y estado de resultado.
 - [x] Limitar el escalado a 1–100 réplicas para servicios Swarm administrados en modo replicado; el agente aplica solo una allowlist fija y mantiene el servicio API de VPS Manager en una réplica.
 - [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
-- [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; reinicios y escalados de servicios son los handlers habilitados.
+- [x] Añadir operaciones autenticadas por contenedor para detener una tarea Swarm y reiniciarla, con permisos limitados a servicios administrados y registro persistente.
+- [x] Configurar políticas de reinicio `any` para que Swarm reponga automáticamente tareas detenidas o terminadas, incluidas las creadas por VPS Manager.
+- [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; reinicios/escalados de servicios y operaciones de contenedor son handlers habilitados.
 
 **Resultado:** backend capaz de administrar Docker.
 
@@ -76,7 +78,7 @@ Estado: **parcial** (MVP mayormente de lectura con operaciones controladas; migr
 
 ## Fase 4 — Gitea
 
-Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; falta validar en un VPS con dominio público**
+Estado: **Gitea, proyectos Git, builds y despliegues automáticos por push implementados; falta validar en un VPS con dominio público**
 
 - [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
 - [x] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
@@ -86,16 +88,16 @@ Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; f
 - [x] Configurar SSH.
 - [x] Crear repositorios privados desde el panel, con token almacenado como secreto Swarm versionado y conservado en actualizaciones del stack.
 - [x] Consultar ramas de repositorios Gitea y cambiar la rama predeterminada desde el panel, con permisos de administración y auditoría.
-- [x] Configurar webhooks de push autenticados e idempotentes; registrar eventos sin desplegar proyectos todavía.
-- [x] Integrar repositorios privados y ramas existentes con registros de proyectos; sin activar despliegues todavía.
+- [x] Configurar webhooks de push autenticados e idempotentes; registrar cada entrega y programar despliegues solo para la rama de producción.
+- [x] Integrar repositorios privados y ramas existentes con registros de proyectos para builds y despliegues automáticos.
 
-**Resultado:** servidor Git privado.
+**Resultado:** servidor Git privado con despliegue automático de la rama de producción.
 
 ---
 
 ## Fase 5 — Deploy automático
 
-Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales; falta automatizar push)
+Estado: **parcial** (build y despliegue manuales o automáticos por push; falta validar en un VPS)
 
 - [x] Integrar BuildKit mediante Docker Buildx para construir la imagen del panel durante la instalación.
 - [x] Construir manualmente imágenes de repositorios Gitea registrados y publicarlas en el registro privado, etiquetadas por commit y sin desplegarlas.
@@ -105,10 +107,11 @@ Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales;
 - [x] Configurar variables de entorno por proyecto; se almacenan en archivo restringido del VPS y se aplican al desplegar.
 - [x] Administrar dominios en un panel central, conectar Cloudflare por dominio, sincronizar registros A y asignar hostnames/puertos HTTP a proyectos.
 - [x] Revertir un proyecto a un despliegue anterior exitoso, conservando su configuración actual.
+- [x] Encolar de forma idempotente el build y despliegue del commit exacto al recibir un push autenticado a la rama de producción.
 
-**Alcance actual:** variables, dominios y rollback están implementados para proyectos Git. Las aplicaciones arbitrarias del catálogo, el montaje de secretos y el despliegue automático por `git push` siguen pendientes.
+**Alcance actual:** variables, dominios y rollback están implementados para proyectos Git. Los pushes a la rama de producción construyen y despliegan el commit recibido; las aplicaciones arbitrarias del catálogo y el montaje de secretos siguen pendientes.
 
-**Resultado previsto:** `git push` despliega proyectos; en el estado actual, builds y despliegues se solicitan manualmente desde el panel.
+**Resultado:** `git push` despliega automáticamente proyectos registrados en su rama de producción; builds y despliegues manuales siguen disponibles.
 
 ---
 

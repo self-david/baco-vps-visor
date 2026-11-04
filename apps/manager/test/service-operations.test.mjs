@@ -12,7 +12,7 @@ import {
 
 const requestId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";
 const secondRequestId = "a3f51b09-13bf-4c7a-9b03-9ba000000002";
-const serviceId = "9a7f51bdff120d8d0d48d4ca5";
+const serviceId = "7p9aac885t16uxz1f5gdftz17";
 const managedService = { ID: serviceId, Spec: { Labels: { "vps-manager.managed": "true" } } };
 
 test("resolves only one Swarm service explicitly managed by VPS Manager", () => {
@@ -20,7 +20,7 @@ test("resolves only one Swarm service explicitly managed by VPS Manager", () => 
   assert.throws(() => findManagedService([], serviceId), { code: "SERVICE_NOT_FOUND" });
   assert.throws(() => findManagedService([
     managedService,
-    { ...managedService, ID: "9a7f51bdff120d8d0d48d4cb0" },
+    { ...managedService, ID: "7p9aac885t16uxz1f5gdftz18" },
   ], serviceId.slice(0, 12)), { code: "SERVICE_ID_AMBIGUOUS" });
   assert.throws(() => findManagedService([
     { ID: serviceId, Spec: { Labels: {} } },
@@ -603,6 +603,34 @@ test("reports terminal host operation states and accepts a subsequent restart", 
     }));
     assert.equal((await fixture.agent.getStatus()).state, "succeeded");
     assert.equal((await fixture.agent.requestRestart(serviceId)).id, secondRequestId);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("queues a managed container stop and rejects invalid container identifiers", async () => {
+  const fixture = await createFixture();
+  const containerId = "a".repeat(64);
+  try {
+    const operation = await fixture.agent.requestContainerOperation(
+      "stop-container",
+      serviceId,
+      containerId,
+      requestId,
+    );
+    assert.equal(operation.state, "queued");
+    assert.equal(operation.containerId, containerId);
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "stop-container",
+      serviceId,
+      containerId,
+    });
+    assert.equal((await fixture.agent.getStatus()).containerId, containerId);
+    await assert.rejects(
+      fixture.agent.requestContainerOperation("stop-container", serviceId, "not-a-container"),
+      /container identifier/,
+    );
   } finally {
     await fixture.cleanup();
   }

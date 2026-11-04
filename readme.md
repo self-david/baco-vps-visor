@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, n8n y PostgreSQL opcionales, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos y n8n, rollback a despliegues anteriores, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. El catálogo persistente incluye configuración de Supabase por VPS, pero su despliegue Swarm y la gestión de secretos aún están pendientes; Redis se pospuso. El despliegue automático por push también sigue pendiente.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, builds y despliegues automáticos por push a la rama de producción, n8n y PostgreSQL opcionales, variables por proyecto, dominios Cloudflare, rollback, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. El catálogo persistente incluye configuración de Supabase por VPS, pero su despliegue Swarm y la gestión de secretos aún están pendientes; Redis se pospuso.
 
 ---
 
@@ -165,8 +165,8 @@ El repositorio incluye `install.sh`, `installer/stack.yml`, `installer/diagnosti
 
 El instalador usa Docker Buildx con BuildKit para construir la imagen local del
 panel y cargarla en el Docker Engine antes de desplegar el stack. La construcción
-de proyectos registrados se solicita manualmente desde el panel después de
-configurar el registro privado; los builds no se activan con webhooks.
+de proyectos registrados se solicita manualmente desde el panel o
+automáticamente cuando llega un push autenticado a su rama de producción.
 
 El instalador:
 
@@ -485,8 +485,10 @@ Características:
 El panel configura un webhook por repositorio que envía eventos `push` a
 `/api/webhooks/gitea`. El receptor valida la firma HMAC con una clave derivada
 del secreto persistente `session_key`, limita el cuerpo a 1 MiB y guarda cada
-identificador de entrega una sola vez en PostgreSQL. Actualmente registra los
-metadatos mínimos del push; todavía no crea tareas ni despliega proyectos.
+identificador de entrega una sola vez en PostgreSQL. En la misma transacción,
+un push a la rama de producción de un proyecto registrado crea una tarea
+duradera de build y despliegue; los reintentos de la misma entrega no duplican
+la tarea. Los pushes de otras ramas solo se registran.
 
 El usuario no necesitará GitHub ni GitLab.
 
@@ -495,8 +497,7 @@ El usuario no necesitará GitHub ni GitLab.
 El panel permite registrar y modificar la relación entre un proyecto y un
 repositorio de Gitea con una rama de producción existente; también permite
 eliminar el registro del proyecto sin borrar el repositorio ni sus webhooks.
-Por ahora cada repositorio se puede asociar a un solo proyecto. Los pushes se
-autentican y registran, pero no inician despliegues.
+Por ahora cada repositorio se puede asociar a un solo proyecto.
 
 Desde el proyecto se puede solicitar manualmente una construcción de la rama
 de producción. VPS Manager obtiene el commit y su archivo ZIP autenticado desde
@@ -506,7 +507,7 @@ archivos especiales, más de 100 000 entradas o más de 1 GiB descomprimido, y
 requiere un `Dockerfile` regular en la raíz. BuildKit construye y publica la
 imagen como `<dominio-registro>/vps-manager-project-<id>:<commit>`. La tarea
 expira a los 14 minutos; no entrega el token de Gitea ni las credenciales del
-registro al Dockerfile ni despliega servicios. Los webhooks no inician builds.
+registro al Dockerfile ni despliega servicios.
 
 Después de un build exitoso, el administrador puede solicitar manualmente el
 despliegue de la última imagen desde el panel. El agente crea o actualiza el
@@ -522,10 +523,13 @@ la vista centralizada Dominios; Traefik aplica las rutas a través de la red
 privada `vps-manager-proxy` durante el siguiente despliegue. El panel muestra
 los despliegues exitosos anteriores y permite volver a uno de ellos conservando
 las variables y dominios actuales. También muestra el commit construido y el
-número de nodos con tareas activas. Retirar un servicio no borra la imagen del
+número de nodos con tareas activas. Al recibir un push en la rama de producción,
+VPS Manager descarga el archivo del commit exacto autenticándose con Gitea,
+construye y publica su imagen y después actualiza el servicio. Cada push queda
+en el historial de tareas, incluso si falla el build o despliegue. Los pushes
+en otras ramas solo se registran. Retirar un servicio no borra la imagen del
 registro. Para borrar la ficha del proyecto primero hay que retirar el servicio
-y quitar sus dominios. Los pushes y webhooks siguen sin iniciar builds ni
-despliegues.
+y quitar sus dominios.
 
 En **Dominios**, configura una vez la IPv4 pública de entrada del VPS manager.
 Para cada hostname selecciona Cloudflare, especifica su zona activa, el proyecto
@@ -838,6 +842,8 @@ El sistema debe guardar información sobre el estado original de cada recurso an
 - Consultar puertos.
 - Consultar redes.
 
+En el panel, detener o reiniciar está disponible para contenedores que pertenezcan a servicios Swarm administrados por VPS Manager. Detener finaliza temporalmente la tarea actual; Swarm crea una tarea de reemplazo y el panel protege su propio contenedor contra detenciones.
+
 ## 7.4. Operaciones sobre servicios Swarm
 
 - Consultar.
@@ -851,6 +857,7 @@ El sistema debe guardar información sobre el estado original de cada recurso an
 - Eliminar con confirmación.
 
 En un Swarm de un solo nodo, las operaciones de escalado deben respetar los recursos disponibles.
+Los servicios desplegados por VPS Manager usan una política de reinicio `any` para que Swarm recupere tareas que se detengan o terminen, incluso con código de salida cero.
 
 ## 7.5. Recursos externos
 
@@ -1624,7 +1631,8 @@ manualmente proyectos como servicios Swarm globales, con una tarea por nodo
 activo unido al clúster. Desde el panel también se pueden incorporar VPS
 Ubuntu 24.04 por SSH y consultar el estado de los nodos. Variables y dominios
 configurados para un proyecto se aplican en el siguiente despliegue.
-Los pushes de Git no disparan builds ni despliegues.
+Los pushes autenticados a la rama de producción de proyectos registrados
+disparan un build y despliegue automáticos; otras ramas no despliegan.
 
 ## 17.2. Configuración declarativa
 
@@ -1891,9 +1899,9 @@ El desarrollo debe ser incremental.
 - [ ] Gestionar secretos mediante Docker Secrets.
 - [ ] Desplegar automáticamente al recibir un push.
 
-**Resultado previsto:** `git push` despliega proyectos. En el estado actual,
-builds y despliegues se solicitan manualmente desde el panel; el rollback
-conserva las variables y dominios actualmente configurados.
+**Resultado:** `git push` despliega proyectos registrados cuando el webhook de
+Gitea está configurado; los builds y despliegues manuales continúan disponibles.
+El rollback conserva las variables y dominios actualmente configurados.
 
 ## Fase 6 — Catálogo
 

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export class TaskExecutionError extends Error {
   constructor(message, { retryable = true } = {}) {
@@ -129,7 +129,7 @@ function createServiceOperationHandler(agent, operation, { pollIntervalMs = 1000
 
   return async (task, signal) => {
     const serviceId = task.payload?.serviceId;
-    if (typeof serviceId !== "string" || !/^[a-f0-9]{25,64}$/i.test(serviceId)) {
+    if (typeof serviceId !== "string" || !/^[a-z0-9]{25,64}$/i.test(serviceId)) {
       throw new TaskExecutionError("La tarea contiene un identificador de servicio inválido.", { retryable: false });
     }
     const replicas = operation === "scale-service" ? task.payload?.desiredReplicas : undefined;
@@ -160,6 +160,37 @@ export function createServiceRestartHandler(agent, options) {
 
 export function createServiceScaleHandler(agent, options) {
   return createServiceOperationHandler(agent, "scale-service", options);
+}
+
+export function createContainerOperationHandler(agent, { pollIntervalMs = 1000 } = {}) {
+  if (!agent || typeof agent.requestContainerOperation !== "function" || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+    throw new TypeError("The container operation task handler configuration is invalid.");
+  }
+
+  return async (task, signal) => {
+    const { serviceId, containerId, action } = task.payload ?? {};
+    if (task.type !== "container.operation"
+      || typeof serviceId !== "string" || !/^[a-z0-9]{25,64}$/i.test(serviceId)
+      || typeof containerId !== "string" || !/^[a-f0-9]{12,64}$/i.test(containerId)
+      || !["stop", "restart"].includes(action)) {
+      throw new TaskExecutionError("La tarea contiene una operación de contenedor inválida.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+    await agent.requestContainerOperation(`${action}-container`, serviceId, containerId, task.id);
+
+    while (!signal.aborted) {
+      const operation = await agent.getStatus();
+      if (operation?.id === task.id) {
+        if (operation.state === "succeeded") return { message: operation.message };
+        if (operation.state === "failed") {
+          throw new TaskExecutionError(operation.message, { retryable: false });
+        }
+      }
+      await waitForRetry(signal, pollIntervalMs);
+    }
+    throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+  };
 }
 
 export function createGiteaInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
@@ -359,13 +390,15 @@ export function createProjectBuildHandler({
     throw new TypeError("The project image build task handler configuration is invalid.");
   }
   return async (task, signal) => {
-    const { projectId, projectName, repository, branch } = task.payload ?? {};
+    const { projectId, projectName, repository, branch, commitSha } = task.payload ?? {};
     if (task.type !== "project.build"
       || typeof projectId !== "string"
       || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId)
       || typeof projectName !== "string"
       || typeof repository !== "string"
-      || typeof branch !== "string") {
+      || typeof branch !== "string"
+      || (commitSha !== undefined && (typeof commitSha !== "string"
+        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha)))) {
       throw new TaskExecutionError("La tarea contiene una configuración de proyecto inválida.", { retryable: false });
     }
     if (signal.aborted) throw signal.reason ?? new Error("La construcción fue interrumpida.");
@@ -373,10 +406,11 @@ export function createProjectBuildHandler({
     let staged = false;
     const deadline = Date.now() + maximumDurationMs;
     try {
-      const source = await getBuildSource({ repository, branch });
+      const source = await getBuildSource({ repository, branch, commitSha });
       if (!source || typeof source.commitSha !== "string"
-        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(source.commitSha)
-        || !Buffer.isBuffer(source.archive)) {
+        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(source.commitSha)
+        || !Buffer.isBuffer(source.archive)
+        || (commitSha !== undefined && source.commitSha.toLowerCase() !== commitSha.toLowerCase())) {
         throw new TaskExecutionError("Gitea devolvió una fuente inválida para construir.", { retryable: false });
       }
       await agent.stageProjectBuildArchive(task.id, source.archive);
@@ -463,6 +497,116 @@ export function createProjectDeployHandler(agent, {
       await waitForRetry(signal, Math.min(pollIntervalMs, deadline - Date.now()));
     }
     throw signal.reason ?? new Error("El despliegue fue interrumpido.");
+  };
+}
+
+export function createManualApplicationDeployHandler(agent, {
+  updateDeployment,
+  pollIntervalMs = 1000,
+  maximumDurationMs = 17 * 60 * 1000,
+} = {}) {
+  if (!agent || typeof agent.requestApplicationDeploy !== "function"
+    || typeof agent.removeApplicationDeployment !== "function"
+    || typeof agent.getStatus !== "function"
+    || typeof updateDeployment !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100
+    || !Number.isInteger(maximumDurationMs) || maximumDurationMs < pollIntervalMs) {
+    throw new TypeError("The manual application deployment handler configuration is invalid.");
+  }
+  return async (task, signal) => {
+    const { applicationId, applicationName, instanceId } = task.payload ?? {};
+    if (task.type !== "application.custom.deploy"
+      || typeof applicationId !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(applicationId)
+      || typeof applicationName !== "string"
+      || typeof instanceId !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(instanceId)) {
+      throw new TaskExecutionError("La tarea contiene una aplicación manual inválida.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("El despliegue fue interrumpido.");
+    const deadline = Date.now() + maximumDurationMs;
+    try {
+      await agent.requestApplicationDeploy(applicationId, instanceId, task.id);
+      while (!signal.aborted) {
+        const operation = await agent.getStatus();
+        if (operation?.id === task.id) {
+          if (operation.operation !== "deploy-application"
+            || operation.applicationId !== applicationId
+            || operation.instanceId !== instanceId) {
+            throw new TaskExecutionError("El agente devolvió un despliegue de aplicación inconsistente.", { retryable: false });
+          }
+          if (operation.state === "succeeded") {
+            await updateDeployment(instanceId, task.id, { status: "installed", serviceId: operation.serviceId });
+            return {
+              message: `${applicationName} se desplegó en Swarm con una instancia en el VPS seleccionado.`,
+              serviceId: operation.serviceId,
+            };
+          }
+          if (operation.state === "failed") {
+            await updateDeployment(instanceId, task.id, { status: "failed" });
+            throw new TaskExecutionError(operation.message, { retryable: false });
+          }
+        }
+        if (Date.now() >= deadline) {
+          await updateDeployment(instanceId, task.id, { status: "failed" });
+          throw new TaskExecutionError("El despliegue de la aplicación superó el límite de 17 minutos.", { retryable: false });
+        }
+        await waitForRetry(signal, Math.min(pollIntervalMs, deadline - Date.now()));
+      }
+      throw signal.reason ?? new Error("El despliegue fue interrumpido.");
+    } catch (error) {
+      if (!(error instanceof TaskExecutionError)) {
+        await updateDeployment(instanceId, task.id, { status: "failed" });
+      }
+      throw error;
+    } finally {
+      await agent.removeApplicationDeployment(task.id);
+    }
+  };
+}
+
+function derivePushPhaseTaskId(taskId, phase, attempt) {
+  const bytes = createHash("sha256").update(`vps-manager:project-push:${phase}:${taskId}:${attempt}`).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function createProjectPushDeployHandler(options = {}) {
+  const build = createProjectBuildHandler(options);
+  const deploy = createProjectDeployHandler(options.agent, options);
+  return async (task, signal) => {
+    const { projectId, projectName, repository, branch, commitSha } = task.payload ?? {};
+    if (task.type !== "project.push-deploy"
+      || typeof projectId !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId)
+      || typeof projectName !== "string"
+      || typeof repository !== "string"
+      || typeof branch !== "string"
+      || typeof commitSha !== "string"
+      || !Number.isInteger(task.attempts) || task.attempts < 1
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha)) {
+      throw new TaskExecutionError("La tarea de despliegue por push contiene una configuración inválida.", { retryable: false });
+    }
+
+    const buildTask = {
+      id: derivePushPhaseTaskId(task.id, "build", task.attempts),
+      type: "project.build",
+      payload: { projectId, projectName, repository, branch, commitSha },
+    };
+    const buildResult = await build(buildTask, signal);
+    const deployTask = {
+      id: derivePushPhaseTaskId(task.id, "deploy", task.attempts),
+      type: "project.deploy",
+      payload: { projectId, projectName, commitSha: buildResult.commitSha },
+    };
+    const deployResult = await deploy(deployTask, signal);
+    return {
+      message: `Push a ${branch}: ${buildResult.message} ${deployResult.message}`,
+      image: deployResult.image,
+      commitSha: deployResult.commitSha,
+      serviceId: deployResult.serviceId,
+    };
   };
 }
 
