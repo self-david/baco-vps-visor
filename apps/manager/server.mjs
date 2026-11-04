@@ -1552,7 +1552,11 @@ const server = createServer(async (request, response) => {
           console.error("Could not persist Cloudflare Tunnel setup failure:", saveError);
         }
       }
-      if (error?.code === "CLOUDFLARE_TOKEN_INVALID" || error instanceof TypeError) {
+      if (error?.code === "CLOUDFLARE_TOKEN_INVALID") {
+        respondJson(response, 401, { error: error.message });
+        return;
+      }
+      if (error instanceof TypeError) {
         respondJson(response, 400, { error: error.message });
         return;
       }

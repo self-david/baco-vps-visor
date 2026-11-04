@@ -30,6 +30,7 @@
                   <input id="cloudflare-tunnel-name" name="name" type="text" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_\x2d]{0,62}" required>
                   <label for="cloudflare-tunnel-token">API Token de Cloudflare</label>
                   <input id="cloudflare-tunnel-token" name="token" type="password" autocomplete="new-password" required>
+                  <p class="muted">Usa un API Token con permiso <code>Account → Cloudflare Tunnel → Edit</code>. No uses el token del conector que aparece en el comando <code>docker run … tunnel … --token</code>; ese token solo sirve para ejecutar un túnel ya creado.</p>
                   <div class="container-heading-actions">
                     <button id="cloudflare-tunnel-save" class="button" type="submit">Crear y conectar túnel</button>
                   </div>
