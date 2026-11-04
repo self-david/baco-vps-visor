@@ -435,6 +435,7 @@ export function createProjectBuildHandler({
       await agent.stageProjectBuildArchive(task.id, source.archive);
       staged = true;
       const buildConfiguration = {
+        deploymentType: source.deploymentType,
         buildStrategy: source.buildStrategy,
         buildContext: source.buildContext,
         dockerfilePath: source.dockerfilePath,

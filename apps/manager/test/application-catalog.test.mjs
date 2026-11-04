@@ -28,6 +28,7 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /Configuración de GitHub OAuth/);
   assert.match(projectsPanel, /id="github-config-form"/);
   assert.match(projectsPanel, /id="github-import-form"/);
+  assert.match(projectsPanel, /id="github-deployment-type"/);
   assert.match(projectsPanel, /id="project-dropzone"/);
   assert.match(projectsPanel, /id="project-selection"/);
   assert.match(projectsPanel, /id="project-import-files"/);
@@ -78,7 +79,10 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /manage\.href = `\/projects\/\$\{encodeURIComponent\(project\.id\)\}`/);
   assert.match(renderer, /button-danger/);
   assert.match(renderer, /Primero retira el servicio desplegado y desasigna sus dominios/);
-  assert.match(application, /window\.addEventListener\("popstate", \(\) => renderProjects\(\)\)/);
+  assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
+  assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
+  assert.match(application, /function updateProjectDeploymentFields\(\)/);
+  assert.match(application, /connectDomains\.href = "\/#tab-domains"/);
   assert.match(projectDetailView, /data-project-tab-panel="deploy"/);
   assert.match(projectDetailView, /id="project-detail-file-tree"/);
   assert.match(server, /source.{0,10}files/);
@@ -86,6 +90,10 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(server, /projects.{0,30}0-9a-f/);
   assert.match(serviceAgent, /has_root_contents/);
   assert.match(serviceAgent, /FROM nginx:alpine/);
+  assert.match(serviceAgent, /build_dockerfile="\$\{build_directory\}\/Dockerfile\.static"/);
+  assert.match(serviceAgent, /--file "\$\{build_dockerfile\}"/);
+  assert.match(serviceAgent, /deployment_type = request\["deploymentType"\]/);
+  assert.match(serviceAgent, /"deploymentType": deployment_type/);
   assert.match(serviceAgent, /CMD \["node", "server\.js"\]/);
   assert.match(serviceAgent, /CMD \["python", "main\.py"\]/);
   assert.match(serviceAgent, /C\+\+ requiere un Dockerfile/);

@@ -4,6 +4,13 @@
   <input id="project-name" name="name" maxlength="100" required>
   <label for="project-description">Descripción</label>
   <textarea id="project-description" name="description" rows="2" maxlength="500"></textarea>
+  <label for="project-deployment-type">Tipo de despliegue</label>
+  <select id="project-deployment-type" name="deploymentType">
+    <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
+    <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+  </select>
+  <p id="project-deployment-type-help" class="muted">Los proyectos estáticos se sirven con Nginx en el puerto 80.</p>
+  <div id="project-dynamic-build-fields">
   <label for="project-build-strategy">Método de build</label>
   <select id="project-build-strategy" name="buildStrategy">
     <option value="dockerfile">Dockerfile</option>
@@ -17,6 +24,7 @@
   </div>
   <label for="project-port">Puerto interno de la aplicación</label>
   <input id="project-port" name="internalPort" type="number" min="1" max="65535" value="3000" required>
+  </div>
   <label class="checkbox-label"><input id="project-auto-deploy" name="autoDeploy" type="checkbox" checked> Desplegar automáticamente al recibir pushes en la rama</label>
   <p id="project-form-status" class="muted" role="status" aria-live="polite"></p>
   <div class="project-actions">

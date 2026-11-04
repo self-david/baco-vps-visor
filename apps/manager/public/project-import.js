@@ -28,6 +28,7 @@ const selectionName = document.querySelector("#project-selection-name");
 const selectionDetails = document.querySelector("#project-selection-details");
 const selectionTree = document.querySelector("#project-selection-tree");
 const importButton = document.querySelector("#project-import-files");
+const deploymentTypeSelect = document.querySelector("#project-import-deployment-type");
 
 let selectedFiles = [];
 let importing = false;
@@ -123,6 +124,8 @@ async function showSelection(files, projectName = "") {
       : sourcePaths[0].includes("/") ? sourcePaths[0].split("/")[0] : sourcePathsRoot(selectedFiles);
   selectedProjectName = projectName || inferredName;
   selectedPaths = paths;
+  const buildProfile = detectProjectBuildProfile(paths);
+  deploymentTypeSelect.value = buildProfile.isStaticSite ? "static" : "dynamic";
   const totalBytes = selectedFiles.reduce((sum, { file }) => sum + file.size, 0);
   const size = totalBytes < 1024 * 1024
     ? `${Math.max(1, Math.ceil(totalBytes / 1024))} KiB`
@@ -188,6 +191,7 @@ async function importSelectedFiles() {
     let archive;
     const root = selectedProjectName;
     const buildProfile = detectProjectBuildProfile(selectedPaths);
+    const deploymentType = deploymentTypeSelect.value;
     const zipFiles = selectedFiles.filter(({ file }) => /\.zip$/i.test(file.name));
     if (zipFiles.length) {
       archive = zipFiles[0].file;
@@ -204,11 +208,12 @@ async function importSelectedFiles() {
       headers: {
         "Content-Type": "application/zip",
         "X-Project-Name": safeProjectName(root),
-        "X-Build-Strategy": buildProfile.buildStrategy,
+        "X-Deployment-Type": deploymentType,
+        "X-Build-Strategy": deploymentType === "static" ? "dockerfile" : buildProfile.buildStrategy,
       },
       body: archive,
     });
-    uploadStatus.textContent = buildProfile.isStaticSite
+    uploadStatus.textContent = deploymentType === "static"
       ? `${result.project.name} se creó como sitio estático con Nginx (puerto 80). Pulsa “Construir” para prepararlo.`
       : buildProfile.simpleNodeServer || buildProfile.simplePythonApp
         ? `${result.project.name} usará un contenedor básico para su archivo principal. Verifica el puerto de escucha en Configuración antes de desplegar.`

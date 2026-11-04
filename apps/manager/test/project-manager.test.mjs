@@ -16,6 +16,7 @@ test("validates GitHub project configuration with a selectable production branch
     sourceType: "github",
     githubInstallationId: 123,
     productionBranch: "release/1.0",
+    deploymentType: "dynamic",
     buildStrategy: "dockerfile",
     buildContext: ".",
     dockerfilePath: "Dockerfile",
@@ -31,8 +32,20 @@ test("validates GitHub project configuration with a selectable production branch
   });
   assert.equal(project.description, "");
   assert.equal(project.productionBranch, "main");
+  assert.equal(project.deploymentType, "dynamic");
   assert.equal(project.internalPort, 8080);
   assert.equal(project.autoDeploy, false);
+
+  const staticProject = validateProjectInput({
+    name: "static-project",
+    sourceType: "upload",
+    deploymentType: "static",
+    buildStrategy: "railpack",
+    internalPort: 8080,
+  });
+  assert.equal(staticProject.deploymentType, "static");
+  assert.equal(staticProject.buildStrategy, "dockerfile");
+  assert.equal(staticProject.internalPort, 80);
 });
 
 test("rejects unsafe or incomplete project metadata and malformed IDs", () => {

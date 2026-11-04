@@ -118,6 +118,7 @@ import {
   saveProjectEnvironment,
   getProjectDeploymentConfig,
   saveProjectDeploymentConfig,
+  saveProjectDeploymentType,
   saveCloudflareToken,
   getCloudflareToken,
   hasCloudflareToken,
@@ -953,6 +954,7 @@ async function getProjectBuildSource({ projectId, repository, branch, commitSha,
   return {
     commitSha: resolvedCommit,
     archive,
+    deploymentType: project.deploymentType,
     buildStrategy: project.buildStrategy,
     buildContext: project.buildContext,
     dockerfilePath: project.dockerfilePath,
@@ -1967,6 +1969,9 @@ const server = createServer(async (request, response) => {
       }
       await configureGithubProjectWebhook(projectInput);
       const project = await createProject(projectInput);
+      if (project.deploymentType === "static") {
+        await saveProjectDeploymentType(serviceOperationsDirectory, project.id, project.deploymentType);
+      }
       let deploymentQueued = false;
       try {
         deploymentQueued = await queueInitialGithubDeployment(project, initialCommitSha);
@@ -2041,17 +2046,24 @@ const server = createServer(async (request, response) => {
       const projectFiles = validateProjectArchive(archive);
       const buildProfile = detectProjectBuildProfile(projectFiles);
       const name = request.headers["x-project-name"];
-      const buildStrategy = request.headers["x-build-strategy"] ?? buildProfile.buildStrategy;
+      const deploymentType = request.headers["x-deployment-type"] ?? (buildProfile.isStaticSite ? "static" : "dynamic");
+      if (!["static", "dynamic"].includes(deploymentType)) {
+        throw new RequestError(400, "El tipo de despliegue debe ser estático o dinámico.");
+      }
+      const buildStrategy = deploymentType === "static"
+        ? "dockerfile"
+        : request.headers["x-build-strategy"] ?? buildProfile.buildStrategy;
       project = validateProjectInput({
         name,
         sourceType: "upload",
+        deploymentType,
         buildStrategy,
-        internalPort: buildStrategy === "dockerfile" && buildProfile.isStaticSite
-          ? buildProfile.internalPort
-          : undefined,
         autoDeploy: false,
       });
       project = await createProject(project);
+      if (project.deploymentType === "static") {
+        await saveProjectDeploymentType(serviceOperationsDirectory, project.id, project.deploymentType);
+      }
       const sourceDigest = createHash("sha256").update(archive).digest("hex");
       path = projectUploadSourcePath(project.id, sourceDigest);
       await writeFile(path, archive, { flag: "wx", mode: 0o600 });
@@ -2075,6 +2087,7 @@ const server = createServer(async (request, response) => {
       if (project?.id) {
         try {
           await deleteProject(project.id);
+          await deleteProjectConfig(serviceOperationsDirectory, project.id);
         } catch (cleanupError) {
           console.error("Could not remove a partially imported project record:", cleanupError);
         }
@@ -2584,6 +2597,12 @@ const server = createServer(async (request, response) => {
       const projectInput = validateProjectInput(await readJson(request));
       await validateProjectSource(projectInput);
       await configureGithubProjectWebhook(projectInput);
+      const previousProject = await getProject(projectId);
+      if (!previousProject) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      await saveProjectDeploymentType(serviceOperationsDirectory, projectId, projectInput.deploymentType);
       const project = await updateProject(projectId, projectInput);
       respondJson(response, project ? 200 : 404, project
         ? { project }

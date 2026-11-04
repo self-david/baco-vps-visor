@@ -10,6 +10,7 @@ export function validateProjectInput(body) {
     "githubInstallationId",
     "repository",
     "productionBranch",
+    "deploymentType",
     "buildStrategy",
     "buildContext",
     "dockerfilePath",
@@ -27,6 +28,7 @@ export function validateProjectInput(body) {
     || (body.repository !== undefined && typeof body.repository !== "string")
     || (body.productionBranch !== undefined
       && (typeof body.productionBranch !== "string" || /[\u0000-\u001f\u007f]/.test(body.productionBranch)))
+    || (body.deploymentType !== undefined && !["static", "dynamic"].includes(body.deploymentType))
     || (body.buildStrategy !== undefined && !["dockerfile", "railpack"].includes(body.buildStrategy))
     || (body.buildContext !== undefined && typeof body.buildContext !== "string")
     || (body.dockerfilePath !== undefined && typeof body.dockerfilePath !== "string")
@@ -43,6 +45,8 @@ export function validateProjectInput(body) {
   const githubInstallationId = body.githubInstallationId ?? null;
   const repository = body.repository?.trim() ?? "";
   const productionBranch = body.productionBranch?.trim() || "main";
+  const deploymentType = body.deploymentType ?? "dynamic";
+  const buildStrategy = deploymentType === "static" ? "dockerfile" : body.buildStrategy ?? "dockerfile";
   const buildContext = body.buildContext?.trim() || ".";
   const dockerfilePath = body.dockerfilePath?.trim() || "Dockerfile";
   if ((sourceType === "github" && (!repositoryPattern.test(repository) || githubInstallationId === null))
@@ -71,10 +75,11 @@ export function validateProjectInput(body) {
     githubInstallationId,
     repository: repository || null,
     productionBranch,
-    buildStrategy: body.buildStrategy ?? "dockerfile",
+    deploymentType,
+    buildStrategy,
     buildContext,
     dockerfilePath,
-    internalPort: body.internalPort ?? 3000,
+    internalPort: deploymentType === "static" ? 80 : body.internalPort ?? 3000,
     autoDeploy: body.autoDeploy ?? true,
   };
 }

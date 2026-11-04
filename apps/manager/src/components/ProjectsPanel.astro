@@ -30,6 +30,12 @@
                   <div id="project-selection" class="project-selection hidden" aria-live="polite">
                     <strong id="project-selection-name"></strong>
                     <span id="project-selection-details" class="muted"></span>
+                    <label for="project-import-deployment-type">Tipo de despliegue</label>
+                    <select id="project-import-deployment-type">
+                      <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
+                      <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+                    </select>
+                    <span class="muted">Estático publica los archivos con Nginx. Dinámico construye una aplicación con servidor.</span>
                     <details id="project-selection-files" open>
                       <summary>Archivos incluidos</summary>
                       <ul id="project-selection-tree" class="project-file-tree"></ul>
@@ -67,6 +73,11 @@
                     <select id="project-repository" name="repository" required></select>
                     <label for="project-production-branch">Rama de producción</label>
                     <select id="project-production-branch" name="productionBranch" required></select>
+                    <label for="github-deployment-type">Tipo de despliegue</label>
+                    <select id="github-deployment-type" name="deploymentType">
+                      <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+                      <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
+                    </select>
                     <button id="github-import-project" class="button" type="submit">Importar y desplegar</button>
                     <p id="github-import-status" class="muted" role="status" aria-live="polite"></p>
                   </form>

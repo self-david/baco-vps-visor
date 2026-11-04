@@ -130,6 +130,7 @@ function validateStatus(status) {
       : status.operation === "build-project"
         ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
           || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+          || !["static", "dynamic"].includes(status.deploymentType)
           || !["dockerfile", "railpack"].includes(status.buildStrategy)
           || !safeProjectPath(status.buildContext)
           || !safeProjectPath(status.dockerfilePath)
@@ -235,6 +236,7 @@ export function createServiceOperationAgent({
             : queuedRequest.operation === "build-project"
               ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
+                && ["static", "dynamic"].includes(queuedRequest.deploymentType)
                 && ["dockerfile", "railpack"].includes(queuedRequest.buildStrategy)
                 && safeProjectPath(queuedRequest.buildContext)
                 && safeProjectPath(queuedRequest.dockerfilePath)
@@ -280,7 +282,7 @@ export function createServiceOperationAgent({
           : queuedRequest.operation === "configure-registry"
             ? ["id", "operation", "domain", "username"]
           : queuedRequest.operation === "build-project"
-            ? ["id", "operation", "projectId", "commitSha", "buildStrategy", "buildContext", "dockerfilePath"]
+            ? ["id", "operation", "projectId", "commitSha", "deploymentType", "buildStrategy", "buildContext", "dockerfilePath"]
           : queuedRequest.operation === "deploy-project"
             ? ["id", "operation", "projectId", "commitSha"]
             : queuedRequest.operation === "remove-project"
@@ -315,6 +317,7 @@ export function createServiceOperationAgent({
                 ? {
                   projectId: queuedRequest.projectId,
                   commitSha: queuedRequest.commitSha,
+                  deploymentType: queuedRequest.deploymentType,
                   buildStrategy: queuedRequest.buildStrategy,
                   buildContext: queuedRequest.buildContext,
                   dockerfilePath: queuedRequest.dockerfilePath,
@@ -613,13 +616,16 @@ export function createServiceOperationAgent({
   }
 
   async function requestProjectBuild(projectId, commitSha, requestId, configuration = {}) {
+    const deploymentType = configuration.deploymentType ?? "dynamic";
     const buildStrategy = configuration.buildStrategy ?? "dockerfile";
     const buildContext = configuration.buildContext ?? ".";
     const dockerfilePath = configuration.dockerfilePath ?? "Dockerfile";
     if (!requestIdPattern.test(requestId ?? "")
       || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId ?? "")
       || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
+      || !["static", "dynamic"].includes(deploymentType)
       || !["dockerfile", "railpack"].includes(buildStrategy)
+      || (deploymentType === "static" && buildStrategy !== "dockerfile")
       || !safeProjectPath(buildContext)
       || !safeProjectPath(dockerfilePath)) {
       throw new TypeError("Project build request fields are invalid.");
@@ -629,6 +635,7 @@ export function createServiceOperationAgent({
       if (currentStatus.operation !== "build-project"
         || currentStatus.projectId !== projectId
         || currentStatus.commitSha !== commitSha
+        || currentStatus.deploymentType !== deploymentType
         || currentStatus.buildStrategy !== buildStrategy
         || currentStatus.buildContext !== buildContext
         || currentStatus.dockerfilePath !== dockerfilePath) {
@@ -647,6 +654,7 @@ export function createServiceOperationAgent({
       operation: "build-project",
       projectId,
       commitSha: commitSha.toLowerCase(),
+      deploymentType,
       buildStrategy,
       buildContext,
       dockerfilePath,
@@ -673,6 +681,7 @@ export function createServiceOperationAgent({
       state: "queued",
       projectId,
       commitSha: commitSha.toLowerCase(),
+      deploymentType,
       buildStrategy,
       buildContext,
       dockerfilePath,

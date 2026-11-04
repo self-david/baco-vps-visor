@@ -440,13 +440,16 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
   try {
     await fixture.agent.stageProjectBuildArchive(requestId, archive);
     assert.deepEqual(await readFile(archivePath), archive);
-    const operation = await fixture.agent.requestProjectBuild(projectId, commitSha, requestId);
+    const operation = await fixture.agent.requestProjectBuild(projectId, commitSha, requestId, {
+      deploymentType: "static",
+    });
     assert.equal(operation.state, "queued");
     assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
       id: requestId,
       operation: "build-project",
       projectId,
       commitSha,
+      deploymentType: "static",
       buildStrategy: "dockerfile",
       buildContext: ".",
       dockerfilePath: "Dockerfile",
@@ -464,6 +467,7 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       state: "succeeded",
       projectId,
       commitSha,
+      deploymentType: "static",
       buildStrategy: "dockerfile",
       buildContext: ".",
       dockerfilePath: "Dockerfile",

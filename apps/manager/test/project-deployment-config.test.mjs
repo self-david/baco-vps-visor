@@ -12,6 +12,7 @@ import {
   hasCloudflareToken,
   saveCloudflareToken,
   saveProjectDeploymentConfig,
+  saveProjectDeploymentType,
   saveProjectEnvironment,
   validateProjectEnvironment,
 } from "../project-deployment-config.mjs";
@@ -47,16 +48,21 @@ test("persists project variables and domains in private host-side files", async 
     const deploymentConfig = await getProjectDeploymentConfig(directory, projectId);
     assert.deepEqual({ ...deploymentConfig, environment: { ...deploymentConfig.environment } }, {
       environment: { API_URL: "https://api.example.com", MULTILINE: "one\ntwo" },
+      deploymentType: "dynamic",
       domains: [
         { hostname: "app.example.com", port: 3000 },
         { hostname: "admin.example.com", port: 8080 },
       ],
-      configHash: "0b9d301fa0f9051a8d2be41ce51c1f5bb212d476ad7784dcac8453576edd35f7",
+      configHash: "ca7f199ea0c7f56052544b6b8ebd5b762bb692ad9a88c71b9e19037d2a74e872",
     });
     const metadata = await stat(join(directory, `project-config-${projectId}.json`));
     if (process.platform !== "win32") assert.equal(metadata.mode & 0o077, 0);
     const savedConfig = await readFile(join(directory, `project-config-${projectId}.json`), "utf8");
     assert.match(savedConfig, /API_URL/);
+    await saveProjectDeploymentType(directory, projectId, "static");
+    const staticDeploymentConfig = await getProjectDeploymentConfig(directory, projectId);
+    assert.equal(staticDeploymentConfig.deploymentType, "static");
+    assert.notEqual(staticDeploymentConfig.configHash, deploymentConfig.configHash);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

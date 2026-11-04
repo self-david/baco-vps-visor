@@ -113,6 +113,9 @@ const projectRepositorySelect = document.querySelector("#project-repository");
 const projectProductionBranchSelect = document.querySelector("#project-production-branch");
 const projectSaveButton = document.querySelector("#project-save");
 const projectInstallationSelect = document.querySelector("#project-installation");
+const projectDeploymentTypeSelect = document.querySelector("#project-deployment-type");
+const projectDeploymentTypeHelp = document.querySelector("#project-deployment-type-help");
+const projectDynamicBuildFields = document.querySelector("#project-dynamic-build-fields");
 const projectBuildStrategySelect = document.querySelector("#project-build-strategy");
 const projectDockerfileField = document.querySelector("#project-dockerfile-field");
 const githubConfigForm = document.querySelector("#github-config-form");
@@ -123,6 +126,7 @@ const githubCallbackUrl = document.querySelector("#github-callback-url");
 const githubImportForm = document.querySelector("#github-import-form");
 const githubImportButton = document.querySelector("#github-import-project");
 const githubImportStatus = document.querySelector("#github-import-status");
+const githubDeploymentTypeSelect = document.querySelector("#github-deployment-type");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
@@ -1626,6 +1630,7 @@ async function loadProjects() {
 
 let githubInstallations = [];
 let currentProjectEdit = null;
+let previousDynamicProjectPort = "3000";
 
 async function loadGithubStatus() {
   githubCallbackUrl.textContent = new URL("/api/github/callback", window.location.href).href;
@@ -1767,14 +1772,28 @@ function renderProjectFileTree(paths, list) {
   appendNodes(list, root.children);
 }
 
-function openProjectRoute(project) {
-  history.pushState(null, "", `/projects/${encodeURIComponent(project.id)}`);
-  renderProjects();
+function updateProjectDeploymentFields() {
+  const isStatic = projectDeploymentTypeSelect.value === "static";
+  projectDynamicBuildFields.classList.toggle("hidden", isStatic);
+  for (const field of projectDynamicBuildFields.querySelectorAll("input, select")) {
+    field.disabled = isStatic;
+  }
+  if (isStatic) document.querySelector("#project-port").value = "80";
+  projectDeploymentTypeHelp.textContent = isStatic
+    ? "Los archivos se sirven con Nginx en el puerto 80. No se ejecutan scripts de servidor."
+    : "El proyecto requiere un servidor HTTP. El puerto debe coincidir con el que escucha la aplicación.";
+  updateProjectBuildFields();
+}
+
+function updateProjectBuildFields() {
+  const isDockerfile = projectBuildStrategySelect.value === "dockerfile";
+  projectDockerfileField.classList.toggle("hidden", !isDockerfile);
+  document.querySelector("#project-dockerfile").disabled =
+    projectDeploymentTypeSelect.value === "static" || !isDockerfile;
 }
 
 function returnToProjectsRoute() {
-  history.pushState(null, "", "/#tab-projects");
-  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  window.location.assign("/#tab-projects");
 }
 
 function renderProjectRoute() {
@@ -1803,10 +1822,14 @@ function renderProjectRoute() {
   projectIdInput.value = project.id;
   projectNameInput.value = project.name;
   projectDescriptionInput.value = project.description ?? "";
+  projectDeploymentTypeSelect.value = project.deploymentType ?? "dynamic";
   projectBuildStrategySelect.value = project.buildStrategy ?? "dockerfile";
   document.querySelector("#project-build-context").value = project.buildContext ?? ".";
   document.querySelector("#project-dockerfile").value = project.dockerfilePath ?? "Dockerfile";
   document.querySelector("#project-port").value = String(project.internalPort ?? 3000);
+  previousDynamicProjectPort = project.deploymentType === "static"
+    ? "3000"
+    : String(project.internalPort ?? 3000);
   document.querySelector("#project-auto-deploy").checked = project.autoDeploy ?? true;
   document.querySelector("#project-detail-title").textContent = project.name;
   document.querySelector("#project-detail-state").textContent = project.deployment
@@ -1817,6 +1840,7 @@ function renderProjectRoute() {
     : `GitHub · ${project.repository} · rama ${project.productionBranch}`;
   projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
+  updateProjectDeploymentFields();
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
   return project;
 }
@@ -1889,11 +1913,6 @@ function renderProjects() {
     manage.className = "button secondary";
     manage.href = `/projects/${encodeURIComponent(project.id)}`;
     manage.textContent = "Administrar";
-    manage.addEventListener("click", (event) => {
-      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      openProjectRoute(project);
-    });
     const removeProject = makeButton("Eliminar", async () => {
       if (!confirm(`¿Eliminar el proyecto ${project.name}? La operación no se puede deshacer. Primero retira el servicio desplegado y desasigna sus dominios; de lo contrario, el servidor rechazará la eliminación.`)) return;
       removeProject.disabled = true;
@@ -2131,6 +2150,18 @@ function renderProjects() {
     subdomainInput.setAttribute("aria-label", `Subdominio del proyecto ${project.name}`);
     const hostnamePreview = document.createElement("span");
     hostnamePreview.className = "muted";
+    const domainStatus = document.createElement("span");
+    domainStatus.className = "muted";
+    domainStatus.setAttribute("role", "status");
+    domainStatus.textContent = availableZones.length
+      ? "Elige una zona conectada y el subdominio que quieres asignar."
+      : "No hay dominios conectados y verificados. Conecta primero una zona en Dominios.";
+    if (availableZones.length === 0) {
+      const connectDomains = document.createElement("a");
+      connectDomains.href = "/#tab-domains";
+      connectDomains.textContent = "Ir a conectar dominio";
+      domainForm.append(connectDomains);
+    }
     const updateHostnamePreview = () => {
       const zone = zoneSelect.value;
       const subdomain = subdomainInput.value.trim();
@@ -2145,13 +2176,13 @@ function renderProjects() {
     addDomain.type = "submit";
     addDomain.textContent = "Asignar dominio";
     addDomain.disabled = availableZones.length === 0;
-    domainForm.append(zoneSelect, subdomainInput, hostnamePreview, addDomain);
+    domainForm.append(zoneSelect, subdomainInput, hostnamePreview, domainStatus, addDomain);
     domainForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const zone = zoneSelect.value;
       const subdomain = subdomainInput.value.trim();
       if (!zone || !subdomain) {
-        projectsStatus.textContent = "Selecciona un dominio conectado e indica un subdominio o @ para el dominio raíz.";
+        domainStatus.textContent = "Selecciona un dominio conectado e indica un subdominio o @ para el dominio raíz.";
         return;
       }
       const hostname = subdomain === "@" ? zone : `${subdomain}.${zone}`;
@@ -2168,9 +2199,10 @@ function renderProjects() {
           }),
         });
         await Promise.all([loadDomains(), loadProjects()]);
-        projectsStatus.textContent = result.message;
+        const refreshedStatus = document.querySelector("#project-detail-domains [role='status']");
+        if (refreshedStatus) refreshedStatus.textContent = result.message;
       } catch (error) {
-        projectsStatus.textContent = error.message;
+        domainStatus.textContent = `No se pudo asignar el dominio: ${error.message}`;
       } finally {
         addDomain.disabled = availableZones.length === 0;
       }
@@ -2879,7 +2911,6 @@ for (const tab of projectDetailView.querySelectorAll("[data-project-tab]")) {
     setProjectTab(tabs[nextIndex].dataset.projectTab);
   });
 }
-window.addEventListener("popstate", () => renderProjects());
 projectInstallationSelect.addEventListener("change", async () => {
   githubImportStatus.textContent = "";
   await loadProjectRepositories();
@@ -2888,7 +2919,16 @@ projectRepositorySelect.addEventListener("change", () => void loadProjectBranche
 refreshProjectsButton.addEventListener("click", () => void loadProjects());
 window.addEventListener("vps-manager:projects-updated", () => void loadProjects());
 projectBuildStrategySelect.addEventListener("change", () => {
-  projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
+  updateProjectBuildFields();
+});
+projectDeploymentTypeSelect.addEventListener("change", () => {
+  if (projectDeploymentTypeSelect.value === "static") {
+    const port = document.querySelector("#project-port").value;
+    if (port) previousDynamicProjectPort = port;
+  } else {
+    document.querySelector("#project-port").value = previousDynamicProjectPort;
+  }
+  updateProjectDeploymentFields();
 });
 projectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2900,6 +2940,7 @@ projectForm.addEventListener("submit", async (event) => {
     name: projectNameInput.value.trim(),
     description: projectDescriptionInput.value.trim(),
     sourceType,
+    deploymentType: projectDeploymentTypeSelect.value,
     buildStrategy: projectBuildStrategySelect.value,
     buildContext: document.querySelector("#project-build-context").value.trim(),
     dockerfilePath: document.querySelector("#project-dockerfile").value.trim(),
@@ -2911,6 +2952,10 @@ projectForm.addEventListener("submit", async (event) => {
       productionBranch: currentProjectEdit.productionBranch,
     } : {}),
   };
+  if (input.deploymentType === "static") {
+    input.buildStrategy = "dockerfile";
+    input.internalPort = 80;
+  }
   try {
     const projectId = projectIdInput.value;
     await request(`/api/projects/${encodeURIComponent(projectId)}`, {
@@ -2969,7 +3014,8 @@ githubImportForm.addEventListener("submit", async (event) => {
         githubInstallationId: accountId,
         repository,
         productionBranch,
-        buildStrategy: "railpack",
+        deploymentType: githubDeploymentTypeSelect.value,
+        buildStrategy: githubDeploymentTypeSelect.value === "static" ? "dockerfile" : "railpack",
         autoDeploy: true,
       }),
     });

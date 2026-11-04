@@ -103,6 +103,10 @@ export async function getProjectEnvironment(directory, projectId) {
 export async function getProjectDeploymentConfig(directory, projectId) {
   const configuration = await readConfig(projectConfigPath(directory, projectId));
   const environment = validateProjectEnvironment(configuration.environment ?? {});
+  const deploymentType = configuration.deploymentType ?? "dynamic";
+  if (!["static", "dynamic"].includes(deploymentType)) {
+    throw new Error("El tipo de despliegue del proyecto no es válido.");
+  }
   const domains = configuration.domains ?? (configuration.domain ? [{
     hostname: configuration.domain,
     port: configuration.port,
@@ -119,9 +123,20 @@ export async function getProjectDeploymentConfig(directory, projectId) {
   );
   const sortedDomains = [...domains].sort((left, right) =>
     left.hostname < right.hostname ? -1 : left.hostname > right.hostname ? 1 : 0);
-  const canonical = JSON.stringify({ environment: sortedEnvironment, domains: sortedDomains });
+  const canonical = JSON.stringify({ deploymentType, environment: sortedEnvironment, domains: sortedDomains });
   const configHash = createHash("sha256").update(canonical).digest("hex");
-  return { environment, domains, configHash };
+  return { deploymentType, environment, domains, configHash };
+}
+
+export async function saveProjectDeploymentType(directory, projectId, deploymentType) {
+  if (!["static", "dynamic"].includes(deploymentType)) {
+    throw new TypeError("El tipo de despliegue del proyecto no es válido.");
+  }
+  const path = projectConfigPath(directory, projectId);
+  await withProjectConfigLock(path, async () => {
+    const current = await readConfig(path);
+    await writeConfigAtomically(directory, path, { ...current, deploymentType });
+  });
 }
 
 export async function saveProjectEnvironment(directory, projectId, environment) {

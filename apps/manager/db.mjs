@@ -237,6 +237,7 @@ function mapProject(row) {
     productionBranch: row.production_branch,
     githubInstallationId: row.github_installation_id === null ? null : Number(row.github_installation_id),
     sourceType: row.source_type,
+    deploymentType: row.deployment_type,
     buildStrategy: row.build_strategy,
     buildContext: row.build_context,
     dockerfilePath: row.dockerfile_path,
@@ -249,7 +250,7 @@ function mapProject(row) {
 
 export async function getProjects() {
   const result = await pool.query(`
-    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
       build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     FROM projects
     ORDER BY lower(name), id
@@ -259,7 +260,7 @@ export async function getProjects() {
 
 export async function getProject(id) {
   const result = await pool.query(`
-    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+    SELECT id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
       build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     FROM projects
     WHERE id = $1
@@ -273,11 +274,11 @@ export async function createProject(project) {
     await client.query("BEGIN");
     const result = await client.query(`
       INSERT INTO projects (
-        name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+        name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
         build_context, dockerfile_path, internal_port, auto_deploy
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
         build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     `, [
       project.name,
@@ -286,6 +287,7 @@ export async function createProject(project) {
       project.productionBranch,
       project.sourceType,
       project.githubInstallationId,
+      project.deploymentType,
       project.buildStrategy,
       project.buildContext,
       project.dockerfilePath,
@@ -316,10 +318,10 @@ export async function updateProject(id, project) {
     const result = await client.query(`
       UPDATE projects
       SET name = $2, description = $3, repository = $4, production_branch = $5,
-          source_type = $6, github_installation_id = $7, build_strategy = $8, build_context = $9,
-          dockerfile_path = $10, internal_port = $11, auto_deploy = $12, updated_at = now()
+          source_type = $6, github_installation_id = $7, deployment_type = $8, build_strategy = $9, build_context = $10,
+          dockerfile_path = $11, internal_port = $12, auto_deploy = $13, updated_at = now()
       WHERE id = $1
-      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, build_strategy,
+      RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
         build_context, dockerfile_path, internal_port, auto_deploy, created_at, updated_at
     `, [
       id,
@@ -329,6 +331,7 @@ export async function updateProject(id, project) {
       project.productionBranch,
       project.sourceType,
       project.githubInstallationId,
+      project.deploymentType,
       project.buildStrategy,
       project.buildContext,
       project.dockerfilePath,

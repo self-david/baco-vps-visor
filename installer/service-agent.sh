@@ -120,6 +120,7 @@ if not re.fullmatch(
     raise SystemExit("Invalid service operation request identifier.")
 project_id = "-"
 commit_sha = "-"
+deployment_type = "-"
 build_strategy = "-"
 build_context = "-"
 dockerfile_path = "-"
@@ -220,7 +221,7 @@ elif request.get("operation") == "configure-registry":
 elif request.get("operation") == "build-project":
     if set(request) != {
         "id", "operation", "projectId", "commitSha",
-        "buildStrategy", "buildContext", "dockerfilePath",
+        "deploymentType", "buildStrategy", "buildContext", "dockerfilePath",
     }:
         raise SystemExit("Invalid project image build request fields.")
     if not re.fullmatch(
@@ -230,8 +231,12 @@ elif request.get("operation") == "build-project":
         raise SystemExit("Invalid project image build identifier.")
     if not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", str(request["commitSha"])):
         raise SystemExit("Invalid project image build commit.")
+    if request["deploymentType"] not in {"static", "dynamic"}:
+        raise SystemExit("Invalid project deployment type.")
     if request["buildStrategy"] not in {"dockerfile", "railpack"}:
         raise SystemExit("Invalid project build strategy.")
+    if request["deploymentType"] == "static" and request["buildStrategy"] != "dockerfile":
+        raise SystemExit("Static projects must use the managed Nginx image.")
     for path_value in (request["buildContext"], request["dockerfilePath"]):
         if not isinstance(path_value, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,255}", path_value) \
             or path_value.startswith("/") or any(part in {"", ".."} for part in path_value.split("/")):
@@ -240,6 +245,7 @@ elif request.get("operation") == "build-project":
     replicas = "-"
     project_id = request["projectId"].lower()
     commit_sha = request["commitSha"].lower()
+    deployment_type = request["deploymentType"]
     build_strategy = request["buildStrategy"]
     build_context = request["buildContext"]
     dockerfile_path = request["dockerfilePath"]
@@ -330,14 +336,14 @@ if request["operation"] in {"restart-service", "scale-service", "stop-container"
     r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{build_strategy}\t{build_context}\t{dockerfile_path}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id build_strategy build_context dockerfile_path <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -367,11 +373,11 @@ write_status() {
       "${request_id}" "${operation}" "${state}" "${registry_domain}" "${registry_username}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "build-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","image":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "${built_image}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     else
-      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+      printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","commitSha":"%s","deploymentType":"%s","buildStrategy":"%s","buildContext":"%s","dockerfilePath":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${project_id}" "${commit_sha}" "${deployment_type}" "${build_strategy}" "${build_context}" "${dockerfile_path}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
     fi
   elif [[ "${operation}" == "deploy-project" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
@@ -557,7 +563,12 @@ PY
     write_status "failed" "La ruta de contexto configurada no es un directorio válido del código."
     exit 1
   fi
-  if [[ "${build_strategy}" == "dockerfile" ]]; then
+  build_dockerfile="${build_context_directory}/${dockerfile_path}"
+  if [[ "${deployment_type}" == "static" ]]; then
+    build_dockerfile="${build_directory}/Dockerfile.static"
+    printf '%s\n' 'FROM nginx:alpine' 'COPY . /usr/share/nginx/html' > "${build_dockerfile}"
+    chmod 0600 "${build_dockerfile}"
+  elif [[ "${build_strategy}" == "dockerfile" ]]; then
     configured_dockerfile="${build_context_directory}/${dockerfile_path}"
     if [[ -L "${configured_dockerfile}" ]]; then
       write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
@@ -565,35 +576,25 @@ PY
     fi
     if [[ ! -f "${configured_dockerfile}" ]]; then
       if [[ "${dockerfile_path}" == "Dockerfile" \
-        && -f "${build_context_directory}/index.html" \
-        && ! -f "${build_context_directory}/package.json" \
-        && ! -f "${build_context_directory}/requirements.txt" \
-        && ! -f "${build_context_directory}/pyproject.toml" \
-        && ! -f "${build_context_directory}/server.js" \
-        && ! -f "${build_context_directory}/main.py" \
-        && ! -f "${build_context_directory}/main.cpp" \
-        && ! -f "${build_context_directory}/CMakeLists.txt" \
-        && ! -f "${build_context_directory}/Makefile" ]]; then
-        dockerfile_path="${build_directory}/Dockerfile.static"
-        printf '%s\n' 'FROM nginx:alpine' 'COPY . /usr/share/nginx/html' > "${dockerfile_path}"
-        chmod 0600 "${dockerfile_path}"
-      elif [[ "${dockerfile_path}" == "Dockerfile" \
         && -f "${build_context_directory}/server.js" \
         && ! -f "${build_context_directory}/package.json" ]]; then
-        dockerfile_path="${build_directory}/Dockerfile.node"
-        printf '%s\n' 'FROM node:22-alpine' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["node", "server.js"]' > "${dockerfile_path}"
-        chmod 0600 "${dockerfile_path}"
+        build_dockerfile="${build_directory}/Dockerfile.node"
+        printf '%s\n' 'FROM node:22-alpine' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["node", "server.js"]' > "${build_dockerfile}"
+        chmod 0600 "${build_dockerfile}"
       elif [[ "${dockerfile_path}" == "Dockerfile" \
         && -f "${build_context_directory}/main.py" \
         && ! -f "${build_context_directory}/requirements.txt" \
         && ! -f "${build_context_directory}/pyproject.toml" \
         && ! -f "${build_context_directory}/Pipfile" ]]; then
-        dockerfile_path="${build_directory}/Dockerfile.python"
-        printf '%s\n' 'FROM python:3.13-slim' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["python", "main.py"]' > "${dockerfile_path}"
-        chmod 0600 "${dockerfile_path}"
+        build_dockerfile="${build_directory}/Dockerfile.python"
+        printf '%s\n' 'FROM python:3.13-slim' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["python", "main.py"]' > "${build_dockerfile}"
+        chmod 0600 "${build_dockerfile}"
       elif [[ "${dockerfile_path}" == "Dockerfile" \
         && ( -f "${build_context_directory}/main.cpp" || -f "${build_context_directory}/CMakeLists.txt" || -f "${build_context_directory}/Makefile" ) ]]; then
         write_status "failed" "C++ requiere un Dockerfile que compile el proyecto y exponga el puerto HTTP configurado."
+        exit 1
+      elif [[ "${dockerfile_path}" == "Dockerfile" && -f "${build_context_directory}/index.html" ]]; then
+        write_status "failed" "Seleccionaste un despliegue dinámico, pero solo se detectaron archivos estáticos. Cambia el tipo a estático o añade un servidor."
         exit 1
       else
         write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
@@ -601,7 +602,7 @@ PY
       fi
     fi
   fi
-  if [[ "${build_strategy}" == "railpack" ]] && ! command -v railpack >/dev/null 2>&1; then
+  if [[ "${deployment_type}" == "dynamic" && "${build_strategy}" == "railpack" ]] && ! command -v railpack >/dev/null 2>&1; then
     write_status "failed" "Railpack no está instalado en el host. Actualiza el instalador y vuelve a intentar."
     exit 1
   fi
@@ -659,7 +660,7 @@ PY
   fi
 
   built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
-  if [[ "${build_strategy}" == "dockerfile" ]]; then
+  if [[ "${deployment_type}" == "static" || "${build_strategy}" == "dockerfile" ]]; then
     build_arguments=(
       --pull
       --push
@@ -667,7 +668,7 @@ PY
       --label vps-manager.managed=true
       --label "vps-manager.project-id=${project_id}"
       --label "vps-manager.commit=${commit_sha}"
-      --file "${build_context_directory}/${dockerfile_path}"
+      --file "${build_dockerfile}"
       "${build_context_directory}"
     )
   else
@@ -1668,9 +1669,12 @@ else:
         if descriptor >= 0:
             os.close(descriptor)
 if not isinstance(configuration, dict) \
-    or set(configuration) - {"environment", "domain", "port", "domains"} \
+    or set(configuration) - {"environment", "domain", "port", "domains", "deploymentType"} \
     or not isinstance(configuration.get("environment", {}), dict):
     raise SystemExit("Invalid project deployment configuration.")
+deployment_type = configuration.get("deploymentType", "dynamic")
+if deployment_type not in {"static", "dynamic"}:
+    raise SystemExit("Invalid project deployment type.")
 environment = configuration.get("environment", {})
 if len(environment) > 100:
     raise SystemExit("Too many project environment variables.")
@@ -1701,6 +1705,7 @@ for domain in domains:
         raise SystemExit("Invalid project domain configuration.")
 with open(metadata_path, "w", encoding="utf-8") as metadata_file:
     canonical = json.dumps({
+        "deploymentType": deployment_type,
         "environment": dict(sorted(environment.items())),
         "domains": sorted(domains, key=lambda domain: domain["hostname"]),
     }, ensure_ascii=False, separators=(",", ":"))
