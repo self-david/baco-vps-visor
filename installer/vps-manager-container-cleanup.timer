@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically remove stale stopped VPS Manager Swarm task containers
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+Unit=vps-manager-service-agent.service
+
+[Install]
+WantedBy=timers.target

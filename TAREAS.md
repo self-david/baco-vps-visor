@@ -53,6 +53,7 @@ Estado: **parcial**
 - [x] Persistir reinicios de servicios administrados como tareas consultables con historial en PostgreSQL.
 - [x] Añadir operaciones autenticadas por contenedor para detener una tarea Swarm y reiniciarla, con permisos limitados a servicios administrados y registro persistente.
 - [x] Configurar políticas de reinicio `any` para que Swarm reponga automáticamente tareas detenidas o terminadas, incluidas las creadas por VPS Manager.
+- [x] Limpiar cada 15 minutos los contenedores de tareas Swarm detenidos por más de 10 minutos en servicios administrados, sin tocar contenedores externos ni volúmenes.
 - [x] Ampliar el sistema a una cola persistente con handlers registrados, leases, reintentos limitados y recuperación idempotente tras reinicios del backend; reinicios/escalados de servicios y operaciones de contenedor son handlers habilitados.
 
 **Resultado:** backend capaz de administrar Docker.

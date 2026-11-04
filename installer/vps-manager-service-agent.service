@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the fixed VPS Manager Swarm service restart operation
+Description=Process VPS Manager operations and clean stopped Swarm task containers
 After=docker.service
 Requires=docker.service
 

@@ -298,9 +298,11 @@ install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.service" /etc/sy
 install -m 0755 "${SOURCE_DIR}/installer/service-agent.sh" /usr/local/libexec/vps-manager-service-agent
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.path" /etc/systemd/system/vps-manager-service-agent.path
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.service" /etc/systemd/system/vps-manager-service-agent.service
+install -m 0644 "${SOURCE_DIR}/installer/vps-manager-container-cleanup.timer" /etc/systemd/system/vps-manager-container-cleanup.timer
 systemctl daemon-reload
 systemctl enable --now vps-manager-web-update.path
 systemctl enable --now vps-manager-service-agent.path
+systemctl enable --now vps-manager-container-cleanup.timer
 
 export VPS_MANAGER_VERSION VPS_MANAGER_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
 if [[ "${TEST_MODE}" == "true" ]]; then
@@ -314,20 +316,20 @@ else
 fi
 docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
 
-managed_service_ids="$(docker service ls --no-trunc --filter label=vps-manager.managed=true --format '{{.ID}}')" \
+managed_service_names="$(docker service ls --filter label=vps-manager.managed=true --format '{{.Name}}')" \
   || fail "No se pudieron consultar los servicios administrados para activar su recuperación automática."
-while IFS= read -r managed_service_id; do
-  [[ -n "${managed_service_id}" ]] || continue
-  [[ "${managed_service_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]] \
-    || fail "Docker devolvió un identificador de servicio administrado no válido."
-  restart_condition="$(docker service inspect --format '{{.Spec.TaskTemplate.RestartPolicy.Condition}}' "${managed_service_id}")" \
+while IFS= read -r managed_service_name; do
+  [[ -n "${managed_service_name}" ]] || continue
+  [[ "${managed_service_name}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$ ]] \
+    || fail "Docker devolvió un nombre de servicio administrado no válido."
+  restart_condition="$(docker service inspect --format '{{.Spec.TaskTemplate.RestartPolicy.Condition}}' "${managed_service_name}")" \
     || fail "No se pudo consultar la política de reinicio de un servicio administrado."
   if [[ "${restart_condition}" != "any" ]]; then
-    log "Activando recuperación automática para el servicio ${managed_service_id}."
-    docker service update --restart-condition any --detach=true "${managed_service_id}" \
-      || fail "No se pudo activar la recuperación automática para el servicio ${managed_service_id}."
+    log "Activando recuperación automática para el servicio ${managed_service_name}."
+    docker service update --restart-condition any --detach=true "${managed_service_name}" \
+      || fail "No se pudo activar la recuperación automática para el servicio ${managed_service_name}."
   fi
-done <<< "${managed_service_ids}"
+done <<< "${managed_service_names}"
 
 log "Esperando que los servicios de Swarm inicien."
 service_total=0

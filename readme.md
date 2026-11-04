@@ -843,6 +843,7 @@ El sistema debe guardar información sobre el estado original de cada recurso an
 - Consultar redes.
 
 En el panel, detener o reiniciar está disponible para contenedores que pertenezcan a servicios Swarm administrados por VPS Manager. Detener finaliza temporalmente la tarea actual; Swarm crea una tarea de reemplazo y el panel protege su propio contenedor contra detenciones.
+Un temporizador del host elimina cada 15 minutos los contenedores de tareas `exited` de servicios administrados que lleven detenidos más de 10 minutos. No elimina contenedores externos ni volúmenes; los logs de las tareas antiguas dejan de estar disponibles al eliminarlas.
 
 ## 7.4. Operaciones sobre servicios Swarm
 

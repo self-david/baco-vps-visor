@@ -43,8 +43,12 @@ fi
 if [[ -f /etc/systemd/system/vps-manager-service-agent.path ]]; then
   systemctl disable --now vps-manager-service-agent.path
 fi
+if [[ -f /etc/systemd/system/vps-manager-container-cleanup.timer ]]; then
+  systemctl disable --now vps-manager-container-cleanup.timer
+fi
 if [[ -f /etc/systemd/system/vps-manager-web-update.path \
   || -f /etc/systemd/system/vps-manager-service-agent.path \
+  || -f /etc/systemd/system/vps-manager-container-cleanup.timer \
   || -f /etc/systemd/system/vps-manager-web-update.service \
   || -f /etc/systemd/system/vps-manager-service-agent.service ]]; then
   rm -f -- \
@@ -54,6 +58,7 @@ if [[ -f /etc/systemd/system/vps-manager-web-update.path \
     /usr/local/libexec/vps-manager-swarm-node-enroll \
     /etc/systemd/system/vps-manager-service-agent.path \
     /etc/systemd/system/vps-manager-service-agent.service \
+    /etc/systemd/system/vps-manager-container-cleanup.timer \
     /usr/local/libexec/vps-manager-service-agent
   systemctl daemon-reload
 fi

@@ -12,6 +12,80 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+cleanup_stale_swarm_containers() {
+  local cutoff_epoch service_names service_name service_id container_ids container_id inspection cleanup_failed
+  local inspected_id status finished_at container_service_id finished_epoch
+
+  cleanup_failed=false
+  cutoff_epoch="$(date -u -d '10 minutes ago' +%s)" || {
+    echo "Could not calculate the stopped-container cleanup cutoff." >&2
+    return 0
+  }
+  service_names="$(docker service ls \
+    --filter label=vps-manager.managed=true --format '{{.Name}}')" || {
+    echo "Could not list VPS Manager managed Swarm services; skipping container cleanup." >&2
+    return 0
+  }
+
+  while IFS= read -r service_name; do
+    [[ -n "${service_name}" ]] || continue
+    if [[ ! "${service_name}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$ ]]; then
+      echo "Skipped an invalid managed Swarm service name during container cleanup." >&2
+      continue
+    fi
+    if ! service_id="$(docker service inspect --format '{{.ID}}' "${service_name}")" \
+      || [[ ! "${service_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]]; then
+      echo "Could not resolve a valid ID for managed service ${service_name}; skipping its containers." >&2
+      continue
+    fi
+    container_ids="$(docker container ls --all --quiet --no-trunc \
+      --filter status=exited \
+      --filter "label=com.docker.swarm.service.id=${service_id}")" || {
+      echo "Could not list stopped containers for managed service ${service_id}." >&2
+      cleanup_failed=true
+      continue
+    }
+
+    while IFS= read -r container_id; do
+      [[ -n "${container_id}" ]] || continue
+      if [[ ! "${container_id}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+        echo "Skipped an invalid container identifier during cleanup." >&2
+        continue
+      fi
+      if ! inspection="$(docker container inspect \
+        --format '{{.Id}} {{.State.Status}} {{.State.FinishedAt}} {{index .Config.Labels "com.docker.swarm.service.id"}}' \
+        "${container_id}")"; then
+        echo "Could not inspect stopped container ${container_id}; it may already have been removed." >&2
+        cleanup_failed=true
+        continue
+      fi
+      read -r inspected_id status finished_at container_service_id <<< "${inspection}"
+      if [[ "${inspected_id}" != "${container_id}" || "${status}" != "exited"
+        || "${container_service_id}" != "${service_id}" ]]; then
+        continue
+      fi
+      if ! finished_epoch="$(date -u -d "${finished_at}" +%s 2>/dev/null)"; then
+        echo "Could not parse the finish time for stopped container ${container_id}." >&2
+        cleanup_failed=true
+        continue
+      fi
+      if (( finished_epoch <= cutoff_epoch )); then
+        if docker container rm "${container_id}" >/dev/null; then
+          echo "Removed stopped Swarm task container ${container_id} from managed service ${service_id}."
+        else
+          echo "Could not remove stopped Swarm task container ${container_id}." >&2
+          cleanup_failed=true
+        fi
+      fi
+    done <<< "${container_ids}"
+  done <<< "${service_names}"
+  if [[ "${cleanup_failed}" == "true" ]]; then
+    echo "Container cleanup was incomplete; continuing with any queued service operation." >&2
+  fi
+}
+
+cleanup_stale_swarm_containers
+
 if [[ ! -e "${REQUEST_FILE}" && ! -L "${REQUEST_FILE}" ]]; then
   exit 0
 fi
