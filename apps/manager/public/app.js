@@ -2685,42 +2685,6 @@ async function pollManualApplicationDeployment(taskId, applicationName) {
   }
 }
 
-async function loadProjectBranches(preferredBranch = "") {
-  const repository = projectRepositorySelect.value;
-  const requestId = ++projectBranchRequestId;
-  projectProductionBranchSelect.replaceChildren(new Option("Consultando ramas…", ""));
-  projectProductionBranchSelect.disabled = true;
-  if (!repository) {
-    projectProductionBranchSelect.replaceChildren(new Option("Selecciona un repositorio", ""));
-    projectFormStatus.textContent = "Selecciona un repositorio de Gitea.";
-    return;
-  }
-  projectFormStatus.textContent = "Consultando ramas…";
-  try {
-    const query = new URLSearchParams({ repository });
-    const result = await request(`/api/system/applications/gitea/branches?${query}`);
-    if (requestId !== projectBranchRequestId || repository !== projectRepositorySelect.value) return;
-    projectProductionBranchSelect.replaceChildren();
-    for (const branch of result.branches) {
-      projectProductionBranchSelect.add(new Option(branch.name, branch.name));
-    }
-    const preferredBranchExists = result.branches.some((branch) => branch.name === preferredBranch);
-    projectProductionBranchSelect.value = preferredBranchExists
-      ? preferredBranch
-      : preferredBranch ? "" : result.branches[0]?.name ?? "";
-    projectProductionBranchSelect.disabled = result.branches.length === 0;
-    projectFormStatus.textContent = preferredBranch && !preferredBranchExists
-      ? "La rama de producción guardada ya no existe; selecciona otra rama."
-      : result.branches.length
-        ? `${result.branches.length} ramas disponibles.`
-        : "El repositorio no tiene ramas para seleccionar.";
-  } catch (error) {
-    if (requestId !== projectBranchRequestId || repository !== projectRepositorySelect.value) return;
-    projectProductionBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
-    projectFormStatus.textContent = error.message;
-  }
-}
-
 function resetProjectForm() {
   projectForm.reset();
   projectIdInput.value = "";

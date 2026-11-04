@@ -43,6 +43,15 @@ test("manager image includes the GitHub modules imported by the API", async () =
   }
 });
 
+test("browser application script has no duplicate function declarations", async () => {
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const declarations = [...app.matchAll(/^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm)]
+    .map(([, name]) => name);
+
+  assert.ok(declarations.length > 0);
+  assert.equal(new Set(declarations).size, declarations.length);
+});
+
 test("all HTML form patterns compile in modern browsers", async () => {
   const [page, applicationCatalogComponent] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
