@@ -557,10 +557,49 @@ PY
     write_status "failed" "La ruta de contexto configurada no es un directorio válido del código."
     exit 1
   fi
-  if [[ "${build_strategy}" == "dockerfile" ]] \
-    && [[ -L "${build_context_directory}/${dockerfile_path}" || ! -f "${build_context_directory}/${dockerfile_path}" ]]; then
-    write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
-    exit 1
+  if [[ "${build_strategy}" == "dockerfile" ]]; then
+    configured_dockerfile="${build_context_directory}/${dockerfile_path}"
+    if [[ -L "${configured_dockerfile}" ]]; then
+      write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
+      exit 1
+    fi
+    if [[ ! -f "${configured_dockerfile}" ]]; then
+      if [[ "${dockerfile_path}" == "Dockerfile" \
+        && -f "${build_context_directory}/index.html" \
+        && ! -f "${build_context_directory}/package.json" \
+        && ! -f "${build_context_directory}/requirements.txt" \
+        && ! -f "${build_context_directory}/pyproject.toml" \
+        && ! -f "${build_context_directory}/server.js" \
+        && ! -f "${build_context_directory}/main.py" \
+        && ! -f "${build_context_directory}/main.cpp" \
+        && ! -f "${build_context_directory}/CMakeLists.txt" \
+        && ! -f "${build_context_directory}/Makefile" ]]; then
+        dockerfile_path="${build_directory}/Dockerfile.static"
+        printf '%s\n' 'FROM nginx:alpine' 'COPY . /usr/share/nginx/html' > "${dockerfile_path}"
+        chmod 0600 "${dockerfile_path}"
+      elif [[ "${dockerfile_path}" == "Dockerfile" \
+        && -f "${build_context_directory}/server.js" \
+        && ! -f "${build_context_directory}/package.json" ]]; then
+        dockerfile_path="${build_directory}/Dockerfile.node"
+        printf '%s\n' 'FROM node:22-alpine' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["node", "server.js"]' > "${dockerfile_path}"
+        chmod 0600 "${dockerfile_path}"
+      elif [[ "${dockerfile_path}" == "Dockerfile" \
+        && -f "${build_context_directory}/main.py" \
+        && ! -f "${build_context_directory}/requirements.txt" \
+        && ! -f "${build_context_directory}/pyproject.toml" \
+        && ! -f "${build_context_directory}/Pipfile" ]]; then
+        dockerfile_path="${build_directory}/Dockerfile.python"
+        printf '%s\n' 'FROM python:3.13-slim' 'WORKDIR /app' 'COPY . .' 'EXPOSE 3000' 'CMD ["python", "main.py"]' > "${dockerfile_path}"
+        chmod 0600 "${dockerfile_path}"
+      elif [[ "${dockerfile_path}" == "Dockerfile" \
+        && ( -f "${build_context_directory}/main.cpp" || -f "${build_context_directory}/CMakeLists.txt" || -f "${build_context_directory}/Makefile" ) ]]; then
+        write_status "failed" "C++ requiere un Dockerfile que compile el proyecto y exponga el puerto HTTP configurado."
+        exit 1
+      else
+        write_status "failed" "La ruta configurada no contiene un Dockerfile regular."
+        exit 1
+      fi
+    fi
   fi
   if [[ "${build_strategy}" == "railpack" ]] && ! command -v railpack >/dev/null 2>&1; then
     write_status "failed" "Railpack no está instalado en el host. Actualiza el instalador y vuelve a intentar."

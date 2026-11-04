@@ -13,11 +13,12 @@ test("project deployment configuration parser imports its fingerprint dependency
   assert.match(parser[1], /^import hashlib$/m);
 });
 
-test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => {
-  const [page, projectsPanel, projectSettingsDialog, projectImport] = await Promise.all([
+test("projects tab exposes GitHub OAuth, imports, and a route-based detail view", async () => {
+  const [page, projectsPanel, projectSettingsForm, projectDetailView, projectImport] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectsPanel.astro", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/ProjectSettingsDialog.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ProjectSettingsForm.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ProjectDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
   ]);
 
@@ -37,6 +38,13 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectsPanel, /github\.com\/settings\/applications\/new/);
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
   assert.match(projectsPanel, /Guardar y continuar/);
+  assert.match(page, /<ProjectDetailView \/>/);
+  assert.match(projectDetailView, /data-project-tab="deploy">Deploy/);
+  assert.match(projectDetailView, /data-project-tab="settings">Configuración/);
+  assert.match(projectDetailView, /href="\/#tab-projects"/);
+  assert.match(projectDetailView, /project-detail-operation-status/);
+  assert.doesNotMatch(projectDetailView, /<dialog/);
+  assert.doesNotMatch(projectSettingsForm, /<dialog|data-close-project-dialog/);
   assert.match(page, /src="\/project-import\.js"/);
   assert.match(projectsPanel, /webkitdirectory directory multiple/);
   assert.match(projectImport, /githubConnectButton\.addEventListener\("click"/);
@@ -46,19 +54,19 @@ test("projects tab exposes GitHub OAuth and drag-and-drop imports", async () => 
   assert.match(projectImport, /zipInput\.addEventListener\("change"/);
   assert.match(projectImport, /folderInput\.addEventListener\("change"/);
   assert.match(projectImport, /importButton\.addEventListener\("click"/);
-  assert.match(projectSettingsDialog, /<option value="dockerfile">Dockerfile<\/option>/);
-  assert.match(projectSettingsDialog, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
+  assert.match(projectSettingsForm, /<option value="dockerfile">Dockerfile<\/option>/);
+  assert.match(projectSettingsForm, /<option value="railpack">Railpack \(autodetección\)<\/option>/);
   assert.match(projectsPanel, /name="productionBranch"/);
-  assert.match(projectSettingsDialog, /name="autoDeploy"/);
-  assert.match(projectSettingsDialog, /id="project-dialog-content"/);
+  assert.match(projectSettingsForm, /name="autoDeploy"/);
 });
 
-test("project file selection displays a nested filename tree and keeps project settings in its dialog", async () => {
-  const [importer, application, dialog, serviceAgent] = await Promise.all([
+test("project file selection displays a nested filename tree and project cards offer guarded deletion", async () => {
+  const [importer, application, projectDetailView, serviceAgent, server] = await Promise.all([
     readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/ProjectSettingsDialog.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ProjectDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../server.mjs", import.meta.url), "utf8"),
   ]);
   const rendererStart = application.indexOf("function renderProjects() {");
   const rendererEnd = application.indexOf("function resetDomainZoneForm()", rendererStart);
@@ -67,10 +75,20 @@ test("project file selection displays a nested filename tree and keeps project s
   assert.match(importer, /function renderFileTree\(paths\)/);
   assert.match(importer, /filesInput\.addEventListener\("change"/);
   assert.match(importer, /selectedArchiveInfo\.paths/);
-  assert.match(renderer, /projectDialogContent\.append\(projectDetails\)/);
-  assert.match(renderer, /card\.append\(makeButton\("Administrar"/);
-  assert.match(dialog, /id="project-dialog-content"/);
+  assert.match(renderer, /manage\.href = `\/projects\/\$\{encodeURIComponent\(project\.id\)\}`/);
+  assert.match(renderer, /button-danger/);
+  assert.match(renderer, /Primero retira el servicio desplegado y desasigna sus dominios/);
+  assert.match(application, /window\.addEventListener\("popstate", \(\) => renderProjects\(\)\)/);
+  assert.match(projectDetailView, /data-project-tab-panel="deploy"/);
+  assert.match(projectDetailView, /id="project-detail-file-tree"/);
+  assert.match(server, /source.{0,10}files/);
+  assert.match(server, /validateProjectArchive\(archive\)/);
+  assert.match(server, /projects.{0,30}0-9a-f/);
   assert.match(serviceAgent, /has_root_contents/);
+  assert.match(serviceAgent, /FROM nginx:alpine/);
+  assert.match(serviceAgent, /CMD \["node", "server\.js"\]/);
+  assert.match(serviceAgent, /CMD \["python", "main\.py"\]/);
+  assert.match(serviceAgent, /C\+\+ requiere un Dockerfile/);
   assert.doesNotMatch(serviceAgent, /archive must contain one root directory/);
 });
 

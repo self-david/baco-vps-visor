@@ -44,6 +44,7 @@ import { createGithubOAuth } from "./github-oauth.mjs";
 import { createGithubWebhookProcessor } from "./github-webhooks.mjs";
 import { validateProjectId, validateProjectInput } from "./project-manager.mjs";
 import { ProjectArchiveValidationError, validateProjectArchive } from "./project-archive-validation.mjs";
+import { detectProjectBuildProfile } from "./public/project-archive.mjs";
 import {
   getContainerMetricsHistory,
   getContainerMetricAlerts,
@@ -1058,7 +1059,12 @@ async function getDockerInfo() {
 async function serveStatic(pathname, response) {
   let fileName;
   try {
-    fileName = pathname === "/" ? "index.html" : decodeURIComponent(pathname).slice(1);
+    const decodedPath = decodeURIComponent(pathname);
+    fileName = decodedPath === "/"
+      ? "index.html"
+      : /^\/projects\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decodedPath)
+        ? "index.html"
+        : decodedPath.slice(1);
   } catch {
     respond(response, 400, "Invalid asset path");
     return;
@@ -2032,13 +2038,17 @@ const server = createServer(async (request, response) => {
       if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) {
         throw new RequestError(400, "El archivo no parece ser un ZIP válido.");
       }
-      validateProjectArchive(archive);
+      const projectFiles = validateProjectArchive(archive);
+      const buildProfile = detectProjectBuildProfile(projectFiles);
       const name = request.headers["x-project-name"];
-      const buildStrategy = request.headers["x-build-strategy"] ?? "railpack";
+      const buildStrategy = request.headers["x-build-strategy"] ?? buildProfile.buildStrategy;
       project = validateProjectInput({
         name,
         sourceType: "upload",
         buildStrategy,
+        internalPort: buildStrategy === "dockerfile" && buildProfile.isStaticSite
+          ? buildProfile.internalPort
+          : undefined,
         autoDeploy: false,
       });
       project = await createProject(project);
@@ -2083,6 +2093,42 @@ const server = createServer(async (request, response) => {
       }
       console.error("Could not import uploaded project:", error);
       respondJson(response, 503, { error: "No se pudo crear el proyecto a partir de los archivos." });
+    }
+    return;
+  }
+
+  const projectSourceFilesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/source\/files$/);
+  if (projectSourceFilesMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    try {
+      const projectId = validateProjectId(projectSourceFilesMatch[1]);
+      const project = await getProject(projectId);
+      if (!project) throw new RequestError(404, "No se encontró el proyecto.");
+      if (project.sourceType !== "upload") {
+        throw new RequestError(409, "La lista de archivos solo está disponible para proyectos subidos.");
+      }
+      const source = await getLatestProjectUploadSource(projectId);
+      if (!source) throw new RequestError(404, "El proyecto todavía no tiene archivos cargados.");
+      const archive = await readFile(projectUploadSourcePath(projectId, source.sourceDigest));
+      respondJson(response, 200, { files: validateProjectArchive(archive) });
+    } catch (error) {
+      if (error instanceof RequestError || error instanceof ProjectArchiveValidationError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      if (error?.code === "INVALID_PROJECT_ID") {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      console.error("Could not list uploaded project files:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar los archivos del proyecto." });
     }
     return;
   }

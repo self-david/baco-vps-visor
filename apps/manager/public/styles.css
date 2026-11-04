@@ -103,15 +103,22 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .project-actions a:not(.button) { color: #9eb8ff; overflow-wrap: anywhere; }
 .project-actions a.button { text-decoration: none; }
 .project-fields { display: grid; gap: 10px; }
-.project-dialog { width: min(620px, calc(100% - 24px)); }
-.project-dialog .form-stack { margin-top: 8px; }
-.project-dialog-content { display: grid; gap: 12px; margin-top: 16px; }
-.project-dialog-content > section { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid #263247; }
-.project-dialog-content > section[hidden] { display: none; }
-.project-dialog-content p { margin: 0; }
-.project-dialog-content > section > details { padding: 10px 0; border-top: 1px solid #263247; }
-.project-dialog-content summary { color: #cbd6e7; cursor: pointer; }
-.project-dialog .project-upload-form label { flex: 0 0 100%; }
+.button-danger { border-color: #78454c; color: #ffd2d2; background: #3a2027; }
+.button-danger:hover { background: #4a2830; }
+.project-detail-view { display: grid; gap: 14px; }
+.project-detail-header { padding: 22px; }
+.project-detail-header h2 { overflow-wrap: anywhere; }
+.project-detail-header .muted { margin: 12px 0 0; }
+.project-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px; border-bottom: 1px solid #263247; }
+.project-tab { flex: 0 0 auto; padding: 9px 13px; border: 1px solid transparent; border-radius: 8px 8px 0 0; color: #9ba8bc; background: transparent; font: inherit; font-size: .86rem; font-weight: 650; cursor: pointer; }
+.project-tab[aria-selected="true"] { border-color: #34435b; border-bottom-color: #8eafff; color: #dce5f4; background: #172235; }
+.project-tab-panel { min-width: 0; padding: 22px; }
+.project-tab-panel h3 { margin-bottom: 16px; }
+.project-tab-panel > div { min-width: 0; }
+.project-tab-panel > div > p { overflow-wrap: anywhere; }
+.project-tab-panel > [hidden] { display: none; }
+.project-tab-panel .form-stack { margin-top: 12px; }
+#project-detail-operation-status { min-width: 0; }
 .project-history { display: grid; gap: 8px; margin-top: 12px; padding-left: 20px; color: #aebbd0; font-size: .84rem; }
 .project-upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .project-upload-form input[type="file"] { flex: 1 1 220px; min-width: 0; color: #aebbd0; }

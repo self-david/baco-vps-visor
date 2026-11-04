@@ -42,6 +42,8 @@ export function validateProjectArchive(archive) {
   let fileCount = 0;
   let uncompressedBytes = 0;
   const paths = new Set();
+  const filePaths = [];
+  const entries = [];
   for (let index = 0; index < entryCount; index += 1) {
     if (offset + 46 > archive.length || archive.readUInt32LE(offset) !== 0x02014b50) {
       rejectArchive(400, "El ZIP está incompleto o no es válido.");
@@ -67,6 +69,7 @@ export function validateProjectArchive(archive) {
       rejectArchive(400, "El ZIP contiene una ruta no válida o duplicada.");
     }
     paths.add(path);
+    entries.push({ path, directory: isDirectory });
     const externalAttributes = archive.readUInt32LE(offset + 38);
     const mode = (externalAttributes >>> 16) & 0xf000;
     if (madeBy === 3 && mode !== 0
@@ -75,6 +78,7 @@ export function validateProjectArchive(archive) {
     }
     if (!isDirectory) {
       fileCount += 1;
+      filePaths.push(path);
       uncompressedBytes += archive.readUInt32LE(offset + 24);
       if (fileCount > maximumFiles || uncompressedBytes > maximumUncompressedBytes) {
         rejectArchive(413, "El contenido descomprimido del ZIP supera los límites permitidos.");
@@ -85,4 +89,14 @@ export function validateProjectArchive(archive) {
   if (!fileCount || offset !== directoryOffset + directorySize) {
     rejectArchive(400, "El ZIP no contiene archivos de proyecto válidos.");
   }
+  const topLevelDirectories = new Set(entries
+    .filter((entry) => entry.directory && !entry.path.includes("/"))
+    .map((entry) => entry.path));
+  const root = topLevelDirectories.values().next().value ?? entries[0].path.split("/")[0];
+  const hasRootContents = entries.some((entry) => entry.path.startsWith(`${root}/`));
+  const stripRoot = entries.every((entry) => entry.path === root || entry.path.startsWith(`${root}/`))
+    && (topLevelDirectories.size === 1 || hasRootContents);
+  return stripRoot
+    ? filePaths.map((path) => path.split("/").slice(1).join("/"))
+    : filePaths;
 }

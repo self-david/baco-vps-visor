@@ -105,7 +105,6 @@ const giteaDefaultBranchSelect = document.querySelector("#gitea-default-branch")
 const giteaDefaultBranchSubmit = document.querySelector("#gitea-default-branch-submit");
 const giteaBranchStatus = document.querySelector("#gitea-branch-status");
 const projectForm = document.querySelector("#project-form");
-const projectFormTitle = document.querySelector("#project-dialog-title");
 const projectFormStatus = document.querySelector("#project-form-status");
 const projectIdInput = document.querySelector("#project-id");
 const projectNameInput = document.querySelector("#project-name");
@@ -113,10 +112,6 @@ const projectDescriptionInput = document.querySelector("#project-description");
 const projectRepositorySelect = document.querySelector("#project-repository");
 const projectProductionBranchSelect = document.querySelector("#project-production-branch");
 const projectSaveButton = document.querySelector("#project-save");
-const projectCancelEditButton = document.querySelector("[data-close-project-dialog]");
-const projectDialog = document.querySelector("#project-dialog");
-const projectDialogSummary = document.querySelector("#project-dialog-summary");
-const projectDialogContent = document.querySelector("#project-dialog-content");
 const projectInstallationSelect = document.querySelector("#project-installation");
 const projectBuildStrategySelect = document.querySelector("#project-build-strategy");
 const projectDockerfileField = document.querySelector("#project-dockerfile-field");
@@ -131,6 +126,8 @@ const githubImportStatus = document.querySelector("#github-import-status");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
+const dashboardPanels = document.querySelector("#dashboard-panels");
+const projectDetailView = document.querySelector("#project-detail-view");
 const projectEnvironmentDialog = document.querySelector("#project-environment-dialog");
 const projectEnvironmentForm = document.querySelector("#project-environment-form");
 const projectEnvironmentId = document.querySelector("#project-environment-id");
@@ -1453,9 +1450,7 @@ function renderLegacyProjects() {
       projectNameInput.value = project.name;
       projectDescriptionInput.value = project.description;
       projectRepositorySelect.value = project.repository;
-      projectFormTitle.textContent = "Editar proyecto";
       projectSaveButton.textContent = "Guardar cambios";
-      projectCancelEditButton.classList.remove("hidden");
       await loadProjectBranches(project.productionBranch);
       projectForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
@@ -1736,35 +1731,113 @@ async function loadProjectBranches(preferredBranch = "main") {
   }
 }
 
-function openProjectDialog(project = null) {
+function setProjectTab(tabName) {
+  for (const button of projectDetailView.querySelectorAll("[data-project-tab]")) {
+    const selected = button.dataset.projectTab === tabName;
+    button.setAttribute("aria-selected", String(selected));
+  }
+  for (const panel of projectDetailView.querySelectorAll("[data-project-tab-panel]")) {
+    panel.hidden = panel.dataset.projectTabPanel !== tabName;
+  }
+}
+
+function renderProjectFileTree(paths, list) {
+  const root = { children: new Map() };
+  for (const path of paths) {
+    let node = root;
+    for (const part of path.split("/")) {
+      if (!node.children.has(part)) node.children.set(part, { children: new Map() });
+      node = node.children.get(part);
+    }
+  }
+  const appendNodes = (parent, children) => {
+    for (const [name, node] of [...children].sort(([left], [right]) => left.localeCompare(right, "es"))) {
+      const item = document.createElement("li");
+      item.textContent = name;
+      if (node.children.size) {
+        item.classList.add("project-file-directory");
+        const nested = document.createElement("ul");
+        appendNodes(nested, node.children);
+        item.append(nested);
+      }
+      parent.append(item);
+    }
+  };
+  list.replaceChildren();
+  appendNodes(list, root.children);
+}
+
+function openProjectRoute(project) {
+  history.pushState(null, "", `/projects/${encodeURIComponent(project.id)}`);
+  renderProjects();
+}
+
+function returnToProjectsRoute() {
+  history.pushState(null, "", "/#tab-projects");
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+}
+
+function renderProjectRoute() {
+  const routeMatch = window.location.pathname.match(/^\/projects\/([0-9a-f-]{36})$/i);
+  const projectId = routeMatch?.[1].toLowerCase() ?? null;
+  const project = projectId ? projects.find((item) => item.id.toLowerCase() === projectId) : null;
+  const showingProject = Boolean(routeMatch);
+  dashboardPanels.classList.toggle("hidden", showingProject);
+  projectDetailView.classList.toggle("hidden", !showingProject);
+  projectDetailView.hidden = !showingProject;
+
+  if (!showingProject) {
+    currentProjectEdit = null;
+    projectsList.parentElement.insertBefore(projectsStatus, projectsList);
+    return null;
+  }
+  document.querySelector("#project-detail-operation-status").append(projectsStatus);
+  if (!project) {
+    document.querySelector("#project-detail-title").textContent = "Proyecto no encontrado";
+    document.querySelector("#project-detail-summary").textContent = "No se encontró el proyecto solicitado.";
+    return null;
+  }
+
   currentProjectEdit = project;
   projectForm.reset();
-  if (!project) return;
-  projectIdInput.value = project?.id ?? "";
-  projectNameInput.value = project?.name ?? "";
-  projectDescriptionInput.value = project?.description ?? "";
-  projectBuildStrategySelect.value = project?.buildStrategy ?? "dockerfile";
-  document.querySelector("#project-build-context").value = project?.buildContext ?? ".";
-  document.querySelector("#project-dockerfile").value = project?.dockerfilePath ?? "Dockerfile";
-  document.querySelector("#project-port").value = String(project?.internalPort ?? 3000);
-  document.querySelector("#project-auto-deploy").checked = project?.autoDeploy ?? true;
-  projectFormTitle.textContent = project.name;
+  projectIdInput.value = project.id;
+  projectNameInput.value = project.name;
+  projectDescriptionInput.value = project.description ?? "";
+  projectBuildStrategySelect.value = project.buildStrategy ?? "dockerfile";
+  document.querySelector("#project-build-context").value = project.buildContext ?? ".";
+  document.querySelector("#project-dockerfile").value = project.dockerfilePath ?? "Dockerfile";
+  document.querySelector("#project-port").value = String(project.internalPort ?? 3000);
+  document.querySelector("#project-auto-deploy").checked = project.autoDeploy ?? true;
+  document.querySelector("#project-detail-title").textContent = project.name;
+  document.querySelector("#project-detail-state").textContent = project.deployment
+    ? `${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} réplicas`
+    : project.latestBuild ? "Build listo" : "Sin despliegue";
+  document.querySelector("#project-detail-summary").textContent = project.sourceType === "upload"
+    ? "Proyecto subido desde ZIP o archivos."
+    : `GitHub · ${project.repository} · rama ${project.productionBranch}`;
   projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
-  projectDialogSummary.textContent = `${project.sourceType === "upload" ? "Proyecto desde archivos" : `GitHub · ${project.repository}`} · ${project.deployment ? "Desplegado" : project.latestBuild ? "Build disponible" : "Sin build"}`;
-  for (const section of projectDialogContent.children) {
-    section.hidden = section.dataset.projectId !== project.id;
-  }
   projectDockerfileField.classList.toggle("hidden", projectBuildStrategySelect.value !== "dockerfile");
-  projectDialog.showModal();
+  return project;
 }
 
 function renderProjects() {
-  const openProjectId = projectDialog.open ? currentProjectEdit?.id : null;
   projectsList.replaceChildren();
-  projectDialogContent.replaceChildren();
+  for (const id of [
+    "project-detail-build-info",
+    "project-detail-deployment-info",
+    "project-detail-actions",
+    "project-detail-source-info",
+    "project-detail-file-tree",
+    "project-detail-upload",
+    "project-detail-environment",
+    "project-detail-domains",
+    "project-detail-history",
+  ]) document.querySelector(`#${id}`).replaceChildren();
+  const selectedProjectId = window.location.pathname.match(/^\/projects\/([0-9a-f-]{36})$/i)?.[1].toLowerCase();
   if (projects.length === 0) {
     projectsStatus.textContent = "Todavía no hay proyectos. Crea uno para empezar.";
+    renderProjectRoute();
     return;
   }
   projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada se despliegan automáticamente cuando GitHub OAuth y el webhook público están disponibles.`;
@@ -1772,10 +1845,6 @@ function renderProjects() {
     const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     const card = document.createElement("article");
     card.className = "project-item";
-    const projectDetails = document.createElement("section");
-    projectDetails.className = "project-detail-section";
-    projectDetails.dataset.projectId = project.id;
-    projectDetails.hidden = true;
     const buildInfo = document.createElement("p");
     buildInfo.className = "muted";
     buildInfo.textContent = project.latestBuild
@@ -1788,7 +1857,6 @@ function renderProjects() {
     deploymentInfo.textContent = project.deployment
       ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} réplicas · ${project.deployment.image}`
       : "No hay un servicio desplegado.";
-    projectDetails.append(buildInfo, deploymentInfo);
     const heading = document.createElement("div");
     heading.className = "card-heading";
     const title = document.createElement("h4");
@@ -1817,9 +1885,58 @@ function renderProjects() {
       button.addEventListener("click", handler);
       return button;
     };
-    card.append(makeButton("Administrar", () => openProjectDialog(project)));
+    const manage = document.createElement("a");
+    manage.className = "button secondary";
+    manage.href = `/projects/${encodeURIComponent(project.id)}`;
+    manage.textContent = "Administrar";
+    manage.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openProjectRoute(project);
+    });
+    const removeProject = makeButton("Eliminar", async () => {
+      if (!confirm(`¿Eliminar el proyecto ${project.name}? La operación no se puede deshacer. Primero retira el servicio desplegado y desasigna sus dominios; de lo contrario, el servidor rechazará la eliminación.`)) return;
+      removeProject.disabled = true;
+      try {
+        await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+        if (selectedProjectId === project.id.toLowerCase()) returnToProjectsRoute();
+        await loadProjects();
+      } catch (error) {
+        projectsStatus.textContent = error.message;
+      } finally {
+        removeProject.disabled = false;
+      }
+    });
+    removeProject.classList.add("button-danger");
+    card.append(manage, removeProject);
+    projectsList.append(card);
+    if (selectedProjectId !== project.id.toLowerCase()) continue;
+
+    document.querySelector("#project-detail-build-info").append(buildInfo);
+    document.querySelector("#project-detail-deployment-info").append(deploymentInfo);
 
     if (project.sourceType === "upload") {
+      document.querySelector("#project-detail-source-info").textContent = project.latestSource
+        ? `ZIP cargado · ${project.latestSource.sourceDigest.slice(0, 12)} · ${Math.ceil(project.latestSource.sizeBytes / 1024)} KiB`
+        : "Aún no se han cargado archivos.";
+      const projectFileTree = document.querySelector("#project-detail-file-tree");
+      if (project.latestSource) {
+        projectFileTree.replaceChildren(Object.assign(document.createElement("li"), {
+          textContent: "Consultando archivos…",
+        }));
+        void request(`/api/projects/${encodeURIComponent(project.id)}/source/files`)
+          .then(({ files }) => {
+            if (currentProjectEdit?.id === project.id) renderProjectFileTree(files, projectFileTree);
+          })
+          .catch((error) => {
+            if (currentProjectEdit?.id !== project.id) return;
+            projectFileTree.replaceChildren(Object.assign(document.createElement("li"), {
+              textContent: `No se pudieron consultar los archivos: ${error.message}`,
+            }));
+          });
+      } else {
+        projectFileTree.replaceChildren();
+      }
       const uploadForm = document.createElement("form");
       uploadForm.className = "project-upload-form";
       const uploadLabel = document.createElement("label");
@@ -1859,7 +1976,10 @@ function renderProjects() {
           upload.disabled = false;
         }
       });
-      projectDetails.append(uploadForm);
+      document.querySelector("#project-detail-upload").append(uploadForm);
+    } else {
+      document.querySelector("#project-detail-source-info").textContent =
+        `Repositorio ${project.repository} · rama ${project.productionBranch}`;
     }
 
     actions.append(makeButton("Construir", async () => {
@@ -1932,17 +2052,7 @@ function renderProjects() {
         }
       }));
     }
-    actions.append(makeButton("Eliminar proyecto", async () => {
-      if (!confirm(`¿Eliminar la configuración de ${project.name}?`)) return;
-      try {
-        await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
-        projectDialog.close();
-        await loadProjects();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-      }
-    }, Boolean(currentDeployment || assignedDomains.length)));
-    projectDetails.append(actions);
+    document.querySelector("#project-detail-actions").append(actions);
 
     const history = document.createElement("details");
     const summary = document.createElement("summary");
@@ -1958,7 +2068,7 @@ function renderProjects() {
       }
       history.append(list);
     }
-    projectDetails.append(history);
+    document.querySelector("#project-detail-history").append(history);
 
     const domainsDetails = document.createElement("details");
     const domainsSummary = document.createElement("summary");
@@ -2066,7 +2176,7 @@ function renderProjects() {
       }
     });
     domainsDetails.append(domainForm);
-    projectDetails.append(domainsDetails);
+    document.querySelector("#project-detail-domains").append(domainsDetails);
 
     const environmentDetails = document.createElement("details");
     const environmentSummary = document.createElement("summary");
@@ -2116,15 +2226,10 @@ function renderProjects() {
         saveEnvironment.disabled = false;
       }
     });
-    projectDetails.append(environmentDetails);
-    projectDialogContent.append(projectDetails);
-    projectsList.append(card);
+    document.querySelector("#project-detail-environment").append(environmentDetails);
   }
-  if (openProjectId) {
-    for (const section of projectDialogContent.children) {
-      section.hidden = section.dataset.projectId !== openProjectId;
-    }
-  }
+  const project = renderProjectRoute();
+  if (project) setProjectTab("deploy");
 }
 
 function resetDomainZoneForm() {
@@ -2758,11 +2863,23 @@ async function installGitea() {
   }
 }
 
-document.querySelector("#project-dialog-close").addEventListener("click", () => projectDialog.close());
-projectCancelEditButton.addEventListener("click", () => projectDialog.close());
-projectDialog.addEventListener("close", () => {
-  currentProjectEdit = null;
-});
+for (const tab of projectDetailView.querySelectorAll("[data-project-tab]")) {
+  tab.addEventListener("click", () => setProjectTab(tab.dataset.projectTab));
+  tab.addEventListener("keydown", (event) => {
+    const tabs = [...projectDetailView.querySelectorAll("[data-project-tab]")];
+    const currentIndex = tabs.indexOf(tab);
+    const nextIndex = event.key === "ArrowRight" ? (currentIndex + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (currentIndex - 1 + tabs.length) % tabs.length
+        : event.key === "Home" ? 0
+          : event.key === "End" ? tabs.length - 1
+            : -1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    setProjectTab(tabs[nextIndex].dataset.projectTab);
+  });
+}
+window.addEventListener("popstate", () => renderProjects());
 projectInstallationSelect.addEventListener("change", async () => {
   githubImportStatus.textContent = "";
   await loadProjectRepositories();
@@ -2800,7 +2917,6 @@ projectForm.addEventListener("submit", async (event) => {
       method: "PATCH",
       body: JSON.stringify(input),
     });
-    projectDialog.close();
     await Promise.all([loadProjects(), loadGithubStatus()]);
     projectsStatus.textContent = "Configuración del proyecto guardada.";
   } catch (error) {

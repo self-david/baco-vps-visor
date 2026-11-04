@@ -2,6 +2,56 @@ const maximumArchiveBytes = 32 * 1024 * 1024;
 const maximumArchiveEntries = 100_000;
 const utf8 = new TextEncoder();
 
+export function detectProjectBuildProfile(paths) {
+  const fileNames = new Set(paths.map((path) => path.split("/").at(-1).toLowerCase()));
+  const hasDockerfile = fileNames.has("dockerfile");
+  const manifestFiles = [
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "pipfile",
+    "cargo.toml",
+    "go.mod",
+    "cmakelists.txt",
+    "makefile",
+    "composer.json",
+    "pom.xml",
+    "gemfile",
+    "deno.json",
+    "deno.jsonc",
+    "bun.lock",
+    "bun.lockb",
+  ];
+  const hasManifest = manifestFiles.some((fileName) => fileNames.has(fileName));
+  const simpleNodeServer = fileNames.has("server.js")
+    && !hasManifest
+    && !fileNames.has("main.py")
+    && !fileNames.has("main.cpp");
+  const simplePythonApp = fileNames.has("main.py")
+    && !hasManifest
+    && !fileNames.has("server.js")
+    && !fileNames.has("main.cpp");
+  const requiresCustomDockerfile = fileNames.has("main.cpp")
+    || fileNames.has("cmakelists.txt")
+    || fileNames.has("makefile");
+  const isStaticSite = paths.includes("index.html")
+    && !hasDockerfile
+    && !hasManifest
+    && !simpleNodeServer
+    && !simplePythonApp
+    && !requiresCustomDockerfile;
+  return {
+    buildStrategy: hasDockerfile || isStaticSite || simpleNodeServer || simplePythonApp || requiresCustomDockerfile
+      ? "dockerfile"
+      : "railpack",
+    internalPort: isStaticSite ? 80 : 3000,
+    isStaticSite,
+    simpleNodeServer,
+    simplePythonApp,
+    requiresCustomDockerfile,
+  };
+}
+
 function crc32(bytes) {
   let crc = 0xffffffff;
   for (const byte of bytes) {

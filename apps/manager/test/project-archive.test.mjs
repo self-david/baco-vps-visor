@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProjectZip, inspectProjectZip } from "../public/project-archive.mjs";
+import {
+  createProjectZip,
+  detectProjectBuildProfile,
+  inspectProjectZip,
+} from "../public/project-archive.mjs";
 import { validateProjectArchive } from "../project-archive-validation.mjs";
 
 function fileWithPath(name, content, path) {
@@ -12,6 +16,21 @@ function fileWithPath(name, content, path) {
   return file;
 }
 
+test("recommends deploy strategies only for supported project layouts", () => {
+  assert.deepEqual(detectProjectBuildProfile(["index.html", "assets/site.css"]), {
+    buildStrategy: "dockerfile",
+    internalPort: 80,
+    isStaticSite: true,
+    simpleNodeServer: false,
+    simplePythonApp: false,
+    requiresCustomDockerfile: false,
+  });
+  assert.equal(detectProjectBuildProfile(["server.js"]).simpleNodeServer, true);
+  assert.equal(detectProjectBuildProfile(["main.py"]).simplePythonApp, true);
+  assert.equal(detectProjectBuildProfile(["package.json", "server.js"]).buildStrategy, "railpack");
+  assert.equal(detectProjectBuildProfile(["main.cpp"]).requiresCustomDockerfile, true);
+});
+
 test("creates a ZIP with one project root and UTF-8 filenames", async () => {
   const archive = await createProjectZip([
     { file: fileWithPath("index.html", "<h1>Hola</h1>", "mi-app/index.html"), path: "mi-app/index.html" },
@@ -22,7 +41,10 @@ test("creates a ZIP with one project root and UTF-8 filenames", async () => {
   assert.ok(archive.size < 1024);
   const result = await inspectProjectZip(archive);
   assert.deepEqual(result, { root: "mi-app", paths: ["index.html", "Dockerfile"], hasDockerfile: true });
-  validateProjectArchive(Buffer.from(await archive.arrayBuffer()));
+  assert.deepEqual(validateProjectArchive(Buffer.from(await archive.arrayBuffer())), [
+    "index.html",
+    "Dockerfile",
+  ]);
 
   const bytes = new Uint8Array(await archive.arrayBuffer());
   const view = new DataView(bytes.buffer);
@@ -51,7 +73,7 @@ test("accepts root-level files and multiple ZIP roots while rejecting unsafe fol
     multipleRoots.write("bravo/index.html", offset, "utf8");
     offset = multipleRoots.indexOf(entryName, offset + entryName.length);
   }
-  assert.doesNotThrow(() => validateProjectArchive(multipleRoots));
+  assert.deepEqual(validateProjectArchive(multipleRoots), ["bravo/index.html"]);
   assert.deepEqual((await inspectProjectZip(new Blob([multipleRoots]))).paths, ["bravo/index.html"]);
   const rootFile = await createProjectZip([
     { file: fileWithPath("index.html", "<h1>Solo</h1>", "index.html"), path: "index.html" },
@@ -62,7 +84,7 @@ test("accepts root-level files and multiple ZIP roots while rejecting unsafe fol
     hasDockerfile: false,
   });
   const rootFileArchive = Buffer.from(await rootFile.arrayBuffer());
-  assert.doesNotThrow(() => validateProjectArchive(rootFileArchive));
+  assert.deepEqual(validateProjectArchive(rootFileArchive), ["index.html"]);
 
   const unsafePath = Buffer.from(await archive.arrayBuffer());
   const unsafeName = Buffer.from("alpha/index.html");

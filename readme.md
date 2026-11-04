@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. La integración debe validarse en un VPS antes de considerarse lista para producción.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir con Dockerfile o Railpack, desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los sitios con `index.html` reciben un contenedor Nginx; `server.js` y `main.py` sueltos tienen un runtime básico, los manifiestos compatibles usan Railpack y C++ requiere un Dockerfile propio con un servidor HTTP. La integración debe validarse en un VPS antes de considerarse lista para producción.
 
 ---
 
@@ -395,6 +395,7 @@ Mostrar:
 ### Proyectos
 
 Configurar, construir y desplegar proyectos propios desde GitHub o archivos ZIP.
+Cada proyecto tiene una vista `/projects/<id>` con pestañas de despliegue, configuración, archivos, variables, dominios e historial. Los ZIP subidos muestran el árbol de nombres sin leer ni exponer el contenido de sus archivos.
 
 ### Aplicaciones
 
@@ -1697,6 +1698,8 @@ El desarrollo debe ser incremental.
 - [x] Conectar repositorios GitHub mediante una GitHub OAuth App.
 - [x] Admitir carga de archivos ZIP con límites y extracción segura.
 - [x] Configurar Dockerfile/Railpack, rama, variables, dominios e historial.
+- [x] Administrar proyectos en `/projects/<id>` y mostrar una advertencia antes de eliminarlos.
+- [x] Detectar sitios HTML estáticos y runtimes básicos de Node/Python sin manifiestos.
 - [ ] Validar en un VPS la conexión GitHub y el flujo de ZIP de extremo a extremo.
 
 **Resultado:** proyectos configurables desde GitHub o ZIP.

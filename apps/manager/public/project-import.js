@@ -1,4 +1,4 @@
-import { createProjectZip, inspectProjectZip } from "/project-archive.mjs";
+import { createProjectZip, detectProjectBuildProfile, inspectProjectZip } from "/project-archive.mjs";
 
 const request = async (path, options = {}) => {
   const response = await fetch(path, {
@@ -187,7 +187,7 @@ async function importSelectedFiles() {
   try {
     let archive;
     const root = selectedProjectName;
-    const hasDockerfile = selectedArchiveInfo?.hasDockerfile ?? selectedPaths.includes("Dockerfile");
+    const buildProfile = detectProjectBuildProfile(selectedPaths);
     const zipFiles = selectedFiles.filter(({ file }) => /\.zip$/i.test(file.name));
     if (zipFiles.length) {
       archive = zipFiles[0].file;
@@ -204,11 +204,17 @@ async function importSelectedFiles() {
       headers: {
         "Content-Type": "application/zip",
         "X-Project-Name": safeProjectName(root),
-        "X-Build-Strategy": hasDockerfile ? "dockerfile" : "railpack",
+        "X-Build-Strategy": buildProfile.buildStrategy,
       },
       body: archive,
     });
-    uploadStatus.textContent = `${result.project.name} se creó con sus archivos. Configura el puerto y pulsa “Construir” cuando esté listo.`;
+    uploadStatus.textContent = buildProfile.isStaticSite
+      ? `${result.project.name} se creó como sitio estático con Nginx (puerto 80). Pulsa “Construir” para prepararlo.`
+      : buildProfile.simpleNodeServer || buildProfile.simplePythonApp
+        ? `${result.project.name} usará un contenedor básico para su archivo principal. Verifica el puerto de escucha en Configuración antes de desplegar.`
+        : buildProfile.requiresCustomDockerfile
+          ? `${result.project.name} requiere un Dockerfile que defina su build y puerto HTTP.`
+          : `${result.project.name} se creó con sus archivos. Configura el puerto y pulsa “Construir” cuando esté listo.`;
     selectedFiles = [];
     selectedPaths = [];
     selectedArchiveInfo = undefined;

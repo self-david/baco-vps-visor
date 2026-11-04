@@ -1,0 +1,54 @@
+---
+import ProjectSettingsForm from "./ProjectSettingsForm.astro";
+---
+<section id="project-detail-view" class="hidden" hidden aria-labelledby="project-detail-title">
+  <a class="button secondary" href="/#tab-projects">Volver a proyectos</a>
+  <header class="card project-detail-header">
+    <div class="card-heading">
+      <div>
+        <p class="eyebrow">PROYECTO</p>
+        <h2 id="project-detail-title">Cargando proyecto…</h2>
+      </div>
+      <span id="project-detail-state" class="badge"></span>
+    </div>
+    <p id="project-detail-summary" class="muted"></p>
+  </header>
+  <div id="project-detail-operation-status" role="status" aria-live="polite"></div>
+  <nav class="project-tabs" role="tablist" aria-label="Secciones del proyecto">
+    <button class="project-tab" type="button" role="tab" aria-selected="true" aria-controls="project-tab-deploy" data-project-tab="deploy">Deploy</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-settings" data-project-tab="settings">Configuración</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-files" data-project-tab="files">Archivos</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-environment" data-project-tab="environment">Variables</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-domains" data-project-tab="domains">Dominios</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-history" data-project-tab="history">Historial</button>
+  </nav>
+  <section id="project-tab-deploy" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="deploy">
+    <h3>Opciones de despliegue</h3>
+    <div id="project-detail-build-info"></div>
+    <div id="project-detail-deployment-info"></div>
+    <p class="muted">Los sitios con index.html se sirven con Nginx; server.js y main.py sueltos tienen un runtime básico. package.json y manifiestos compatibles usan Railpack. C++ requiere un Dockerfile que compile el código y exponga un servidor HTTP.</p>
+    <div id="project-detail-actions"></div>
+  </section>
+  <section id="project-tab-settings" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="settings" hidden>
+    <h3>Configuración</h3>
+    <ProjectSettingsForm />
+  </section>
+  <section id="project-tab-files" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="files" hidden>
+    <h3>Archivos del proyecto</h3>
+    <p id="project-detail-source-info" class="muted"></p>
+    <ul id="project-detail-file-tree" class="project-file-tree"></ul>
+    <div id="project-detail-upload"></div>
+  </section>
+  <section id="project-tab-environment" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="environment" hidden>
+    <h3>Variables de entorno</h3>
+    <div id="project-detail-environment"></div>
+  </section>
+  <section id="project-tab-domains" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="domains" hidden>
+    <h3>Dominios</h3>
+    <div id="project-detail-domains"></div>
+  </section>
+  <section id="project-tab-history" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="history" hidden>
+    <h3>Historial de despliegues</h3>
+    <div id="project-detail-history"></div>
+  </section>
+</section>

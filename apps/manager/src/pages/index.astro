@@ -2,6 +2,7 @@
 import OverviewPanel from "../components/OverviewPanel.astro";
 import DockerPanel from "../components/DockerPanel.astro";
 import ProjectsPanel from "../components/ProjectsPanel.astro";
+import ProjectDetailView from "../components/ProjectDetailView.astro";
 import ApplicationsPanel from "../components/ApplicationsPanel.astro";
 import MonitoringPanel from "../components/MonitoringPanel.astro";
 import DomainsPanel from "../components/DomainsPanel.astro";
@@ -30,7 +31,7 @@ import "../styles/tailwind.css";
 
       <section id="dashboard-view" class="hidden">
         <DashboardHeader />
-        <div class="dashboard-panels">
+        <div id="dashboard-panels" class="dashboard-panels">
           <OverviewPanel />
           <DockerPanel />
           <ProjectsPanel />
@@ -43,6 +44,7 @@ import "../styles/tailwind.css";
           <SystemPanel />
           <SettingsPanel />
         </div>
+        <ProjectDetailView />
         <p class="footnote">Vista de consulta con reinicio y escalado controlados de servicios administrados por VPS Manager.</p>
       </section>
     </main>
