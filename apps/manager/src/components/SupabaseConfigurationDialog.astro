@@ -1,0 +1,58 @@
+<dialog id="supabase-configuration-dialog" class="logs-dialog restore-dialog" aria-labelledby="supabase-configuration-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">CATÁLOGO DE APLICACIONES</p>
+          <h2 id="supabase-configuration-title">Configuración de Supabase</h2>
+        </div>
+        <button id="close-supabase-configuration" class="button secondary" type="button">Cerrar</button>
+      </div>
+      <p class="muted">Guarda una configuración por VPS. Este formulario no guarda contraseñas, claves JWT ni secretos OAuth/SMTP; se generarán o cargarán como secretos Swarm al implementar el stack.</p>
+      <form id="supabase-configuration-form">
+        <label for="supabase-instance-name">Nombre de la instalación</label>
+        <input id="supabase-instance-name" name="name" type="text" maxlength="100" required>
+        <label for="supabase-server-node">VPS destino (nodo activo del Swarm)</label>
+        <select id="supabase-server-node" name="serverNodeId" required></select>
+        <label for="supabase-api-domain">Dominio HTTPS de API</label>
+        <input id="supabase-api-domain" name="apiDomain" type="text" placeholder="api.ejemplo.com" autocomplete="off" required>
+        <label for="supabase-studio-domain">Dominio HTTPS de Studio</label>
+        <input id="supabase-studio-domain" name="studioDomain" type="text" placeholder="studio.ejemplo.com" autocomplete="off" required>
+        <label for="supabase-site-url">URL del sitio que usará Supabase</label>
+        <input id="supabase-site-url" name="siteUrl" type="url" placeholder="https://app.ejemplo.com" required>
+        <label for="supabase-redirect-urls">URLs HTTPS adicionales de redirección (una por línea)</label>
+        <textarea id="supabase-redirect-urls" name="additionalRedirectUrls" rows="3" placeholder="https://app.ejemplo.com/auth/callback"></textarea>
+        <label for="supabase-organization-name">Organización inicial</label>
+        <input id="supabase-organization-name" name="organizationName" type="text" maxlength="100" required>
+        <label for="supabase-project-name">Proyecto inicial</label>
+        <input id="supabase-project-name" name="projectName" type="text" maxlength="100" required>
+        <fieldset class="application-fieldset">
+          <legend>Autenticación</legend>
+          <label class="checkbox-label" for="supabase-disable-signup"><input id="supabase-disable-signup" name="disableSignup" type="checkbox"> Deshabilitar registros</label>
+          <label class="checkbox-label" for="supabase-email-signup"><input id="supabase-email-signup" name="enableEmailSignup" type="checkbox"> Registro por email</label>
+          <label class="checkbox-label" for="supabase-email-autoconfirm"><input id="supabase-email-autoconfirm" name="enableEmailAutoconfirm" type="checkbox"> Confirmar emails automáticamente</label>
+          <label class="checkbox-label" for="supabase-anonymous-users"><input id="supabase-anonymous-users" name="enableAnonymousUsers" type="checkbox"> Permitir usuarios anónimos</label>
+          <label for="supabase-jwt-expiry">Duración JWT (segundos)</label>
+          <input id="supabase-jwt-expiry" name="jwtExpirySeconds" type="number" min="300" max="604800" step="1" required>
+        </fieldset>
+        <fieldset class="application-fieldset">
+          <legend>API, almacenamiento y funciones</legend>
+          <label for="supabase-max-rows">Máximo de filas por consulta REST</label>
+          <input id="supabase-max-rows" name="maxRows" type="number" min="1" max="10000" step="1" required>
+          <label for="supabase-file-size">Límite de archivo en bytes</label>
+          <input id="supabase-file-size" name="storageFileSizeLimitBytes" type="number" min="1048576" max="5368709120" step="1" required>
+          <label for="supabase-storage-region">Región de almacenamiento</label>
+          <input id="supabase-storage-region" name="storageRegion" type="text" maxlength="100" required>
+          <label class="checkbox-label" for="supabase-image-transformation"><input id="supabase-image-transformation" name="enableImageTransformation" type="checkbox"> Habilitar transformación de imágenes</label>
+          <label class="checkbox-label" for="supabase-functions-verify-jwt"><input id="supabase-functions-verify-jwt" name="functionsVerifyJwt" type="checkbox"> Verificar JWT en Edge Functions</label>
+        </fieldset>
+        <label for="supabase-smtp-settings">SMTP opcional (JSON sin contraseña)</label>
+        <textarea id="supabase-smtp-settings" name="smtp" rows="3" placeholder='{"host":"smtp.ejemplo.com","port":587,"adminEmail":"admin@ejemplo.com","senderName":"Supabase","username":"usuario"}'></textarea>
+        <label for="supabase-oauth-settings">Proveedores OAuth opcionales (JSON sin secretos de cliente)</label>
+        <textarea id="supabase-oauth-settings" name="oauthProviders" rows="3" placeholder='{"github":{"enabled":true,"clientId":"..."} }'></textarea>
+        <label for="supabase-resource-limits">CPU y memoria por servicio (JSON)</label>
+        <textarea id="supabase-resource-limits" name="resourceLimits" rows="10" spellcheck="false" required></textarea>
+        <p id="supabase-configuration-status" class="muted" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="save-supabase-configuration" class="button" type="submit">Guardar configuración del VPS</button>
+        </div>
+      </form>
+    </dialog>

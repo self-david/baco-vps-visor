@@ -1,0 +1,52 @@
+<section id="tab-overview" class="dashboard-panel" role="tabpanel" aria-labelledby="tab-button-overview" tabindex="0">
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card server-card">
+                <div class="card-heading">
+                  <h3>Servidor</h3>
+                  <span id="swarm-state" class="badge">—</span>
+                </div>
+                <div id="server-info" class="server-details"></div>
+              </section>
+              <section class="card">
+                <p class="eyebrow">CENTRO DE CONTROL</p>
+                <h3>Resumen de VPS Manager</h3>
+                <p class="muted tab-description">Usa las categorías para consultar recursos Docker, monitoreo, seguridad y mantenimiento. Las secciones marcadas como próximas son el esqueleto de las funciones planeadas, no funciones disponibles todavía.</p>
+              </section>
+              <section class="card" aria-labelledby="swarm-nodes-title">
+                <div class="card-heading">
+                  <h3 id="swarm-nodes-title">Nodos Swarm</h3>
+                  <button id="refresh-nodes" class="button secondary" type="button">Actualizar</button>
+                </div>
+                <p id="nodes-status" class="muted" role="status" aria-live="polite">Consultando nodos…</p>
+                <div id="swarm-nodes-list" class="resource-list"></div>
+                <details class="node-enroll-details">
+                  <summary>Incorporar VPS por SSH</summary>
+                  <form id="node-enroll-form" class="form-stack">
+                    <p class="muted">Solo Ubuntu Server 24.04. El panel instalará Docker y añadirá reglas UFW para el tráfico Swarm en la red privada. UFW debe estar activo en el manager y el destino; no se habilita ni se reinicia automáticamente. Asegúrate de permitir esos puertos también en el firewall del proveedor y en los nodos ya existentes.</p>
+                    <label for="node-address">IP privada del VPS destino</label>
+                    <input id="node-address" name="address" type="text" inputmode="decimal" placeholder="10.10.0.12" required>
+                    <label for="node-manager-address">IP privada anunciada por el manager</label>
+                    <input id="node-manager-address" name="managerAddress" type="text" inputmode="decimal" placeholder="10.10.0.2" required>
+                    <label for="node-private-cidr">CIDR privada de la VPN/red</label>
+                    <input id="node-private-cidr" name="privateCidr" type="text" inputmode="decimal" placeholder="10.10.0.0/24" required>
+                    <label for="node-role">Rol Swarm</label>
+                    <select id="node-role" name="role" required>
+                      <option value="worker">Worker (recomendado)</option>
+                      <option value="manager">Manager</option>
+                    </select>
+                    <label for="node-ssh-user">Usuario SSH (requiere sudo sin contraseña)</label>
+                    <input id="node-ssh-user" name="sshUser" type="text" value="vpsadmin" pattern="[a-z_][a-z0-9_\x2d]{0,31}" required>
+                    <label for="node-ssh-port">Puerto SSH</label>
+                    <input id="node-ssh-port" name="sshPort" type="number" min="1" max="65535" value="22" required>
+                    <label for="node-host-fingerprint">Fingerprint SSH verificado desde la consola del VPS</label>
+                    <input id="node-host-fingerprint" name="hostFingerprint" type="text" placeholder="SHA256:…" pattern="SHA256:[A-Za-z0-9+\x2f]{43}" required>
+                    <label for="node-private-key">Llave privada SSH dedicada y sin passphrase</label>
+                    <textarea id="node-private-key" name="privateKey" rows="6" autoComplete="off" spellcheck="false" required></textarea>
+                    <p class="muted">La llave se guarda temporalmente en el manager, fuera de PostgreSQL, tareas y auditoría; se elimina al terminar. La cuenta SSH podrá ejecutar comandos como root mediante sudo. No ingreses una llave personal.</p>
+                    <p id="node-enroll-status" class="muted" role="status" aria-live="polite"></p>
+                    <button id="node-enroll-submit" class="button" type="submit">Instalar Docker y unir al Swarm</button>
+                  </form>
+                </details>
+              </section>
+            </div>
+          </section>

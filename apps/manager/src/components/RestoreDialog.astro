@@ -1,0 +1,19 @@
+<dialog id="restore-dialog" class="logs-dialog restore-dialog" aria-labelledby="restore-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">OPERACIÓN DESTRUCTIVA</p>
+          <h2 id="restore-title">Restaurar base de datos</h2>
+        </div>
+        <button id="close-restore" class="button secondary" type="button">Cancelar</button>
+      </div>
+      <p class="muted">Esta acción reemplaza datos de la base de datos actual. Solo continúa si el respaldo y la clave de cifrado son correctos.</p>
+      <form id="restore-form">
+        <label for="restore-confirmation">Escribe RESTAURAR para confirmar</label>
+        <input id="restore-confirmation" name="confirmation" type="text" autocomplete="off" required>
+        <p id="restore-status" class="error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="cancel-restore" class="button secondary" type="button">Cancelar</button>
+          <button id="confirm-restore" class="button danger" type="submit">Restaurar base de datos</button>
+        </div>
+      </form>
+    </dialog>

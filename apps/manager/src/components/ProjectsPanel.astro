@@ -1,0 +1,74 @@
+---
+import ProjectSettingsDialog from "./ProjectSettingsDialog.astro";
+---
+<section id="tab-projects" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-projects" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px]">
+              <section class="card" aria-labelledby="projects-title">
+                <div class="card-heading">
+                  <div>
+                    <p class="eyebrow">DESPLIEGUE DE CÓDIGO</p>
+                    <h3 id="projects-title">Proyectos</h3>
+                  </div>
+                  <button id="refresh-projects" class="button secondary" type="button">Actualizar</button>
+                </div>
+                <p class="muted">Conecta GitHub para elegir un repositorio y desplegar sus cambios automáticamente, o arrastra un ZIP/carpeta para crear un proyecto con sus archivos.</p>
+                <p id="projects-status" class="muted" role="status" aria-live="polite">Cargando proyectos…</p>
+                <div id="projects-list" class="project-list"></div>
+                <section class="project-import" aria-labelledby="project-upload-title">
+                  <h4 id="project-upload-title">Crear proyecto desde archivos</h4>
+                  <div id="project-dropzone" class="project-dropzone" tabindex="0">
+                    <strong>Arrastra aquí un archivo ZIP o una carpeta</strong>
+                    <span class="muted">También puedes elegir archivos desde tu dispositivo. Máximo 32 MiB; el ZIP debe contener una sola carpeta raíz.</span>
+                    <div class="project-actions">
+                      <label class="button secondary project-file-button" for="project-zip-input">Elegir ZIP</label>
+                      <input id="project-zip-input" class="visually-hidden" type="file" accept=".zip,application/zip">
+                      <label class="button secondary project-file-button" for="project-folder-input">Elegir carpeta</label>
+                      <input id="project-folder-input" class="visually-hidden" type="file" webkitdirectory directory multiple>
+                    </div>
+                  </div>
+                  <div id="project-selection" class="project-selection hidden" aria-live="polite">
+                    <strong id="project-selection-name"></strong>
+                    <span id="project-selection-details" class="muted"></span>
+                    <button id="project-import-files" class="button" type="button">Continuar y crear proyecto</button>
+                  </div>
+                  <p id="project-upload-status" class="muted" role="status" aria-live="polite"></p>
+                </section>
+              </section>
+
+              <section class="card" aria-labelledby="github-settings-title">
+                <details id="github-settings">
+                  <summary id="github-settings-title">Configuración de GitHub OAuth</summary>
+                  <p id="github-status" class="muted" role="status" aria-live="polite">Consultando conexión…</p>
+                  <form id="github-config-form" class="form-stack">
+                    <label for="github-client-id">Client ID</label>
+                    <input id="github-client-id" name="clientId" autocomplete="off" required>
+                    <label for="github-client-secret">Client Secret</label>
+                    <input id="github-client-secret" name="clientSecret" type="password" autocomplete="new-password" required>
+                    <label for="github-webhook-secret">Webhook secret</label>
+                    <input id="github-webhook-secret" name="webhookSecret" type="password" minlength="20" autocomplete="new-password" required>
+                    <p class="muted">Crea una OAuth App en GitHub. URL de callback: <code id="github-callback-url"></code>. El panel solicitará los permisos <code>repo</code> y <code>admin:repo_hook</code> para leer código privado y configurar actualizaciones automáticas. Los secretos se cifran en este VPS; los webhooks requieren una URL pública HTTPS y los despliegues requieren configurar el registro privado.</p>
+                    <button class="button" type="submit">Guardar configuración OAuth</button>
+                  </form>
+                </details>
+                <div class="project-import">
+                  <div class="card-heading">
+                    <h4>Importar desde GitHub</h4>
+                    <button id="github-install" class="button secondary" type="button">Conectar cuenta</button>
+                  </div>
+                  <p id="github-connect-status" class="muted" role="status" aria-live="polite"></p>
+                  <form id="github-import-form" class="form-stack">
+                    <label for="project-installation">Cuenta conectada</label>
+                    <select id="project-installation" name="accountId" required></select>
+                    <label for="project-repository">Repositorio</label>
+                    <select id="project-repository" name="repository" required></select>
+                    <label for="project-production-branch">Rama de producción</label>
+                    <select id="project-production-branch" name="productionBranch" required></select>
+                    <button id="github-import-project" class="button" type="submit">Importar y desplegar</button>
+                    <p id="github-import-status" class="muted" role="status" aria-live="polite"></p>
+                  </form>
+                </div>
+              </section>
+            </div>
+
+            <ProjectSettingsDialog />
+          </section>

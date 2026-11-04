@@ -1,0 +1,23 @@
+<section id="tab-settings" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-settings" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card backups-card" aria-labelledby="registry-title">
+                <div class="card-heading">
+                  <h3 id="registry-title">Registro privado de imágenes</h3>
+                  <span id="registry-state" class="badge">Sin configurar</span>
+                </div>
+                <p id="registry-status" class="muted" aria-live="polite">La configuración se realiza aquí después de instalar VPS Manager.</p>
+                <form id="registry-configure-form" class="form-stack">
+                  <label for="registry-domain">Dominio del registro</label>
+                  <input id="registry-domain" name="domain" type="text" inputmode="url" autocomplete="url" placeholder="registry.ejemplo.com" pattern="(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}" required>
+                  <p class="muted">Configura primero un registro DNS A que apunte al VPS. Traefik emitirá un certificado HTTPS para este dominio.</p>
+                  <label for="registry-username">Usuario</label>
+                  <input id="registry-username" name="username" type="text" pattern="[A-Za-z0-9._\x2d]{1,64}" maxLength="64" autocomplete="username" required>
+                  <label for="registry-password">Contraseña nueva</label>
+                  <input id="registry-password" name="password" type="password" pattern="[A-Za-z0-9._\x2d]{20,72}" minLength="20" maxLength="72" autocomplete="new-password" required>
+                  <p class="muted">Usa de 20 a 72 caracteres. La contraseña se conserva en un archivo root-only del host y su hash bcrypt en un secreto Docker; nunca se vuelve a mostrar. Para cambiarla, ingresa una contraseña nueva.</p>
+                  <p id="registry-form-status" class="muted" role="status" aria-live="polite"></p>
+                  <button id="registry-save" class="button" type="submit">Configurar registro privado</button>
+                </form>
+              </section>
+            </div>
+          </section>

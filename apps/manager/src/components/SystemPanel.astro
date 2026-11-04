@@ -1,0 +1,33 @@
+<section id="tab-system" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-system" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card backups-card" aria-labelledby="diagnostics-title">
+                <div class="card-heading">
+                  <h3 id="diagnostics-title">Diagnóstico del sistema</h3>
+                  <button id="refresh-diagnostics" class="button secondary resource-action" type="button">Ejecutar diagnóstico</button>
+                </div>
+                <p id="diagnostics-status" class="muted" aria-live="polite">Aún no se ha ejecutado.</p>
+                <div id="diagnostics-list" class="diagnostic-list" aria-live="polite"></div>
+                <p class="muted diagnostic-note">El panel comprueba Docker, Swarm, servicios, redes, PostgreSQL y respaldos. Para detalles del sistema operativo, disco y puertos, ejecuta <code>sudo vps-manager-diagnostics</code> por SSH.</p>
+              </section>
+              <section class="card backups-card" aria-labelledby="updates-title">
+                <div class="card-heading">
+                  <h3 id="updates-title">Actualizaciones de VPS Manager</h3>
+                  <button id="check-updates" class="button secondary resource-action" type="button">Buscar actualización</button>
+                </div>
+                <p id="updates-status" class="muted" aria-live="polite">Versión instalada: —</p>
+                <p id="updates-release-notes" class="muted update-release-notes"></p>
+                <p id="web-update-status" class="muted update-job-status" aria-live="polite">No hay una actualización web en curso.</p>
+                <div id="updates-action" class="update-action hidden">
+                  <button id="start-web-update" class="button resource-action" type="button">Actualizar desde el panel</button>
+                  <details class="update-manual">
+                    <summary>Usar el comando SSH manual</summary>
+                    <div class="update-action">
+                      <code id="update-command">sudo vps-manager-update</code>
+                      <button id="copy-update-command" class="button secondary resource-action" type="button">Copiar comando</button>
+                    </div>
+                  </details>
+                </div>
+                <p class="muted update-note">La actualización web solicita una tarea fija al servicio host de systemd; no permite enviar comandos ni versiones y no concede acceso Docker de escritura al panel. También puedes ejecutarla manualmente por SSH.</p>
+              </section>
+            </div>
+          </section>

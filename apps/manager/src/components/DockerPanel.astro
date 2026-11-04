@@ -1,0 +1,61 @@
+<section id="tab-docker" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-docker" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card">
+                <div class="card-heading">
+                  <h3>Stacks</h3>
+                  <span id="stack-count" class="badge" aria-label="0 visibles de 0">0</span>
+                </div>
+                <div class="resource-filters">
+                  <label class="visually-hidden" for="stack-search">Buscar stacks</label>
+                  <input id="stack-search" class="resource-search" type="search" placeholder="Buscar stacks o servicios…" autocomplete="off">
+                  <label class="visually-hidden" for="stack-filter">Filtrar stacks por cantidad de servicios</label>
+                  <select id="stack-filter" class="resource-filter">
+                    <option value="all">Todos los tamaños</option>
+                    <option value="single">Un servicio</option>
+                    <option value="multiple">Varios servicios</option>
+                  </select>
+                </div>
+                <div id="stacks" class="resource-list"></div>
+              </section>
+              <section class="card">
+                <div class="card-heading">
+                  <h3>Contenedores</h3>
+                  <span id="container-count" class="badge" aria-label="0 visibles de 0">0</span>
+                </div>
+                <div class="resource-filters">
+                  <label class="visually-hidden" for="container-search">Buscar contenedores</label>
+                  <input id="container-search" class="resource-search" type="search" placeholder="Buscar nombre, imagen o ID…" autocomplete="off">
+                  <label class="visually-hidden" for="container-filter">Filtrar contenedores por estado</label>
+                  <select id="container-filter" class="resource-filter">
+                    <option value="all">Todos los estados</option>
+                    <option value="running">En ejecución</option>
+                    <option value="inactive">No activos</option>
+                  </select>
+                </div>
+                <div id="containers" class="resource-list"></div>
+              </section>
+              <section class="card">
+                <div class="card-heading">
+                  <h3>Servicios Swarm</h3>
+                  <span id="service-count" class="badge" aria-label="0 visibles de 0">0</span>
+                </div>
+                <div class="resource-filters">
+                  <label class="visually-hidden" for="service-search">Buscar servicios Swarm</label>
+                  <input id="service-search" class="resource-search" type="search" placeholder="Buscar nombre o imagen…" autocomplete="off">
+                  <label class="visually-hidden" for="service-filter">Filtrar servicios por modo</label>
+                  <select id="service-filter" class="resource-filter">
+                    <option value="all">Todos los modos</option>
+                    <option value="replicado">Replicado</option>
+                    <option value="global">Global</option>
+                  </select>
+                </div>
+                <p id="service-operation-status" class="muted operation-status" aria-live="polite">Los controles solo operan servicios administrados; Swarm repone automáticamente las tareas detenidas.</p>
+                <div id="services" class="resource-list"></div>
+              </section>
+              <section class="card roadmap-card">
+                <div class="card-heading"><h3>Otros recursos Docker</h3><span class="badge roadmap-badge">Próximamente</span></div>
+                <p class="muted">Estas vistas se habilitarán en siguientes fases del roadmap.</p>
+                <ul class="roadmap-list"><li>Redes Docker</li><li>Volúmenes</li><li>Imágenes</li><li>Más operaciones controladas sobre contenedores y servicios</li></ul>
+              </section>
+            </div>
+          </section>

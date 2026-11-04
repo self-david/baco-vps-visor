@@ -1,0 +1,57 @@
+<section id="tab-monitoring" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-monitoring" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card backups-card">
+                <div class="card-heading">
+                  <h3>Uso e históricos de contenedores</h3>
+                  <div class="container-heading-actions">
+                    <button id="refresh-metrics" class="button secondary resource-action" type="button">Actualizar CPU/RAM</button>
+                    <button id="refresh-history" class="button secondary resource-action" type="button">Actualizar histórico</button>
+                  </div>
+                </div>
+                <p id="metrics-status" class="muted metrics-status" aria-live="polite"></p>
+                <div id="metrics-groups" class="metrics-groups hidden" aria-live="polite"></div>
+                <section class="metrics-history" aria-labelledby="metrics-history-title">
+                  <div class="history-heading"><h4 id="metrics-history-title">Histórico · últimas 24 horas</h4></div>
+                  <form id="metrics-settings-form" class="metrics-settings">
+                    <label for="metrics-interval">Muestreo automático (minutos)</label>
+                    <div class="metrics-settings-controls">
+                      <input id="metrics-interval" name="intervalMinutes" type="number" min="1" max="1440" step="1" required>
+                      <button class="button secondary resource-action" type="submit">Guardar</button>
+                    </div>
+                    <label for="metrics-cpu-threshold">Alerta CPU por contenedor (%)</label>
+                    <input id="metrics-cpu-threshold" name="cpuPercent" type="number" min="1" max="10000" step="1" required>
+                    <label for="metrics-memory-threshold">Alerta RAM del límite (%)</label>
+                    <input id="metrics-memory-threshold" name="memoryPercent" type="number" min="1" max="100" step="1" required>
+                    <label for="metrics-disk-threshold">Alerta de disco libre (%)</label>
+                    <input id="metrics-disk-threshold" name="diskFreePercent" type="number" min="1" max="99" step="1" required>
+                    <label for="metrics-restart-count">Reinicios en la ventana</label>
+                    <input id="metrics-restart-count" name="restartCount" type="number" min="1" max="100" step="1" required>
+                    <label for="metrics-restart-window">Ventana de reinicios (minutos)</label>
+                    <input id="metrics-restart-window" name="restartWindowMinutes" type="number" min="5" max="1440" step="1" required>
+                    <label for="metrics-http-timeout">Timeout HTTP (segundos)</label>
+                    <input id="metrics-http-timeout" name="httpTimeoutSeconds" type="number" min="1" max="30" step="1" required>
+                    <label for="metrics-certificate-days">Avisar antes de vencer (días)</label>
+                    <input id="metrics-certificate-days" name="certificateWarningDays" type="number" min="1" max="90" step="1" required>
+                    <p id="metrics-settings-status" class="muted" aria-live="polite">Retención: 7 días.</p>
+                  </form>
+                  <p id="history-status" class="muted" aria-live="polite"></p>
+                  <p id="history-empty" class="muted hidden">Aún no hay muestras históricas.</p>
+                  <div id="history-legend" class="history-legend"></div>
+                  <div id="history-charts" class="history-charts hidden">
+                    <div><h5>CPU (%)</h5><svg id="cpu-history-chart" class="history-chart" viewBox="0 0 640 190" role="img" aria-label="Histórico de uso de CPU por grupo"></svg></div>
+                    <div><h5>Memoria (GiB)</h5><svg id="memory-history-chart" class="history-chart" viewBox="0 0 640 190" role="img" aria-label="Histórico de memoria por grupo"></svg></div>
+                  </div>
+                </section>
+              </section>
+              <section class="card backups-card metric-alerts-card" aria-labelledby="metric-alerts-title">
+                <h3 id="metric-alerts-title">Alertas activas</h3>
+                <p class="muted metric-alert-note">Se comprueban las rutas Host de Traefik con GET /. HTTP considera sanas respuestas 2xx/3xx; timeout predeterminado 5 s. Los certificados TLS avisan 14 días antes. El disco corresponde al filesystem visible para el panel. Sin email ni webhooks.</p>
+                <p id="metric-alerts-status" class="muted" aria-live="polite"></p>
+                <ul id="metric-alerts" class="metric-alert-list" aria-live="polite"></ul>
+              </section>
+              <section class="card roadmap-card">
+                <div class="card-heading"><h3>Monitoreo ampliado</h3><span class="badge roadmap-badge">Próximamente</span></div>
+                <p class="muted">El roadmap contempla Prometheus, cAdvisor, Node Exporter y canales configurables para notificaciones de alertas.</p>
+              </section>
+            </div>
+          </section>

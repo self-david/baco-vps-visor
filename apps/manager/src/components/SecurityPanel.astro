@@ -1,0 +1,38 @@
+<section id="tab-security" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-security" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+              <section class="card backups-card" aria-labelledby="backups-title">
+                <div class="card-heading">
+                  <h3 id="backups-title">Respaldos de PostgreSQL</h3>
+                  <div class="container-heading-actions">
+                    <button id="refresh-backups" class="button secondary resource-action" type="button">Actualizar</button>
+                    <button id="create-backup" class="button resource-action" type="button">Crear respaldo</button>
+                  </div>
+                </div>
+                <p class="muted backup-note">Archivos cifrados en este VPS. La clave de cifrado se mostró una sola vez durante la instalación; consérvala fuera del servidor.</p>
+                <form id="backup-settings-form" class="backup-settings">
+                  <label for="backup-interval">Respaldo automático cada (horas)</label>
+                  <div class="metrics-settings-controls">
+                    <input id="backup-interval" name="intervalHours" type="number" min="1" max="168" step="1" required>
+                    <button class="button secondary resource-action" type="submit">Guardar</button>
+                  </div>
+                  <p id="backup-settings-status" class="muted" aria-live="polite">Retención: 7 días.</p>
+                </form>
+                <p id="backups-status" class="muted" aria-live="polite"></p>
+                <div id="backups-list" class="resource-list"></div>
+              </section>
+              <section class="card backups-card" aria-labelledby="audit-title">
+                <div class="card-heading">
+                  <h3 id="audit-title">Auditoría reciente</h3>
+                  <button id="refresh-audit" class="button secondary resource-action" type="button">Actualizar</button>
+                </div>
+                <p class="muted backup-note">Últimas 100 operaciones relevantes. No incluye credenciales ni claves.</p>
+                <p id="audit-status" class="muted" aria-live="polite"></p>
+                <div id="audit-list" class="resource-list"></div>
+              </section>
+              <section class="card roadmap-card">
+                <div class="card-heading"><h3>Acceso y recuperación</h3><span class="badge roadmap-badge">Próximamente</span></div>
+                <p class="muted">Los respaldos cifrados y la auditoría ya están disponibles. El roadmap de seguridad continúa con:</p>
+                <ul class="roadmap-list"><li>Roles y permisos para más de un administrador</li><li>Autenticación multifactor (MFA)</li><li>Recuperación automática ante fallos</li></ul>
+              </section>
+            </div>
+          </section>

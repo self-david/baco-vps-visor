@@ -1,0 +1,22 @@
+<dialog id="domain-zone-dialog" class="logs-dialog restore-dialog" aria-labelledby="domain-zone-dialog-title">
+      <div class="logs-heading">
+        <div>
+          <p class="eyebrow">CLOUDFLARE</p>
+          <h2 id="domain-zone-dialog-title">Conectar dominio raíz</h2>
+        </div>
+        <button id="close-domain-zone-dialog" class="button secondary" type="button">Cerrar</button>
+      </div>
+      <form id="domain-zone-form">
+        <input id="domain-zone-id" name="id" type="hidden">
+        <label for="domain-zone-name">Dominio raíz</label>
+        <input id="domain-zone-name" name="zone" type="text" placeholder="midominio.com" autocomplete="off" required>
+        <label for="domain-zone-token">Token API de Cloudflare <span class="muted">(Zone:Read y DNS:Edit)</span></label>
+        <input id="domain-zone-token" name="token" type="password" autocomplete="new-password" placeholder="Token de Cloudflare" required>
+        <p class="muted">El token se guarda en el VPS con permisos restringidos y no se almacena en PostgreSQL.</p>
+        <p id="domain-zone-form-status" class="muted" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="domain-zone-cancel" class="button secondary" type="button">Cancelar</button>
+          <button id="domain-zone-save" class="button" type="submit">Conectar dominio</button>
+        </div>
+      </form>
+    </dialog>

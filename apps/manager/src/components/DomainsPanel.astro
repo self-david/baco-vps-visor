@@ -1,0 +1,32 @@
+<section id="tab-domains" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-domains" tabindex="0" hidden>
+            <div class="grid grid-cols-1 gap-[18px]">
+              <section class="card roadmap-card">
+                <div class="card-heading">
+                  <div>
+                    <h3>Dominios conectados</h3>
+                    <p class="muted">Registra aquí tus dominios raíz para tenerlos disponibles cuando habilitemos su uso en aplicaciones y proyectos. No se crean subdominios ni se asignan dominios a proyectos desde esta vista.</p>
+                  </div>
+                  <div class="container-heading-actions">
+                    <button id="open-domain-zone-dialog" class="button resource-action" type="button">Conectar nuevo dominio</button>
+                    <button id="refresh-domains" class="button secondary resource-action" type="button">Actualizar</button>
+                  </div>
+                </div>
+                <p class="muted">Por ahora, VPS Manager verifica y administra zonas de Cloudflare. Puedes haber comprado el dominio en otro registrador si lo delegaste a Cloudflare.</p>
+                <p class="muted">El estado confirma si el token funciona y la zona está activa en Cloudflare. No comprueba la propagación DNS pública ni HTTPS.</p>
+                <p id="domain-zones-status" class="muted" role="status" aria-live="polite">Consultando dominios…</p>
+                <div id="domain-zones-list" class="resource-list"></div>
+              </section>
+              <section class="card backups-card">
+                <h3>Guía para conectar un dominio con Cloudflare</h3>
+                <ol class="roadmap-list">
+                  <li><strong>Añade el dominio a Cloudflare.</strong> En Cloudflare, elige agregar un sitio e introduce el dominio raíz, por ejemplo <code>midominio.com</code>. No introduzcas un subdominio.</li>
+                  <li><strong>Confirma los registros DNS.</strong> Revisa o importa los registros que Cloudflare detecte. Mantén los registros existentes que necesites para tu web y correo.</li>
+                  <li><strong>Actualiza los nameservers en tu registrador.</strong> Cloudflare te mostrará dos nameservers asignados. En el panel donde compraste el dominio (por ejemplo, Namecheap), reemplaza los nameservers actuales por esos dos valores.</li>
+                  <li><strong>Espera a que Cloudflare active la zona.</strong> La propagación puede tardar. En Cloudflare, el estado del dominio debe aparecer como <em>Active</em> antes de continuar.</li>
+                  <li><strong>Crea un token de API.</strong> En el perfil de Cloudflare, crea un token personalizado con permiso <code>Zone:Read</code> y <code>DNS:Edit</code> limitado a la zona que vas a conectar. No compartas el token.</li>
+                  <li><strong>Conéctalo en VPS Manager.</strong> Pulsa <em>Conectar nuevo dominio</em>, escribe el dominio raíz y pega el token. El panel verifica que la zona activa esté disponible en esa cuenta y guarda el token de forma protegida en el VPS.</li>
+                </ol>
+                <p class="muted">Esta conexión solo registra la zona y las credenciales de Cloudflare. No cambia registros DNS ni asigna el dominio a un proyecto. La asignación se hará en un paso posterior.</p>
+              </section>
+            </div>
+          </section>
