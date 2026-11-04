@@ -325,15 +325,18 @@ manager_image_ready=false
 for attempt in $(seq 1 90); do
   service_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "${STACK_NAME}_manager" 2>/dev/null || true)"
   if [[ "${service_image}" == "${IMAGE_NAME}" ]]; then
-    mapfile -t running_manager_tasks < <(docker service ps "${STACK_NAME}_manager" --format '{{.CurrentState}} {{.Image}}' 2>/dev/null || true)
-    for task_line in "${running_manager_tasks[@]}"; do
-      task_state="${task_line%% *}"
-      task_image="${task_line#* }"
+    while IFS= read -r task_line; do
+      task_state="${task_line%%|*}"
+      task_image="${task_line#*|}"
       if [[ "${task_state}" == Running* && "${task_image}" == "${IMAGE_NAME}" ]]; then
         manager_image_ready=true
-        break 2
+        break
       fi
-    done
+    done < <(docker service ps "${STACK_NAME}_manager" --format '{{.CurrentState}}|{{.Image}}' 2>/dev/null || true)
+  fi
+  if [[ "${manager_image_ready}" == "true" ]]; then break; fi
+  if (( attempt % 10 == 0 )); then
+    log "Esperando que Swarm inicie ${IMAGE_NAME} (${attempt}/90)."
   fi
   sleep 2
 done
