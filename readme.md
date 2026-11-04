@@ -196,7 +196,13 @@ Desde la raíz del checkout en Ubuntu 24.04, indica la IPv4 privada del VPS:
 sudo env VPS_MANAGER_TEST_MODE=true VPS_MANAGER_DOMAIN=192.168.100.158 bash install.sh
 ```
 
-La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor.
+La instalación verifica `http://192.168.100.158/api/health` y muestra la URL del panel. Reemplaza la IP de ejemplo por la del servidor. En este modo puedes instalar Gitea sin dominio: escucha únicamente en `127.0.0.1:3001` dentro del VPS y no abre puertos web ni Git SSH a la red. Desde tu equipo, crea un túnel SSH:
+
+```bash
+ssh -L 3001:127.0.0.1:3001 usuario@IP_DEL_VPS
+```
+
+Reemplaza `usuario` con tu usuario SSH y `IP_DEL_VPS` con la dirección IP del servidor. Mientras el túnel esté activo, visita `http://127.0.0.1:3001`. Este modo HTTP es solo para pruebas locales; las funciones de integración de Gitea con proyectos se habilitan con una instalación HTTPS y dominio público. La migración automática de una instancia local ya creada a un dominio HTTPS, conservando sus datos, aún está pendiente.
 
 Si el checkout está en Windows, ejecuta desde PowerShell, en la raíz del proyecto:
 

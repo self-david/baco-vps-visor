@@ -276,6 +276,35 @@ test("queues a Gitea install request without credentials and reveals generated c
   }
 });
 
+test("accepts only the local Gitea target for the loopback test installation", async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await fixture.agent.requestGiteaInstall("localhost");
+    assert.equal(result.domain, "localhost");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "install-gitea",
+      domain: "localhost",
+    });
+    assert.equal((await fixture.agent.getStatus()).domain, "localhost");
+    const credentialsPath = join(fixture.directory, `gitea-credentials-${requestId}.json`);
+    await writeFile(credentialsPath, JSON.stringify({
+      taskId: requestId,
+      username: "vpsadmin",
+      password: "b".repeat(64),
+      domain: "localhost",
+    }), { mode: 0o640 });
+    assert.deepEqual(await fixture.agent.consumeGiteaCredentials(requestId), {
+      username: "vpsadmin",
+      password: "b".repeat(64),
+      url: "http://127.0.0.1:3001/",
+      sshCommand: "ssh -L 3001:127.0.0.1:3001 usuario@VPS; abre http://127.0.0.1:3001/",
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("queues the Gitea API token only for the host agent and reports secret mount status", async () => {
   const directory = await mkdtemp(join(tmpdir(), "vps-service-operations-"));
   const tokenPath = join(directory, "gitea-api-token");

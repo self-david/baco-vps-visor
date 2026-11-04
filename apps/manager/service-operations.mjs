@@ -107,7 +107,8 @@ function validateStatus(status) {
     || typeof status.message !== "string"
     || (status.operation !== undefined && !allowedOperations.has(status.operation))
     || (status.operation === "install-gitea"
-      ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
+      ? ((!isPublicHostname(status.domain) && status.domain !== "localhost")
+        || typeof status.credentialsAvailable !== "boolean")
       : status.operation === "install-n8n"
         ? !isPublicHostname(status.domain)
       : status.operation === "install-postgresql"
@@ -199,8 +200,10 @@ export function createServiceOperationAgent({
         && !Array.isArray(queuedRequest)
         && requestIdPattern.test(queuedRequest.id ?? "")
         && allowedOperations.has(queuedRequest.operation)
-        && (queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
-          ? isPublicHostname(queuedRequest.domain)
+        && (queuedRequest.operation === "install-gitea"
+          ? isPublicHostname(queuedRequest.domain) || queuedRequest.domain === "localhost"
+          : queuedRequest.operation === "install-n8n"
+            ? isPublicHostname(queuedRequest.domain)
           : queuedRequest.operation === "install-postgresql"
             ? true
           : queuedRequest.operation === "configure-gitea-token"
@@ -385,7 +388,7 @@ export function createServiceOperationAgent({
   }
 
   async function requestApplicationInstall(operation, domain, requestId, displayName) {
-    if (!isPublicHostname(domain)) {
+    if (!isPublicHostname(domain) && !(operation === "install-gitea" && domain === "localhost")) {
       throw new TypeError(`El dominio de ${displayName} debe ser un hostname público válido.`);
     }
     if (!requestIdPattern.test(requestId)) {
@@ -874,14 +877,16 @@ export function createServiceOperationAgent({
         || credentials.username !== "vpsadmin"
         || typeof credentials.password !== "string"
         || !/^[a-f0-9]{64}$/.test(credentials.password)
-        || !isPublicHostname(credentials.domain)) {
+        || (!isPublicHostname(credentials.domain) && credentials.domain !== "localhost")) {
         throw new Error("The Gitea credential file has an invalid format.");
       }
       return {
         username: credentials.username,
         password: credentials.password,
-        url: `https://${credentials.domain}/`,
-        sshCommand: `ssh -p 2222 git@${credentials.domain}`,
+        url: credentials.domain === "localhost" ? "http://127.0.0.1:3001/" : `https://${credentials.domain}/`,
+        sshCommand: credentials.domain === "localhost"
+          ? "ssh -L 3001:127.0.0.1:3001 usuario@VPS; abre http://127.0.0.1:3001/"
+          : `ssh -p 2222 git@${credentials.domain}`,
       };
     } finally {
       await unlink(claimedPath).catch((error) => {

@@ -661,7 +661,9 @@ async function getGiteaApplicationState() {
   const installed = service?.Spec?.Labels?.["vps-manager.component"] === "gitea"
     && service.Spec.Labels["vps-manager.managed"] === "true";
   const nameConflict = Boolean(service && !installed);
-  const domain = !testMode && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
+  const localOnly = testMode;
+  const domain = !localOnly && isPublicHostname(managerDomain) ? `git.${managerDomain}` : null;
+  const url = localOnly ? "http://127.0.0.1:3001/" : domain ? `https://${domain}/` : null;
   const latestTask = await getLatestTaskByType("application.gitea.install");
   const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
   const apiTokenConfigured = installed && await serviceOperationAgent.hasGiteaApiToken();
@@ -677,9 +679,11 @@ async function getGiteaApplicationState() {
     application: {
       id: "gitea",
       domain,
-      url: domain ? `https://${domain}/` : null,
+      url,
+      localOnly,
+      installDomain: localOnly ? "localhost" : domain,
       sshPort: 2222,
-      available: Boolean(domain) && !installed && !nameConflict && !installing,
+      available: Boolean(localOnly || domain) && !installed && !nameConflict && !installing,
       installed,
       installing,
       nameConflict,
@@ -2000,9 +2004,9 @@ const server = createServer(async (request, response) => {
       }
       try {
         const { application } = await getGiteaApplicationState();
-        if (!application.domain) {
+        if (!application.installDomain) {
           respondJson(response, 409, {
-            error: "Gitea requiere que VPS Manager esté instalado con un dominio público y HTTPS; no está disponible en modo de prueba ni con una dirección IP.",
+            error: "Gitea necesita un dominio público con HTTPS o el modo de prueba local de VPS Manager.",
           });
           return;
         }
@@ -2021,7 +2025,7 @@ const server = createServer(async (request, response) => {
 
         const taskId = randomUUID();
         try {
-          await createGiteaInstallTask({ id: taskId, domain: application.domain });
+          await createGiteaInstallTask({ id: taskId, domain: application.installDomain });
         } catch (error) {
           if (error?.code === "APPLICATION_TASK_IN_PROGRESS") {
             respondJson(response, 409, { error: error.message });
@@ -2034,8 +2038,10 @@ const server = createServer(async (request, response) => {
             id: taskId,
             type: "application.gitea.install",
             status: "pending",
-            domain: application.domain,
-            message: `Instalación de Gitea solicitada para https://${application.domain}/.`,
+            domain: application.installDomain,
+            message: application.localOnly
+              ? "Instalación local de Gitea solicitada. Solo escuchará en 127.0.0.1:3001 y se accede mediante un túnel SSH."
+              : `Instalación de Gitea solicitada para https://${application.domain}/.`,
           },
         });
       } catch (error) {

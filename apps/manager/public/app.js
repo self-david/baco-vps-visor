@@ -166,6 +166,7 @@ let serviceOperationPending = false;
 let registryConfigurationPollTimer;
 let nodeEnrollmentPollTimer;
 let supabaseApplicationData;
+let giteaLocalOnly = false;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -1156,15 +1157,17 @@ function scheduleGiteaStatusPoll() {
 async function loadGiteaApplication() {
   try {
     const { application } = await request("/api/system/applications/gitea");
+    giteaLocalOnly = application.localOnly;
     installGiteaButton.classList.toggle("hidden", !application.available);
     installGiteaButton.disabled = application.installing;
     revealGiteaCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
-    giteaTokenForm.classList.toggle("hidden", !application.installed);
-    giteaApiTokenStatus.classList.toggle("hidden", !application.installed);
-    giteaRepositoryForm.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
-    giteaBranchManagement.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
-    projectForm.classList.toggle("hidden", !application.installed || !application.apiTokenConfigured);
-    giteaCanManageProjects = application.installed && application.apiTokenConfigured;
+    giteaTokenForm.classList.toggle("hidden", !application.installed || application.localOnly);
+    giteaApiTokenStatus.classList.toggle("hidden", !application.installed || application.localOnly);
+    const canUseGiteaApi = application.installed && !application.localOnly && application.apiTokenConfigured;
+    giteaRepositoryForm.classList.toggle("hidden", !canUseGiteaApi);
+    giteaBranchManagement.classList.toggle("hidden", !canUseGiteaApi);
+    projectForm.classList.toggle("hidden", !canUseGiteaApi);
+    giteaCanManageProjects = canUseGiteaApi;
     renderProjects();
     if (application.apiTokenConfigured && !giteaRepositoriesLoaded && !giteaRepositoriesLoading) {
       void loadGiteaRepositories();
@@ -1179,16 +1182,22 @@ async function loadGiteaApplication() {
     }
     giteaStatus.textContent = application.latestTask?.message
       ?? (application.installed
-        ? "Gitea está instalado."
+        ? application.localOnly
+          ? "Gitea solo escucha en este VPS en http://127.0.0.1:3001. Desde tu equipo, abre un túnel SSH (ssh -L 3001:127.0.0.1:3001 usuario@VPS) y visita http://127.0.0.1:3001."
+          : "Gitea está instalado."
         : application.nameConflict
           ? "El nombre del servicio de Gitea está ocupado por un servicio ajeno a VPS Manager."
           : application.domain
             ? `Listo para instalar en ${application.domain}. Confirma que el DNS apunte al VPS y que TCP 80/443 estén disponibles.`
-            : "Requiere VPS Manager con HTTPS y un dominio público; no está disponible en modo de prueba ni con una dirección IP.");
-    if (application.domain && application.installed) {
+            : application.localOnly
+              ? "Modo de prueba local: puedes instalar Gitea en 127.0.0.1:3001 sin dominio. Solo será accesible dentro del VPS o mediante un túnel SSH."
+              : "Conecta un dominio público con HTTPS para instalar Gitea.");
+    if (application.url && application.installed) {
       giteaUrl.href = application.url;
       giteaUrl.classList.remove("hidden");
-      giteaSsh.textContent = `Git SSH: puerto ${application.sshPort}`;
+      giteaSsh.textContent = application.localOnly
+        ? "Acceso web local; Git SSH se habilitará al conectar un dominio HTTPS."
+        : `Git SSH: puerto ${application.sshPort}`;
       giteaSsh.classList.remove("hidden");
     } else {
       giteaUrl.classList.add("hidden");
@@ -2011,7 +2020,10 @@ function resetProjectForm() {
 }
 
 async function installGitea() {
-  if (!confirm("Gitea se instalará con almacenamiento persistente, HTTPS en git.<dominio> y Git SSH en el puerto TCP 2222. Asegúrate de que el DNS apunte a este VPS y que el puerto 2222 esté libre. ¿Continuar?")) {
+  const confirmation = giteaLocalOnly
+    ? "Gitea se instalará solo en 127.0.0.1:3001, sin publicación a Internet ni Git SSH. Para abrirlo desde tu equipo, usa un túnel SSH. ¿Continuar?"
+    : "Gitea se instalará con almacenamiento persistente, HTTPS en git.<dominio> y Git SSH en el puerto TCP 2222. Asegúrate de que el DNS apunte a este VPS y que el puerto 2222 esté libre. ¿Continuar?";
+  if (!confirm(confirmation)) {
     return;
   }
   installGiteaButton.disabled = true;
@@ -2254,6 +2266,7 @@ async function revealGiteaCredentials() {
     document.querySelector("#gitea-credential-username").textContent = credentials.username;
     document.querySelector("#gitea-credential-password").textContent = credentials.password;
     document.querySelector("#gitea-credential-ssh").textContent = credentials.sshCommand;
+    document.querySelector("#gitea-credential-ssh-label").textContent = giteaLocalOnly ? "Túnel SSH" : "Git SSH";
     giteaCredentialsDialog.showModal();
     await loadGiteaApplication();
   } catch (error) {

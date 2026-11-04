@@ -71,10 +71,13 @@ elif request.get("operation") == "scale-service":
 elif request.get("operation") in {"install-gitea", "install-n8n"}:
     if set(request) != {"id", "operation", "domain"}:
         raise SystemExit("Invalid application installation request fields.")
-    if not isinstance(request["domain"], str) or not re.fullmatch(
-        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
-        request["domain"],
-    ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"]):
+    local_gitea_domain = request.get("operation") == "install-gitea" and request.get("domain") == "localhost"
+    if not isinstance(request["domain"], str) or not local_gitea_domain and (
+        not re.fullmatch(
+            r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+            request["domain"],
+        ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"])
+    ):
         raise SystemExit("Invalid Gitea domain.")
     service_id = "-"
     replicas = "-"
@@ -767,13 +770,21 @@ if [[ "${operation}" == "install-gitea" ]]; then
   readonly CREDENTIALS_FILE="${STATE_DIRECTORY}/gitea-credentials-${request_id}.json"
   base_domain="$(sed -n 's/^VPS_MANAGER_DOMAIN=//p' "${INSTALL_ENV}" | head -n 1)"
   test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' "${INSTALL_ENV}" | head -n 1)"
-  if [[ "${test_mode}" == "true" || ! "${base_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ \
+  local_gitea=false
+  if [[ "${test_mode}" == "true" && "${gitea_domain}" == "localhost" ]]; then
+    local_gitea=true
+    if ss -H -ltn '( sport = :3001 )' | grep -q .; then
+      gitea_credentials_available=false
+      write_status "failed" "El puerto local 3001 ya está ocupado."
+      exit 1
+    fi
+  elif [[ "${test_mode}" == "true" || ! "${base_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ \
     || "${gitea_domain,,}" != "git.${base_domain,,}" ]]; then
     gitea_credentials_available=false
     write_status "failed" "Gitea requiere una instalación HTTPS con un dominio público; el modo de prueba no es compatible."
     exit 1
   fi
-  if ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
+  if [[ "${local_gitea}" != "true" ]] && ! docker network inspect vps-manager-proxy >/dev/null 2>&1; then
     gitea_credentials_available=false
     write_status "failed" "No se encontró la red HTTPS de Traefik."
     exit 1
@@ -854,37 +865,61 @@ PY
     exit 1
   fi
 
-  if ! docker service create \
-    --name "${GITEA_SERVICE}" \
-    --replicas 1 \
-    --constraint 'node.role==manager' \
-    --network vps-manager-proxy \
-    --mount type=volume,source=vps-manager-gitea-data,target=/data \
-    --publish published=2222,target=22,protocol=tcp,mode=host \
-    --env USER_UID=1000 \
-    --env USER_GID=1000 \
-    --env GITEA__database__DB_TYPE=sqlite3 \
-    --env GITEA__server__DOMAIN="${gitea_domain}" \
-    --env GITEA__server__ROOT_URL="https://${gitea_domain}/" \
-    --env GITEA__server__SSH_DOMAIN="${gitea_domain}" \
-    --env GITEA__server__SSH_PORT=2222 \
-    --env GITEA__server__SSH_LISTEN_PORT=22 \
-    --env GITEA__server__START_SSH_SERVER=true \
-    --env GITEA__security__INSTALL_LOCK=true \
-    --env GITEA__service__DISABLE_REGISTRATION=true \
-    --env GITEA__service__REQUIRE_SIGNIN_VIEW=true \
-    --label vps-manager.managed=true \
-    --label vps-manager.component=gitea \
-    --label traefik.enable=true \
-    --label traefik.swarm.network=vps-manager-proxy \
-    --label "traefik.http.routers.vps-manager-gitea.rule=Host(\`${gitea_domain}\`)" \
-    --label traefik.http.routers.vps-manager-gitea.entrypoints=websecure \
-    --label traefik.http.routers.vps-manager-gitea.tls=true \
-    --label traefik.http.routers.vps-manager-gitea.tls.certresolver=vpsmanager \
-    --label traefik.http.services.vps-manager-gitea.loadbalancer.server.port=3000 \
-    --limit-cpu 1 \
-    --limit-memory 768M \
-    --restart-condition on-failure \
+  gitea_service_args=(
+    --name "${GITEA_SERVICE}"
+    --replicas 1
+    --constraint 'node.role==manager'
+    --mount type=volume,source=vps-manager-gitea-data,target=/data
+    --env USER_UID=1000
+    --env USER_GID=1000
+    --env GITEA__database__DB_TYPE=sqlite3
+    --env GITEA__security__INSTALL_LOCK=true
+    --env GITEA__service__DISABLE_REGISTRATION=true
+    --env GITEA__service__REQUIRE_SIGNIN_VIEW=true
+    --label vps-manager.managed=true
+    --label vps-manager.component=gitea
+    --limit-cpu 1
+    --limit-memory 768M
+    --restart-condition on-failure
+  )
+  if [[ "${local_gitea}" == "true" ]]; then
+    local_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null || true)"
+    if [[ ! "${local_node_id}" =~ ^[a-f0-9]{25,64}$ ]]; then
+      gitea_credentials_available=false
+      write_status "failed" "No se pudo determinar el nodo Swarm local para fijar Gitea a este VPS."
+      exit 1
+    fi
+    gitea_service_args+=(
+      --network host
+      --constraint "node.id==${local_node_id}"
+      --env GITEA__server__DOMAIN=localhost
+      --env GITEA__server__ROOT_URL=http://127.0.0.1:3001/
+      --env GITEA__server__HTTP_ADDR=127.0.0.1
+      --env GITEA__server__HTTP_PORT=3001
+      --env GITEA__server__SSH_DOMAIN=localhost
+      --env GITEA__server__START_SSH_SERVER=false
+    )
+  else
+    gitea_service_args+=(
+      --network vps-manager-proxy
+      --publish published=2222,target=22,protocol=tcp,mode=host
+      --env "GITEA__server__DOMAIN=${gitea_domain}"
+      --env "GITEA__server__ROOT_URL=https://${gitea_domain}/"
+      --env "GITEA__server__SSH_DOMAIN=${gitea_domain}"
+      --env GITEA__server__SSH_PORT=2222
+      --env GITEA__server__SSH_LISTEN_PORT=22
+      --env GITEA__server__START_SSH_SERVER=true
+      --label traefik.enable=true
+      --label traefik.swarm.network=vps-manager-proxy
+      --label "traefik.http.routers.vps-manager-gitea.rule=Host(\`${gitea_domain}\`)"
+      --label traefik.http.routers.vps-manager-gitea.entrypoints=websecure
+      --label traefik.http.routers.vps-manager-gitea.tls=true
+      --label traefik.http.routers.vps-manager-gitea.tls.certresolver=vpsmanager
+      --label traefik.http.services.vps-manager-gitea.loadbalancer.server.port=3000
+    )
+  fi
+
+  if ! docker service create "${gitea_service_args[@]}" \
     "${GITEA_IMAGE}" >/dev/null; then
     gitea_credentials_available=true
     write_status "failed" "Swarm no pudo crear el servicio Gitea. Verifica si el puerto TCP 2222 está disponible."
@@ -922,7 +957,11 @@ PY
     fi
   fi
   gitea_credentials_available=true
-  write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
+  if [[ "${local_gitea}" == "true" ]]; then
+    write_status "succeeded" "Gitea está disponible solo en este VPS en http://127.0.0.1:3001/. Accede mediante un túnel SSH. Las credenciales están disponibles una sola vez durante 30 minutos."
+  else
+    write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
+  fi
   exit 0
 fi
 

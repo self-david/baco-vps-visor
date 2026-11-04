@@ -210,6 +210,33 @@ test("installs Gitea through the fixed agent operation and stores no credentials
   assert.deepEqual(requests, [{ domain: "git.example.com", requestId: giteaTask.id }]);
 });
 
+test("installs local Gitea on the loopback-only test URL", async () => {
+  const giteaTask = {
+    id: task.id,
+    type: "application.gitea.install",
+    payload: { domain: "localhost" },
+  };
+  const handler = createGiteaInstallHandler({
+    async requestGiteaInstall() {},
+    async getStatus() {
+      return {
+        id: giteaTask.id,
+        operation: "install-gitea",
+        state: "succeeded",
+        domain: "localhost",
+        credentialsAvailable: true,
+        message: "Gitea local listo.",
+      };
+    },
+  });
+
+  assert.deepEqual(await handler(giteaTask, new AbortController().signal), {
+    message: "Gitea está disponible solo en este VPS en http://127.0.0.1:3001/. Accede mediante un túnel SSH; las credenciales están disponibles una sola vez.",
+    url: "http://127.0.0.1:3001/",
+    credentialsAvailable: true,
+  });
+});
+
 test("installs PostgreSQL through the fixed host-agent operation without storing credentials", async () => {
   const postgresqlTask = {
     id: task.id,

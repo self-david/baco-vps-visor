@@ -80,6 +80,8 @@ Estado: **Gitea, proyectos Git y recepción autenticada de push implementados; f
 
 - [x] Crear la estructura del catálogo de aplicaciones y el aviso reutilizable para dependencias como Gitea.
 - [x] Desplegar Gitea como aplicación opcional desde el catálogo, con HTTPS bajo subdominio.
+- [x] En modo de prueba, permitir Gitea sin dominio mediante HTTP en loopback (`127.0.0.1:3001`), accesible remotamente solo mediante túnel SSH.
+- [ ] Migrar una instalación local de Gitea a dominio/HTTPS conservando los datos cuando se conecte el dominio.
 - [x] Configurar SSH.
 - [x] Crear repositorios privados desde el panel, con token almacenado como secreto Swarm versionado y conservado en actualizaciones del stack.
 - [x] Consultar ramas de repositorios Gitea y cambiar la rama predeterminada desde el panel, con permisos de administración y auditoría.

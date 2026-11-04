@@ -118,8 +118,9 @@ function validateTask({ id, type, payload, maxAttempts }) {
   if (type === "application.gitea.install"
     && (Object.keys(payload).length !== 1
       || typeof payload.domain !== "string"
-      || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
-      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
+      || (payload.domain !== "localhost"
+        && (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
+          || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))))) {
     throw new TypeError("Gitea application installation task fields are invalid.");
   }
   if (type === "application.n8n.install"
