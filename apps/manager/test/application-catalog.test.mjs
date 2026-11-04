@@ -26,3 +26,18 @@ test("n8n is pinned to a versioned image and declares managed persistence and HT
   assert.match(n8n.features.join(" "), /HTTPS/);
   assert.match(n8n.features.join(" "), /secreto Swarm/);
 });
+
+test("PostgreSQL is pinned to the managed private service image and persistence model", async () => {
+  const postgresql = applicationCatalog.find((application) => application.id === "postgresql");
+  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
+
+  assert.ok(postgresql);
+  assert.equal(postgresql.installation.status, "optional");
+  assert.equal(postgresql.installation.enabled, true);
+  assert.match(postgresql.image, /^postgres:\d+\.\d+-alpine\d+\.\d+$/);
+  assert.ok(serviceAgent.includes(`readonly POSTGRESQL_IMAGE="${postgresql.image}"`));
+  assert.match(postgresql.features.join(" "), /volumen persistente administrado/);
+  assert.match(postgresql.features.join(" "), /vps-manager-postgresql:5432/);
+  assert.match(postgresql.features.join(" "), /secreto Swarm/);
+  assert.match(postgresql.features.join(" "), /Sin puertos publicados/);
+});

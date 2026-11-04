@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createGiteaInstallHandler,
   createN8nInstallHandler,
+  createPostgresqlInstallHandler,
   createProjectBuildHandler,
   createProjectDeployHandler,
   createProjectUndeployHandler,
@@ -207,6 +208,39 @@ test("installs Gitea through the fixed agent operation and stores no credentials
     credentialsAvailable: true,
   });
   assert.deepEqual(requests, [{ domain: "git.example.com", requestId: giteaTask.id }]);
+});
+
+test("installs PostgreSQL through the fixed host-agent operation without storing credentials", async () => {
+  const postgresqlTask = {
+    id: task.id,
+    type: "application.postgresql.install",
+    payload: {},
+  };
+  const requests = [];
+  const handler = createPostgresqlInstallHandler({
+    async requestPostgresqlInstall(requestId) {
+      requests.push(requestId);
+    },
+    async getStatus() {
+      return {
+        id: postgresqlTask.id,
+        operation: "install-postgresql",
+        state: "succeeded",
+        credentialsAvailable: true,
+        message: "PostgreSQL listo.",
+      };
+    },
+  });
+
+  assert.deepEqual(await handler(postgresqlTask, new AbortController().signal), {
+    message: "PostgreSQL está disponible en la red privada de Swarm como vps-manager-postgresql:5432.",
+    credentialsAvailable: true,
+  });
+  assert.deepEqual(requests, [postgresqlTask.id]);
+  await assert.rejects(
+    handler({ ...postgresqlTask, payload: { password: "must-not-persist" } }, new AbortController().signal),
+    { retryable: false },
+  );
 });
 
 test("publishes a project image from a bounded source archive without deploying it", async () => {

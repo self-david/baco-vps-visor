@@ -10,6 +10,7 @@ const allowedOperations = new Set([
   "scale-service",
   "install-gitea",
   "install-n8n",
+  "install-postgresql",
   "configure-gitea-token",
   "configure-registry",
   "build-project",
@@ -109,6 +110,8 @@ function validateStatus(status) {
       ? (!isPublicHostname(status.domain) || typeof status.credentialsAvailable !== "boolean")
       : status.operation === "install-n8n"
         ? !isPublicHostname(status.domain)
+      : status.operation === "install-postgresql"
+        ? typeof status.credentialsAvailable !== "boolean"
       : status.operation === "configure-registry"
         ? (!isPublicHostname(status.domain) || !registryUsernamePattern.test(status.username ?? ""))
       : status.operation === "build-project"
@@ -158,6 +161,7 @@ export function createServiceOperationAgent({
   const requestPath = join(directory, "request.json");
   const statusPath = join(directory, "status.json");
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
+  const postgresqlCredentialsPath = (requestId) => join(directory, `postgresql-credentials-${requestId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
   const nodeCredentialsPath = (requestId) => join(directory, `node-ssh-key-${requestId}`);
@@ -197,6 +201,8 @@ export function createServiceOperationAgent({
         && allowedOperations.has(queuedRequest.operation)
         && (queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
           ? isPublicHostname(queuedRequest.domain)
+          : queuedRequest.operation === "install-postgresql"
+            ? true
           : queuedRequest.operation === "configure-gitea-token"
             ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
             : queuedRequest.operation === "configure-registry"
@@ -234,6 +240,8 @@ export function createServiceOperationAgent({
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
       const expectedFields = queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
         ? ["id", "operation", "domain"]
+        : queuedRequest.operation === "install-postgresql"
+          ? ["id", "operation"]
         : queuedRequest.operation === "configure-gitea-token"
           ? ["id", "operation", "token"]
           : queuedRequest.operation === "configure-registry"
@@ -260,6 +268,8 @@ export function createServiceOperationAgent({
           operation: queuedRequest.operation,
           ...(queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
             ? { domain: queuedRequest.domain }
+            : queuedRequest.operation === "install-postgresql"
+              ? {}
             : queuedRequest.operation === "configure-gitea-token"
               ? {}
               : queuedRequest.operation === "configure-registry"
@@ -286,6 +296,8 @@ export function createServiceOperationAgent({
             ? `Instalación de Gitea aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
             : queuedRequest.operation === "install-n8n"
               ? `Instalación de n8n aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
+            : queuedRequest.operation === "install-postgresql"
+              ? "Instalación de PostgreSQL aceptada; esperando al agente del VPS."
             : queuedRequest.operation === "configure-gitea-token"
               ? "Configuración del token de Gitea aceptada; esperando al agente del VPS."
               : queuedRequest.operation === "configure-registry"
@@ -427,6 +439,49 @@ export function createServiceOperationAgent({
 
   async function requestN8nInstall(domain, requestId = createId()) {
     return requestApplicationInstall("install-n8n", domain, requestId, "n8n");
+  }
+
+  async function requestPostgresqlInstall(requestId = createId()) {
+    if (!requestIdPattern.test(requestId)) {
+      throw new Error("The service operation request identifier is invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "install-postgresql") {
+        throw new Error("The task identifier already belongs to a different PostgreSQL operation.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify({
+        id: requestId,
+        operation: "install-postgresql",
+      })}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      state: "queued",
+      operation: "install-postgresql",
+      message: "Instalación de PostgreSQL aceptada; el agente del VPS iniciará el servicio.",
+    };
   }
 
   async function requestGiteaApiToken(token, requestId = createId()) {
@@ -835,16 +890,81 @@ export function createServiceOperationAgent({
     }
   }
 
+  async function hasPostgresqlCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) return false;
+    const path = postgresqlCredentialsPath(requestId);
+    try {
+      const metadata = await lstat(path);
+      if (!metadata.isFile()) throw new Error("The PostgreSQL credential state path must be a regular file.");
+      if (Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        await unlink(path);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
+  async function consumePostgresqlCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("A valid PostgreSQL installation task identifier is required.");
+    }
+    const path = postgresqlCredentialsPath(requestId);
+    const claimedPath = `${path}.claimed-${createId()}`;
+    try {
+      await rename(path, claimedPath);
+    } catch (error) {
+      if (isMissing(error)) {
+        const expired = new Error("Las credenciales de un solo uso ya fueron consultadas o expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      throw error;
+    }
+    try {
+      const metadata = await lstat(claimedPath);
+      if (!metadata.isFile() || Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        const expired = new Error("Las credenciales de un solo uso expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      const credentials = JSON.parse(await readFile(claimedPath, "utf8"));
+      if (credentials?.taskId !== requestId
+        || credentials.username !== "vps_manager_app"
+        || credentials.database !== "vps_manager_app"
+        || typeof credentials.password !== "string"
+        || !/^[a-f0-9]{64}$/.test(credentials.password)) {
+        throw new Error("The PostgreSQL credential file has an invalid format.");
+      }
+      return {
+        host: "vps-manager-postgresql",
+        port: 5432,
+        database: credentials.database,
+        username: credentials.username,
+        password: credentials.password,
+      };
+    } finally {
+      await unlink(claimedPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+  }
+
   return {
     getStatus,
     hasGiteaCredentials,
     consumeGiteaCredentials,
+    hasPostgresqlCredentials,
+    consumePostgresqlCredentials,
     requestRestart: (serviceId, requestId = createId()) =>
       requestOperation("restart-service", serviceId, requestId),
     requestScale: (serviceId, replicas, requestId = createId()) =>
       requestOperation("scale-service", serviceId, requestId, replicas),
     requestGiteaInstall,
     requestN8nInstall,
+    requestPostgresqlInstall,
     requestGiteaApiToken,
     requestProjectBuild,
     requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>

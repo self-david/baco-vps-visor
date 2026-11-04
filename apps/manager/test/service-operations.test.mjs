@@ -149,6 +149,51 @@ test("queues n8n installation without including generated encryption material", 
   }
 });
 
+test("queues PostgreSQL installation without credentials and reveals them only once", async () => {
+  const fixture = await createFixture();
+  try {
+    const operation = await fixture.agent.requestPostgresqlInstall(requestId);
+    assert.equal(operation.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "install-postgresql",
+    });
+    assert.equal((await fixture.agent.getStatus()).operation, "install-postgresql");
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "install-postgresql",
+      state: "running",
+      credentialsAvailable: false,
+      updatedAt: new Date().toISOString(),
+      message: "Starting PostgreSQL.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).credentialsAvailable, false);
+
+    const credentialsPath = join(fixture.directory, `postgresql-credentials-${requestId}.json`);
+    await writeFile(credentialsPath, JSON.stringify({
+      taskId: requestId,
+      username: "vps_manager_app",
+      database: "vps_manager_app",
+      password: "a".repeat(64),
+    }));
+    assert.equal(await fixture.agent.hasPostgresqlCredentials(requestId), true);
+    assert.deepEqual(await fixture.agent.consumePostgresqlCredentials(requestId), {
+      host: "vps-manager-postgresql",
+      port: 5432,
+      database: "vps_manager_app",
+      username: "vps_manager_app",
+      password: "a".repeat(64),
+    });
+    assert.equal(await fixture.agent.hasPostgresqlCredentials(requestId), false);
+    await assert.rejects(fixture.agent.consumePostgresqlCredentials(requestId), {
+      code: "CREDENTIALS_UNAVAILABLE",
+    });
+    await assert.rejects(fixture.agent.requestPostgresqlInstall("invalid"), /identifier is invalid/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function createFixture(createId = () => requestId) {
   const directory = await mkdtemp(join(tmpdir(), "vps-service-operations-"));
   return {

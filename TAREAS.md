@@ -111,14 +111,15 @@ Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales;
 
 ## Fase 6 — Catálogo
 
-Estado: **pendiente**
+Estado: **parcial** (catálogo persistente y configuración de Supabase implementados; despliegue de Supabase pendiente)
 
 - [x] Definir y validar plantillas versionadas de imagen Docker y variables de entorno para aplicaciones de un contenedor; sin puertos ni volúmenes configurables.
 - [x] Instalar n8n como servicio Swarm de una réplica, con volumen persistente administrado, clave de cifrado en secreto Swarm y dominio Cloudflare/HTTPS desde el panel.
-- [ ] Instalar PostgreSQL.
-- [ ] Instalar Redis.
+- [x] Instalar PostgreSQL como servicio Swarm privado de una réplica, con volumen local administrado, contraseña generada como secreto Swarm y entrega de credenciales de un solo uso.
+- [x] Posponer Redis; no se requiere en el alcance actual.
 - [ ] Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.
-- [ ] Implementar Supabase.
+- [x] Crear catálogo y persistencia de configuración por VPS para Supabase self-hosted, incluyendo servicios, dominios, límites y secretos declarados.
+- [ ] Implementar el despliegue Swarm de Supabase, HTTPS y generación/montaje de secretos.
 - [ ] Implementar actualizaciones.
 
 **Resultado:** catálogo de aplicaciones.

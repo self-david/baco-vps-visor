@@ -18,6 +18,7 @@ import {
 import {
   createGiteaInstallHandler,
   createN8nInstallHandler,
+  createPostgresqlInstallHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createRegistryConfigureHandler,
@@ -28,6 +29,7 @@ import {
   createTaskQueueWorker,
 } from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
+import { validateSupabaseInstanceConfiguration } from "./application-config.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
 import {
@@ -73,6 +75,10 @@ import {
   recordGiteaWebhookDelivery,
   createGiteaInstallTask,
   createN8nInstallTask,
+  createPostgresqlInstallTask,
+  getApplicationCatalog,
+  getApplicationInstances,
+  saveApplicationInstanceConfiguration,
   createRegistryConfigureTask,
   createProjectBuildTask,
   createProjectDeployTask,
@@ -132,6 +138,7 @@ const taskQueueWorker = createTaskQueueWorker({
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
     "application.gitea.install": createGiteaInstallHandler(serviceOperationAgent),
     "application.n8n.install": createN8nInstallHandler(serviceOperationAgent),
+    "application.postgresql.install": createPostgresqlInstallHandler(serviceOperationAgent),
     "registry.configure": createRegistryConfigureHandler(serviceOperationAgent),
     "project.build": createProjectBuildHandler({
       agent: serviceOperationAgent,
@@ -727,6 +734,43 @@ async function getN8nApplicationState() {
   };
 }
 
+async function getPostgresqlApplicationState() {
+  const [services, latestTask] = await Promise.all([
+    dockerGet("/services"),
+    getLatestTaskByType("application.postgresql.install"),
+  ]);
+  const service = services.find((item) => item.Spec?.Name === "vps-manager-postgresql");
+  const installed = service?.Spec?.Labels?.["vps-manager.component"] === "postgresql"
+    && service.Spec.Labels["vps-manager.managed"] === "true";
+  const nameConflict = Boolean(service && !installed);
+  const installing = latestTask?.status === "pending" || latestTask?.status === "in_progress";
+  const credentialsAvailable = Boolean(latestTask)
+    && await serviceOperationAgent.hasPostgresqlCredentials(latestTask.id);
+  return {
+    application: {
+      id: "postgresql",
+      host: "vps-manager-postgresql",
+      port: 5432,
+      database: "vps_manager_app",
+      username: "vps_manager_app",
+      available: !testMode && !installed && !nameConflict && !installing,
+      installed,
+      installing,
+      nameConflict,
+      credentialsAvailable,
+      latestTask: latestTask ? {
+        id: latestTask.id,
+        status: latestTask.status,
+        message: latestTask.status === "completed"
+          ? latestTask.result?.message ?? "PostgreSQL está instalado."
+          : latestTask.status === "failed"
+            ? latestTask.error ?? "La instalación de PostgreSQL falló."
+            : "Instalación de PostgreSQL en curso.",
+      } : null,
+    },
+  };
+}
+
 async function getGiteaApiContext() {
   const { application } = await getGiteaApplicationState();
   if (!application.installed || !application.domain) {
@@ -1181,7 +1225,7 @@ const server = createServer(async (request, response) => {
         respondJson(response, 400, { error: error.message });
         return;
       }
-      if (error?.code === "23505") {
+      if (error?.code === "23505" || error?.code === "APPLICATION_DOMAIN_CONFLICT") {
         respondJson(response, 409, { error: "Ese hostname ya está configurado." });
         return;
       }
@@ -2066,6 +2110,73 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === "/api/system/applications/postgresql") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      try {
+        respondJson(response, 200, await getPostgresqlApplicationState());
+      } catch (error) {
+        console.error("PostgreSQL application status request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el estado de PostgreSQL." });
+      }
+      return;
+    }
+    if (request.method === "POST") {
+      if (!hasSameOrigin(request)) {
+        respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+        return;
+      }
+      try {
+        const { application } = await getPostgresqlApplicationState();
+        if (testMode || application.installed || application.nameConflict || application.installing) {
+          respondJson(response, 409, {
+            error: application.nameConflict
+              ? "Ya existe un servicio con el nombre reservado para PostgreSQL que no pertenece a VPS Manager."
+              : application.installed
+                ? "PostgreSQL ya está instalado."
+                : application.installing
+                  ? "Ya hay una instalación de PostgreSQL en curso."
+                  : "La instalación de PostgreSQL no está habilitada en modo de prueba.",
+          });
+          return;
+        }
+        const taskId = randomUUID();
+        await createPostgresqlInstallTask({ id: taskId });
+        try {
+          await recordAuditEvent({
+            action: "application.postgresql.installation.requested",
+            resourceType: "application",
+            resourceId: "postgresql",
+            details: { taskId },
+          });
+        } catch (error) {
+          console.error("PostgreSQL installation was queued, but the audit event could not be saved:", error);
+        }
+        respondJson(response, 202, {
+          task: {
+            id: taskId,
+            type: "application.postgresql.install",
+            status: "pending",
+            message: "Instalación de PostgreSQL solicitada.",
+          },
+        });
+      } catch (error) {
+        if (error?.code === "APPLICATION_TASK_IN_PROGRESS") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
+        console.error("Could not request PostgreSQL installation:", error);
+        respondJson(response, 503, { error: "No se pudo iniciar la instalación de PostgreSQL." });
+      }
+      return;
+    }
+    respond(response, 405, "Method not allowed", { Allow: "GET, POST" });
+    return;
+  }
+
   if (url.pathname === "/api/system/applications/gitea/token") {
     if (!hasSession(request)) {
       respondJson(response, 401, { error: "Sesión requerida." });
@@ -2413,6 +2524,45 @@ const server = createServer(async (request, response) => {
       }
       console.error("Could not configure Gitea webhook:", error);
       respondJson(response, 503, { error: "No se pudo configurar el webhook de Gitea." });
+    }
+    return;
+  }
+
+  const postgresqlCredentialsMatch = request.method === "GET"
+    && url.pathname.match(/^\/api\/system\/applications\/postgresql\/credentials\/([a-f0-9-]{36})$/i);
+  if (postgresqlCredentialsMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const taskId = postgresqlCredentialsMatch[1];
+      const task = await getTaskById(taskId);
+      if (task?.type !== "application.postgresql.install"
+        || !["completed", "failed"].includes(task.status)
+        || !await serviceOperationAgent.hasPostgresqlCredentials(taskId)) {
+        respondJson(response, 409, { error: "Las credenciales solo están disponibles durante 30 minutos tras iniciar la instalación de PostgreSQL." });
+        return;
+      }
+      const credentials = await serviceOperationAgent.consumePostgresqlCredentials(taskId);
+      try {
+        await recordAuditEvent({
+          action: "application.postgresql.credentials.revealed",
+          resourceType: "application",
+          resourceId: "postgresql",
+          details: { taskId },
+        });
+      } catch (error) {
+        console.error("PostgreSQL credentials were revealed, but the audit event could not be saved:", error);
+      }
+      respondJson(response, 200, { credentials });
+    } catch (error) {
+      if (error?.code === "CREDENTIALS_UNAVAILABLE") {
+        respondJson(response, 410, { error: error.message });
+        return;
+      }
+      console.error("Could not retrieve one-time PostgreSQL credentials:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar las credenciales de un solo uso." });
     }
     return;
   }
@@ -2804,6 +2954,107 @@ const server = createServer(async (request, response) => {
     respondJson(response, 200, { authenticated: false }, {
       "Set-Cookie": `${cookieName}=; HttpOnly${secureCookies ? "; Secure" : ""}; SameSite=Strict; Path=/; Max-Age=0`,
     });
+    return;
+  }
+
+  if (url.pathname === "/api/applications") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    try {
+      const [catalog, instances, nodes] = await Promise.all([
+        getApplicationCatalog(),
+        getApplicationInstances("supabase"),
+        dockerGet("/nodes"),
+      ]);
+      respondJson(response, 200, {
+        catalog,
+        instances,
+        servers: nodes.map(mapSwarmNode),
+      });
+    } catch (error) {
+      console.error("Application catalog request failed:", error);
+      respondJson(response, 503, { error: "No se pudo consultar el catálogo de aplicaciones." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/applications/supabase/instances") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const body = await readJson(request);
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).sort().join(",") !== ["configuration", "name", "serverNodeId"].sort().join(",")
+        || typeof body.serverNodeId !== "string"
+        || !/^[a-f0-9]{25,64}$/i.test(body.serverNodeId)
+        || typeof body.name !== "string"
+        || body.name.trim().length < 1 || body.name.trim().length > 100
+        || /[\u0000-\u001f\u007f]/.test(body.name)) {
+        respondJson(response, 400, { error: "Completa un servidor Swarm y un nombre de instalación válidos." });
+        return;
+      }
+      const configuration = validateSupabaseInstanceConfiguration(body.configuration);
+      const nodes = await dockerGet("/nodes");
+      const node = nodes.find((item) => item.ID?.toLowerCase() === body.serverNodeId.toLowerCase());
+      if (!node || node.Status?.State !== "ready" || node.Spec?.Availability !== "active") {
+        respondJson(response, 409, { error: "Selecciona un VPS activo y listo del Swarm." });
+        return;
+      }
+      const [domains, registry] = await Promise.all([
+        getProjectDomains(),
+        serviceOperationAgent.getRegistryConfiguration(),
+      ]);
+      const reservedDomains = new Set([
+        managerDomain,
+        managerDomain ? `git.${managerDomain}` : "",
+        registry?.domain ?? "",
+        ...domains.map((domain) => domain.hostname),
+      ].filter(Boolean).map((domain) => domain.toLowerCase()));
+      const requestedDomains = [configuration.apiDomain, configuration.studioDomain];
+      if (requestedDomains.some((domain) => reservedDomains.has(domain))
+        || requestedDomains[0] === requestedDomains[1]) {
+        respondJson(response, 409, { error: "Los dominios de API y Studio deben ser distintos y no estar reservados ni conectados en el panel." });
+        return;
+      }
+      const instance = await saveApplicationInstanceConfiguration({
+        applicationId: "supabase",
+        serverNodeId: node.ID,
+        serverHostname: node.Description?.Hostname ?? "desconocido",
+        name: body.name.trim(),
+        configuration,
+      });
+      respondJson(response, 200, {
+        instance,
+        message: `Se guardó la configuración de Supabase para ${instance.serverHostname}. Los secretos se generarán y entregarán al desplegar la instancia.`,
+      });
+    } catch (error) {
+      if (error?.code === "23505" || error?.code === "APPLICATION_DOMAIN_CONFLICT") {
+        respondJson(response, 409, { error: "Uno de los dominios ya está asignado a otra instancia Supabase." });
+        return;
+      }
+      if (error instanceof TypeError || error instanceof RangeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      console.error("Could not save Supabase configuration:", error);
+      respondJson(response, 503, { error: "No se pudo guardar la configuración de Supabase." });
+    }
     return;
   }
 

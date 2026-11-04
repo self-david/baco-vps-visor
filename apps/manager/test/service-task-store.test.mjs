@@ -286,6 +286,37 @@ test("serializes n8n installation tasks without persisting encryption secrets", 
   }), /fields are invalid/);
 });
 
+test("serializes PostgreSQL install tasks without passwords in task payloads or results", async () => {
+  const { pool, tasks } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async () => {} });
+  const postgresqlTask = {
+    id: taskId,
+    type: "application.postgresql.install",
+    payload: {},
+    maxAttempts: 1,
+  };
+  await store.createTask(postgresqlTask);
+  assert.deepEqual(tasks.get(taskId).payload, {});
+  await assert.rejects(store.createTask({
+    ...postgresqlTask,
+    id: workerId,
+    payload: { password: "must-not-persist" },
+  }), /fields are invalid/);
+
+  const storedTask = tasks.get(taskId);
+  storedTask.status = "completed";
+  storedTask.result = {
+    message: "PostgreSQL instalado.",
+    credentialsAvailable: true,
+    password: "must-not-leak",
+  };
+  const listedTask = await store.listRecentTasks();
+  assert.deepEqual(listedTask[0].result, {
+    message: "PostgreSQL instalado.",
+    credentialsAvailable: true,
+  });
+});
+
 test("returns only successful deployment history for selected projects", async () => {
   const { store, tasks } = createFakePool();
   const projectId = "d909f79b-e7f9-41e7-9e7a-6ea000000001";

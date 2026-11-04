@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, n8n opcional, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos y n8n, rollback a despliegues anteriores, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Los secretos genéricos de aplicaciones, el catálogo configurable y el despliegue automático por push siguen pendientes.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, n8n y PostgreSQL opcionales, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos y n8n, rollback a despliegues anteriores, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. El catálogo persistente incluye configuración de Supabase por VPS, pero su despliegue Swarm y la gestión de secretos aún están pendientes; Redis se pospuso. El despliegue automático por push también sigue pendiente.
 
 ---
 
@@ -343,7 +343,7 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 - Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-Gitea y n8n se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, primero conecta desde Dominios un hostname Cloudflare asignado a n8n y configura la IPv4 de entrada. Traefik publica el acceso mediante HTTPS sin publicar puertos del servicio en el host. Prometheus, cAdvisor, Node Exporter, PostgreSQL de catálogo y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel ya forma parte de esta entrega.
+Gitea, n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, primero conecta desde Dominios un hostname Cloudflare asignado a n8n y configura la IPv4 de entrada. Traefik publica el acceso mediante HTTPS sin publicar puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
 
 ### Etapa 6: finalización
 
@@ -735,7 +735,7 @@ Esta primera versión se limita intencionalmente a aplicaciones de un contenedor
 
 ### Backend e infraestructura
 - Supabase.
-- PostgreSQL.
+- PostgreSQL (instancia privada opcional con persistencia administrada).
 - Redis.
 - MinIO (opcional; almacenamiento de objetos compatible con S3).
 
@@ -1889,12 +1889,13 @@ conserva las variables y dominios actualmente configurados.
 
 ## Fase 6 — Catálogo
 
-- Crear formato de plantillas.
-- Instalar n8n.
-- Instalar PostgreSQL.
-- Instalar Redis.
+- Crear catálogo persistente de aplicaciones y configuraciones asociadas a cada VPS.
+- Integrar n8n.
+- Integrar PostgreSQL opcional, privado y persistente desde el catálogo.
+- Posponer Redis; no se requiere en el alcance actual.
 - Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.
-- Implementar Supabase.
+- Guardar configuración de Supabase self-hosted por VPS, incluyendo dominios, servicios, límites y secretos a generar.
+- Implementar el despliegue Swarm de Supabase, HTTPS y generación/montaje de secretos.
 - Implementar actualizaciones.
 
 **Resultado:** catálogo de aplicaciones.

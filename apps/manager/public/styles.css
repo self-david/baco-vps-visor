@@ -62,6 +62,12 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .application-status { padding-top: 12px; border-top: 1px solid #263247; color: #ffcb75; }
 .application-domain { margin: 10px 0 0; font-size: .82rem; }
 .application-actions { flex-wrap: wrap; margin-top: 14px; }
+.application-settings { margin-top: 12px; color: #c4cede; font-size: .84rem; }
+.application-settings summary { cursor: pointer; }
+.application-settings-summary { margin-top: 10px; color: #9ba8bc; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; }
+.application-fieldset { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid #34435b; border-radius: 8px; }
+.application-fieldset legend { padding: 0 6px; color: #9eb8ff; font-size: .88rem; font-weight: 650; }
+.application-fieldset input[type="number"] { width: 100%; }
 .gitea-form { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #263247; }
 .gitea-form h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
 .gitea-form label { color: #c4cede; font-size: .84rem; }

@@ -78,6 +78,11 @@ elif request.get("operation") in {"install-gitea", "install-n8n"}:
         raise SystemExit("Invalid Gitea domain.")
     service_id = "-"
     replicas = "-"
+elif request.get("operation") == "install-postgresql":
+    if set(request) != {"id", "operation"}:
+        raise SystemExit("Invalid PostgreSQL installation request fields.")
+    service_id = "-"
+    replicas = "-"
 elif request.get("operation") == "configure-gitea-token":
     if set(request) != {"id", "operation", "token"}:
         raise SystemExit("Invalid Gitea token configuration request fields.")
@@ -229,6 +234,9 @@ write_status() {
   elif [[ "${operation}" == "install-n8n" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","domain":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${gitea_domain}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "install-postgresql" ]]; then
+    printf '{"id":"%s","operation":"%s","state":"%s","credentialsAvailable":%s,"updatedAt":"%s","message":"%s"}\n' \
+      "${request_id}" "${operation}" "${state}" "${postgresql_credentials_available:-false}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "configure-gitea-token" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -280,6 +288,8 @@ if [[ "${operation}" == "install-gitea" ]]; then
   write_status "running" "Preparando la instalación segura de Gitea."
 elif [[ "${operation}" == "install-n8n" ]]; then
   write_status "running" "Preparando el despliegue persistente y seguro de n8n."
+elif [[ "${operation}" == "install-postgresql" ]]; then
+  write_status "running" "Preparando el despliegue privado y persistente de PostgreSQL."
 elif [[ "${operation}" == "configure-gitea-token" ]]; then
   write_status "running" "Actualizando de forma segura el secreto del token de Gitea."
 elif [[ "${operation}" == "configure-registry" ]]; then
@@ -913,6 +923,185 @@ PY
   fi
   gitea_credentials_available=true
   write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
+  exit 0
+fi
+
+if [[ "${operation}" == "install-postgresql" ]]; then
+  readonly POSTGRESQL_SERVICE="vps-manager-postgresql"
+  readonly POSTGRESQL_IMAGE="postgres:17.11-alpine3.24"
+  readonly POSTGRESQL_SECRET="vps-manager-postgresql-password"
+  readonly POSTGRESQL_VOLUME="vps-manager-postgresql-data"
+  readonly POSTGRESQL_DATABASE="vps_manager_app"
+  readonly POSTGRESQL_USERNAME="vps_manager_app"
+  readonly POSTGRESQL_CREDENTIALS_FILE="${STATE_DIRECTORY}/postgresql-credentials-${request_id}.json"
+  postgresql_credentials_available=false
+
+  if service_info="$(docker service inspect --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${POSTGRESQL_SERVICE}" 2>/dev/null)"; then
+    IFS=' ' read -r _ managed_label component_label <<< "${service_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "postgresql" ]]; then
+      write_status "failed" "Ya existe un servicio con el nombre reservado para PostgreSQL y no pertenece a VPS Manager."
+      exit 1
+    fi
+    if [[ -f "${POSTGRESQL_CREDENTIALS_FILE}" ]]; then
+      postgresql_credentials_available=true
+    fi
+    write_status "succeeded" "PostgreSQL ya estaba instalado; se conservaron el volumen y el secreto de acceso."
+    exit 0
+  fi
+
+  postgresql_secret_exists=false
+  if secret_info="$(docker secret inspect --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}}' "${POSTGRESQL_SECRET}" 2>/dev/null)"; then
+    if [[ "${secret_info}" != "true postgresql-password" ]]; then
+      write_status "failed" "El secreto reservado para PostgreSQL existe y no pertenece a VPS Manager."
+      exit 1
+    fi
+    postgresql_secret_exists=true
+    if [[ ! -f "${POSTGRESQL_CREDENTIALS_FILE}" ]]; then
+      write_status "failed" "Existe un secreto PostgreSQL administrado sin credenciales recuperables para esta tarea; no se reemplazó el secreto ni los datos."
+      exit 1
+    fi
+  fi
+
+  if [[ -e "${POSTGRESQL_CREDENTIALS_FILE}" ]]; then
+    postgresql_password="$(python3 - "${POSTGRESQL_CREDENTIALS_FILE}" "${request_id}" <<'PY'
+import json
+import re
+import sys
+
+path, task_id = sys.argv[1:]
+with open(path, encoding="utf-8") as credential_file:
+    credentials = json.load(credential_file)
+if (credentials.get("taskId") != task_id
+    or credentials.get("username") != "vps_manager_app"
+    or credentials.get("database") != "vps_manager_app"
+    or not re.fullmatch(r"[a-f0-9]{64}", credentials.get("password", ""))):
+    raise SystemExit("Invalid pending PostgreSQL credentials.")
+print(credentials["password"])
+PY
+    )" || {
+      write_status "failed" "No se pudieron validar las credenciales temporales de PostgreSQL."
+      exit 1
+    }
+  else
+    postgresql_password="$(python3 - "${POSTGRESQL_CREDENTIALS_FILE}" "${request_id}" <<'PY'
+import json
+import os
+import secrets
+import sys
+
+path, task_id = sys.argv[1:]
+password = secrets.token_hex(32)
+temporary = f"{path}.tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+with os.fdopen(descriptor, "w", encoding="utf-8") as credential_file:
+    json.dump({
+        "taskId": task_id,
+        "username": "vps_manager_app",
+        "database": "vps_manager_app",
+        "password": password,
+    }, credential_file)
+    credential_file.write("\n")
+os.chown(temporary, 0, 1000)
+os.replace(temporary, path)
+print(password)
+PY
+    )" || {
+      write_status "failed" "No se pudieron generar las credenciales iniciales de PostgreSQL."
+      exit 1
+    }
+  fi
+  postgresql_credentials_available=true
+
+  if ! systemd-run --quiet --on-active=30m \
+    --unit="vps-manager-postgresql-credentials-expire-${request_id}" \
+    /usr/bin/find "${STATE_DIRECTORY}" -maxdepth 1 -type f \
+      -name "postgresql-credentials-${request_id}.json*" -delete; then
+    rm -f -- "${POSTGRESQL_CREDENTIALS_FILE}"
+    postgresql_credentials_available=false
+    write_status "failed" "No se pudo programar la caducidad de las credenciales iniciales."
+    exit 1
+  fi
+
+  secret_file="$(mktemp "${STATE_DIRECTORY}/postgresql-password.XXXXXX")"
+  chmod 0600 "${secret_file}"
+  trap 'rm -f -- "${secret_file}"' EXIT
+  printf '%s' "${postgresql_password}" > "${secret_file}"
+  unset postgresql_password
+
+  if [[ "${postgresql_secret_exists}" != "true" ]]; then
+    docker secret create \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=postgresql-password \
+      "${POSTGRESQL_SECRET}" "${secret_file}" >/dev/null \
+      || { write_status "failed" "No se pudo guardar la contraseña de PostgreSQL como secreto Swarm."; exit 1; }
+  fi
+
+  if volume_info="$(docker volume inspect --format '{{index .Labels "vps-manager.managed"}} {{index .Labels "vps-manager.component"}}' "${POSTGRESQL_VOLUME}" 2>/dev/null)"; then
+    if [[ "${volume_info}" != "true postgresql" ]]; then
+      write_status "failed" "El volumen reservado para PostgreSQL existe y no pertenece a VPS Manager."
+      exit 1
+    fi
+  else
+    docker volume create \
+      --label vps-manager.managed=true \
+      --label vps-manager.component=postgresql \
+      "${POSTGRESQL_VOLUME}" >/dev/null \
+      || { write_status "failed" "No se pudo crear el volumen persistente de PostgreSQL."; exit 1; }
+  fi
+
+  if ! docker pull "${POSTGRESQL_IMAGE}"; then
+    write_status "failed" "No se pudo descargar la versión fijada de PostgreSQL."
+    exit 1
+  fi
+
+  manager_node_id="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null)" \
+    || { write_status "failed" "No se pudo identificar el manager que conservará los datos de PostgreSQL."; exit 1; }
+  [[ "${manager_node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]] \
+    || { write_status "failed" "Docker devolvió un identificador de manager no válido."; exit 1; }
+
+  if ! docker service create \
+    --name "${POSTGRESQL_SERVICE}" \
+    --replicas 1 \
+    --constraint "node.id==${manager_node_id}" \
+    --network vps-manager-proxy \
+    --mount "type=volume,source=${POSTGRESQL_VOLUME},target=/var/lib/postgresql/data" \
+    --secret "source=${POSTGRESQL_SECRET},target=postgresql_password,uid=0,gid=0,mode=0400" \
+    --env "POSTGRES_DB=${POSTGRESQL_DATABASE}" \
+    --env "POSTGRES_USER=${POSTGRESQL_USERNAME}" \
+    --env POSTGRES_PASSWORD_FILE=/run/secrets/postgresql_password \
+    --health-cmd "pg_isready -U ${POSTGRESQL_USERNAME} -d ${POSTGRESQL_DATABASE}" \
+    --health-interval 10s \
+    --health-timeout 5s \
+    --health-retries 5 \
+    --health-start-period 30s \
+    --label vps-manager.managed=true \
+    --label vps-manager.component=postgresql \
+    --limit-cpu 1 \
+    --limit-memory 1G \
+    --restart-condition on-failure \
+    "${POSTGRESQL_IMAGE}" >/dev/null; then
+    write_status "failed" "Swarm no pudo crear el servicio PostgreSQL; el volumen y la contraseña se conservaron."
+    exit 1
+  fi
+
+  postgresql_running=false
+  for _ in $(seq 1 120); do
+    container_id="$(docker ps \
+      --filter "label=com.docker.swarm.service.name=${POSTGRESQL_SERVICE}" \
+      --filter status=running \
+      --format '{{.ID}}' | head -n 1)"
+    if [[ -n "${container_id}" ]] \
+      && docker exec "${container_id}" pg_isready -U "${POSTGRESQL_USERNAME}" -d "${POSTGRESQL_DATABASE}" >/dev/null 2>&1; then
+      postgresql_running=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${postgresql_running}" != "true" ]]; then
+    write_status "failed" "PostgreSQL no pasó la comprobación de salud a tiempo. El volumen y la contraseña se conservaron; revisa los logs del servicio."
+    exit 1
+  fi
+  write_status "succeeded" "PostgreSQL quedó listo en la red privada de Swarm como vps-manager-postgresql:5432. Las credenciales iniciales están disponibles una sola vez durante 30 minutos."
   exit 0
 fi
 

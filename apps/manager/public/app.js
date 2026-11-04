@@ -67,6 +67,18 @@ const installGiteaButton = document.querySelector("#install-gitea");
 const n8nStatus = document.querySelector("#n8n-status");
 const n8nUrl = document.querySelector("#n8n-url");
 const installN8nButton = document.querySelector("#install-n8n");
+const postgresqlStatus = document.querySelector("#postgresql-status");
+const installPostgresqlButton = document.querySelector("#install-postgresql");
+const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
+const postgresqlCredentialsDialog = document.querySelector("#postgresql-credentials-dialog");
+const supabaseStatus = document.querySelector("#supabase-status");
+const supabaseInstancesList = document.querySelector("#supabase-instances");
+const configureSupabaseButton = document.querySelector("#configure-supabase");
+const supabaseConfigurationDialog = document.querySelector("#supabase-configuration-dialog");
+const supabaseConfigurationForm = document.querySelector("#supabase-configuration-form");
+const supabaseConfigurationStatus = document.querySelector("#supabase-configuration-status");
+const supabaseServerNodeSelect = document.querySelector("#supabase-server-node");
+const saveSupabaseConfigurationButton = document.querySelector("#save-supabase-configuration");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
 const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
 const giteaTokenForm = document.querySelector("#gitea-token-form");
@@ -130,6 +142,7 @@ const registryFormStatus = document.querySelector("#registry-form-status");
 const registrySaveButton = document.querySelector("#registry-save");
 let giteaStatusPollTimer;
 let n8nStatusPollTimer;
+let postgresqlStatusPollTimer;
 let giteaTokenConfigurationPending = false;
 let giteaRepositoriesLoaded = false;
 let giteaRepositoriesLoading = false;
@@ -152,6 +165,7 @@ let serviceOperationPollTimer;
 let serviceOperationPending = false;
 let registryConfigurationPollTimer;
 let nodeEnrollmentPollTimer;
+let supabaseApplicationData;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -555,6 +569,8 @@ async function loadTaskHistory() {
         ? "Instalación de Gitea"
         : task.type === "application.n8n.install"
           ? "Instalación de n8n"
+          : task.type === "application.postgresql.install"
+            ? "Instalación de PostgreSQL"
         : task.type === "swarm.node.enroll"
           ? `Alta del nodo ${task.nodeAddress} · ${task.nodeRole}`
         : task.type === "registry.configure"
@@ -1666,6 +1682,211 @@ async function loadN8nApplication() {
   }
 }
 
+function schedulePostgresqlStatusPoll() {
+  if (postgresqlStatusPollTimer !== undefined || dashboardView.classList.contains("hidden")) return;
+  postgresqlStatusPollTimer = setTimeout(() => {
+    postgresqlStatusPollTimer = undefined;
+    void loadPostgresqlApplication();
+  }, 3000);
+}
+
+async function loadPostgresqlApplication() {
+  try {
+    const { application } = await request("/api/system/applications/postgresql");
+    installPostgresqlButton.classList.toggle("hidden", !application.available);
+    installPostgresqlButton.disabled = application.installing;
+    revealPostgresqlCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
+    postgresqlStatus.textContent = application.latestTask?.message
+      ?? (application.installed
+        ? "PostgreSQL está instalado y disponible en la red privada de Swarm como vps-manager-postgresql:5432."
+        : application.nameConflict
+          ? "El nombre del servicio de PostgreSQL está ocupado por un servicio ajeno a VPS Manager."
+          : "Instala PostgreSQL para habilitar una base de datos privada y persistente.");
+    if (application.installing) schedulePostgresqlStatusPoll();
+    else if (postgresqlStatusPollTimer !== undefined) {
+      clearTimeout(postgresqlStatusPollTimer);
+      postgresqlStatusPollTimer = undefined;
+    }
+  } catch (error) {
+    postgresqlStatus.textContent = error.message;
+    if (postgresqlStatusPollTimer !== undefined) {
+      clearTimeout(postgresqlStatusPollTimer);
+      postgresqlStatusPollTimer = undefined;
+    }
+  }
+}
+
+function getSupabaseDefaults(configurationSchema) {
+  const defaults = configurationSchema?.defaults ?? {};
+  return {
+    ...defaults,
+    resourceLimits: defaults.resourceLimits ?? {},
+    smtp: defaults.smtp ?? null,
+    oauthProviders: defaults.oauthProviders ?? {},
+  };
+}
+
+function fillSupabaseConfigurationForm(serverNodeId) {
+  const node = supabaseApplicationData?.servers.find((server) => server.id === serverNodeId);
+  if (!node) return;
+  const instance = supabaseApplicationData.instances.find((item) => item.serverNodeId === serverNodeId);
+  const configuration = instance?.configuration
+    ?? getSupabaseDefaults(supabaseApplicationData.catalogEntry?.configurationSchema);
+  const values = {
+    name: instance?.name ?? `Supabase - ${node.hostname}`,
+    apiDomain: configuration.apiDomain ?? "",
+    studioDomain: configuration.studioDomain ?? "",
+    siteUrl: configuration.siteUrl ?? "",
+    additionalRedirectUrls: (configuration.additionalRedirectUrls ?? []).join("\n"),
+    organizationName: configuration.organizationName,
+    projectName: configuration.projectName,
+    disableSignup: configuration.disableSignup,
+    enableEmailSignup: configuration.enableEmailSignup,
+    enableEmailAutoconfirm: configuration.enableEmailAutoconfirm,
+    enableAnonymousUsers: configuration.enableAnonymousUsers,
+    jwtExpirySeconds: configuration.jwtExpirySeconds,
+    maxRows: configuration.maxRows,
+    storageFileSizeLimitBytes: configuration.storageFileSizeLimitBytes,
+    storageRegion: configuration.storageRegion,
+    enableImageTransformation: configuration.enableImageTransformation,
+    functionsVerifyJwt: configuration.functionsVerifyJwt,
+    smtp: configuration.smtp,
+    oauthProviders: configuration.oauthProviders,
+    resourceLimits: configuration.resourceLimits,
+  };
+  for (const [name, value] of Object.entries(values)) {
+    const field = supabaseConfigurationForm.elements.namedItem(name);
+    if (!field) continue;
+    if (field.type === "checkbox") field.checked = value === true;
+    else if (name === "smtp") field.value = value ? JSON.stringify(value, null, 2) : "";
+    else if (name === "oauthProviders" || name === "resourceLimits") field.value = JSON.stringify(value, null, 2);
+    else field.value = value ?? "";
+  }
+  supabaseConfigurationStatus.textContent = instance
+    ? `Editando la configuración guardada para ${node.hostname}.`
+    : `Se creará la única instancia Supabase de ${node.hostname}.`;
+  if (node.state !== "ready" || node.availability !== "active") {
+    supabaseConfigurationStatus.textContent += " El VPS no está activo y listo; reactívalo para poder guardar cambios.";
+  }
+  saveSupabaseConfigurationButton.disabled = node.state !== "ready" || node.availability !== "active";
+}
+
+function renderSupabaseInstances(instances) {
+  supabaseInstancesList.replaceChildren();
+  if (instances.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Todavía no hay configuraciones guardadas.";
+    supabaseInstancesList.append(empty);
+    return;
+  }
+  for (const instance of instances) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = instance.name;
+    const detail = document.createElement("div");
+    detail.className = "resource-detail";
+    detail.textContent = `${instance.serverHostname} · ${instance.status} · API ${instance.configuration.apiDomain} · Studio ${instance.configuration.studioDomain}`;
+    const edit = document.createElement("button");
+    edit.className = "button secondary resource-action";
+    edit.type = "button";
+    edit.textContent = "Editar";
+    edit.addEventListener("click", () => {
+      supabaseServerNodeSelect.value = instance.serverNodeId;
+      fillSupabaseConfigurationForm(instance.serverNodeId);
+      supabaseConfigurationDialog.showModal();
+    });
+    main.append(name, detail);
+    row.append(main, edit);
+    supabaseInstancesList.append(row);
+  }
+}
+
+function renderSupabaseCatalog(catalog, servers, instances) {
+  const entry = catalog.find((application) => application.id === "supabase");
+  supabaseApplicationData = { catalogEntry: entry, catalog, servers, instances };
+  const services = entry?.serviceManifest?.services ?? {};
+  const serviceList = document.querySelector("#supabase-services");
+  serviceList.replaceChildren();
+  for (const [name, service] of Object.entries(services)) {
+    const item = document.createElement("li");
+    item.textContent = `${name}: ${service.image}${service.port ? ` · puerto interno ${service.port}` : ""}`;
+    serviceList.append(item);
+  }
+  const schema = entry?.configurationSchema ?? {};
+  const settings = document.querySelector("#supabase-settings-summary");
+  settings.textContent = [
+    `Volúmenes persistentes: ${(schema.fields?.find((field) => field.key === "persistentVolumes")?.default
+      ? Object.entries(schema.fields.find((field) => field.key === "persistentVolumes").default)
+        .map(([name, path]) => `${name} → ${path}`).join(" · ")
+      : "definidos por catálogo")}`,
+    `Red: ${schema.network?.name ?? "vps-manager-proxy"} (${schema.network?.type ?? "overlay"})`,
+    `Secretos generados por VPS: ${(schema.fields?.find((field) => field.key === "secrets")?.values ?? []).join(", ")}`,
+  ].join("\n");
+  const readyServers = servers.filter((server) => server.state === "ready" && server.availability === "active");
+  supabaseServerNodeSelect.replaceChildren();
+  for (const server of servers) {
+    const hasConfiguration = instances.some((instance) => instance.serverNodeId === server.id);
+    if (!readyServers.includes(server) && !hasConfiguration) continue;
+    const option = document.createElement("option");
+    option.value = server.id;
+    option.textContent = `${server.hostname} · ${server.role} · Docker ${server.engineVersion ?? "?"}`;
+    option.disabled = !readyServers.includes(server);
+    supabaseServerNodeSelect.append(option);
+  }
+  configureSupabaseButton.disabled = !entry || readyServers.length === 0;
+  renderSupabaseInstances(instances);
+  supabaseStatus.textContent = entry
+    ? `${entry.name} ${entry.version}: ${Object.keys(services).length} servicios. ${readyServers.length} VPS activos disponibles; ${instances.length} configuración${instances.length === 1 ? "" : "es"} guardada${instances.length === 1 ? "" : "s"}.`
+    : "Supabase no está habilitado en el catálogo.";
+}
+
+async function loadSupabaseApplications() {
+  supabaseStatus.textContent = "Consultando catálogo y servidores Swarm…";
+  try {
+    const result = await request("/api/applications");
+    renderSupabaseCatalog(result.catalog, result.servers, result.instances);
+  } catch (error) {
+    configureSupabaseButton.disabled = true;
+    supabaseStatus.textContent = error.message;
+  }
+}
+
+function parseSupabaseJsonField(name, fallback) {
+  const raw = supabaseConfigurationForm.elements.namedItem(name).value.trim();
+  return raw ? JSON.parse(raw) : fallback;
+}
+
+function getSupabaseConfigurationFormValues() {
+  const values = Object.fromEntries(new FormData(supabaseConfigurationForm));
+  const configuration = {
+    apiDomain: values.apiDomain,
+    studioDomain: values.studioDomain,
+    siteUrl: values.siteUrl,
+    additionalRedirectUrls: values.additionalRedirectUrls.split(/\r?\n/).map((url) => url.trim()).filter(Boolean),
+    organizationName: values.organizationName,
+    projectName: values.projectName,
+    disableSignup: supabaseConfigurationForm.elements.disableSignup.checked,
+    enableEmailSignup: supabaseConfigurationForm.elements.enableEmailSignup.checked,
+    enableEmailAutoconfirm: supabaseConfigurationForm.elements.enableEmailAutoconfirm.checked,
+    enableAnonymousUsers: supabaseConfigurationForm.elements.enableAnonymousUsers.checked,
+    jwtExpirySeconds: Number(values.jwtExpirySeconds),
+    maxRows: Number(values.maxRows),
+    storageFileSizeLimitBytes: Number(values.storageFileSizeLimitBytes),
+    storageRegion: values.storageRegion,
+    enableImageTransformation: supabaseConfigurationForm.elements.enableImageTransformation.checked,
+    functionsVerifyJwt: supabaseConfigurationForm.elements.functionsVerifyJwt.checked,
+    smtp: parseSupabaseJsonField("smtp", null),
+    oauthProviders: parseSupabaseJsonField("oauthProviders", {}),
+    resourceLimits: parseSupabaseJsonField("resourceLimits", {}),
+  };
+  return { name: values.name.trim(), serverNodeId: values.serverNodeId, configuration };
+}
+
 async function loadRegistryConfiguration() {
   try {
     const result = await request("/api/registry");
@@ -2043,6 +2264,30 @@ async function revealGiteaCredentials() {
   }
 }
 
+async function revealPostgresqlCredentials() {
+  revealPostgresqlCredentialsButton.disabled = true;
+  try {
+    const { application } = await request("/api/system/applications/postgresql");
+    if (!application.credentialsAvailable || !application.latestTask?.id) {
+      throw new Error("No hay credenciales de PostgreSQL disponibles para mostrar.");
+    }
+    const result = await request(`/api/system/applications/postgresql/credentials/${encodeURIComponent(application.latestTask.id)}`);
+    const { credentials } = result;
+    document.querySelector("#postgresql-credential-host").textContent = credentials.host;
+    document.querySelector("#postgresql-credential-port").textContent = String(credentials.port);
+    document.querySelector("#postgresql-credential-database").textContent = credentials.database;
+    document.querySelector("#postgresql-credential-username").textContent = credentials.username;
+    document.querySelector("#postgresql-credential-password").textContent = credentials.password;
+    postgresqlCredentialsDialog.showModal();
+    await loadPostgresqlApplication();
+  } catch (error) {
+    postgresqlStatus.textContent = error.message;
+    revealPostgresqlCredentialsButton.classList.add("hidden");
+  } finally {
+    revealPostgresqlCredentialsButton.disabled = false;
+  }
+}
+
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
@@ -2076,6 +2321,8 @@ async function loadResources() {
       loadTaskHistory(),
       loadGiteaApplication(),
       loadN8nApplication(),
+      loadPostgresqlApplication(),
+      loadSupabaseApplications(),
       loadProjects(),
       loadDomains(),
       loadRegistryConfiguration(),
@@ -2115,6 +2362,34 @@ logoutButton.addEventListener("click", async () => {
 });
 
 refreshButton.addEventListener("click", loadResources);
+configureSupabaseButton.addEventListener("click", () => {
+  fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
+  supabaseConfigurationDialog.showModal();
+});
+supabaseServerNodeSelect.addEventListener("change", () => fillSupabaseConfigurationForm(supabaseServerNodeSelect.value));
+document.querySelector("#close-supabase-configuration").addEventListener("click", () => supabaseConfigurationDialog.close());
+supabaseConfigurationForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  saveSupabaseConfigurationButton.disabled = true;
+  supabaseConfigurationStatus.textContent = "Guardando configuración de Supabase…";
+  try {
+    const body = getSupabaseConfigurationFormValues();
+    const result = await request("/api/applications/supabase/instances", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    supabaseConfigurationDialog.close();
+    supabaseStatus.textContent = result.message;
+    await loadSupabaseApplications();
+  } catch (error) {
+    supabaseConfigurationStatus.textContent = error.message;
+  } finally {
+    const selectedServer = supabaseApplicationData?.servers.find((server) => server.id === supabaseServerNodeSelect.value);
+    saveSupabaseConfigurationButton.disabled = !selectedServer
+      || selectedServer.state !== "ready"
+      || selectedServer.availability !== "active";
+  }
+});
 refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
@@ -2134,6 +2409,18 @@ installN8nButton.addEventListener("click", async () => {
   } catch (error) {
     n8nStatus.textContent = error.message;
     installN8nButton.disabled = false;
+  }
+});
+installPostgresqlButton.addEventListener("click", async () => {
+  if (!confirm("PostgreSQL se instalará con almacenamiento persistente, una contraseña aleatoria como secreto Swarm y acceso solo por la red privada de Swarm. No se publicarán puertos del VPS. Las credenciales estarán disponibles una vez durante 30 minutos. ¿Continuar?")) return;
+  installPostgresqlButton.disabled = true;
+  postgresqlStatus.textContent = "Solicitando la instalación segura de PostgreSQL…";
+  try {
+    await request("/api/system/applications/postgresql", { method: "POST" });
+    await Promise.all([loadPostgresqlApplication(), loadTaskHistory()]);
+  } catch (error) {
+    postgresqlStatus.textContent = error.message;
+    installPostgresqlButton.disabled = false;
   }
 });
 nodeEnrollForm.addEventListener("submit", async (event) => {
@@ -2181,7 +2468,9 @@ registryForm.addEventListener("submit", async (event) => {
   }
 });
 revealGiteaCredentialsButton.addEventListener("click", revealGiteaCredentials);
+revealPostgresqlCredentialsButton.addEventListener("click", revealPostgresqlCredentials);
 document.querySelector("#close-gitea-credentials").addEventListener("click", () => giteaCredentialsDialog.close());
+document.querySelector("#close-postgresql-credentials").addEventListener("click", () => postgresqlCredentialsDialog.close());
 document.querySelector("#copy-gitea-credentials").addEventListener("click", async () => {
   const username = document.querySelector("#gitea-credential-username").textContent;
   const password = document.querySelector("#gitea-credential-password").textContent;
@@ -2192,6 +2481,20 @@ document.querySelector("#copy-gitea-credentials").addEventListener("click", asyn
     document.querySelector("#gitea-status").textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
   } catch (error) {
     document.querySelector("#gitea-status").textContent = `No se pudieron copiar las credenciales: ${error.message}`;
+  }
+});
+document.querySelector("#copy-postgresql-credentials").addEventListener("click", async () => {
+  const credentials = Object.fromEntries(["host", "port", "database", "username", "password"].map((field) => [
+    field,
+    document.querySelector(`#postgresql-credential-${field}`).textContent,
+  ]));
+  try {
+    await navigator.clipboard.writeText(
+      `Host: ${credentials.host}\nPuerto: ${credentials.port}\nBase de datos: ${credentials.database}\nUsuario: ${credentials.username}\nContraseña: ${credentials.password}`,
+    );
+    postgresqlStatus.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
+  } catch (error) {
+    postgresqlStatus.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
   }
 });
 webUpdateButton.addEventListener("click", startWebUpdate);

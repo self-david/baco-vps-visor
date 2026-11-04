@@ -543,6 +543,135 @@ export async function createN8nInstallTask(task) {
   });
 }
 
+export async function createPostgresqlInstallTask(task) {
+  return createTask({
+    id: task.id,
+    type: "application.postgresql.install",
+    payload: {},
+    maxAttempts: 1,
+  });
+}
+
+function mapApplicationCatalog(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    description: row.description,
+    version: row.version,
+    enabled: row.enabled,
+    configurationSchema: row.configuration_schema,
+    serviceManifest: row.service_manifest,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function mapApplicationInstance(row) {
+  return {
+    id: row.id,
+    applicationId: row.application_id,
+    serverNodeId: row.server_node_id,
+    serverHostname: row.server_hostname,
+    name: row.name,
+    configuration: row.configuration,
+    status: row.status,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function getApplicationCatalog() {
+  const result = await pool.query(`
+    SELECT id, name, category, description, version, enabled, configuration_schema,
+      service_manifest, updated_at
+    FROM application_catalog
+    WHERE enabled = true
+    ORDER BY category, name
+  `);
+  return result.rows.map(mapApplicationCatalog);
+}
+
+export async function getApplicationInstances(applicationId) {
+  const result = await pool.query(`
+    SELECT id, application_id, server_node_id, server_hostname, name,
+      configuration, status, created_at, updated_at
+    FROM application_instances
+    WHERE application_id = $1
+    ORDER BY server_hostname, id
+  `, [applicationId]);
+  return result.rows.map(mapApplicationInstance);
+}
+
+export async function saveApplicationInstanceConfiguration(instance) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (instance.applicationId === "supabase") {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["application.supabase.domains"]);
+      const conflictingDomain = await client.query(`
+        SELECT id FROM application_instances
+        WHERE application_id = 'supabase'
+          AND server_node_id <> $1
+          AND (
+            lower(configuration->>'apiDomain') = ANY($2::text[])
+            OR lower(configuration->>'studioDomain') = ANY($2::text[])
+          )
+        LIMIT 1
+      `, [
+        instance.serverNodeId,
+        [instance.configuration.apiDomain, instance.configuration.studioDomain].map((domain) => domain.toLowerCase()),
+      ]);
+      if (conflictingDomain.rowCount > 0) {
+        const conflict = new Error("One of the requested Supabase domains is already assigned.");
+        conflict.code = "APPLICATION_DOMAIN_CONFLICT";
+        throw conflict;
+      }
+    }
+    const result = await client.query(`
+      INSERT INTO application_instances (
+        application_id, server_node_id, server_hostname, name, configuration, status
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, 'configured')
+      ON CONFLICT (application_id, server_node_id) DO UPDATE
+      SET server_hostname = EXCLUDED.server_hostname,
+          name = EXCLUDED.name,
+          configuration = EXCLUDED.configuration,
+          status = CASE
+            WHEN application_instances.status = 'installed' THEN 'installed'
+            ELSE 'configured'
+          END,
+          updated_at = now()
+      RETURNING id, application_id, server_node_id, server_hostname, name,
+        configuration, status, created_at, updated_at
+    `, [
+      instance.applicationId,
+      instance.serverNodeId,
+      instance.serverHostname,
+      instance.name,
+      JSON.stringify(instance.configuration),
+    ]);
+    const saved = mapApplicationInstance(result.rows[0]);
+    await insertAuditEvent(client, {
+      action: "application.instance.configuration.saved",
+      resourceType: "application_instance",
+      resourceId: saved.id,
+      details: {
+        applicationId: saved.applicationId,
+        serverNodeId: saved.serverNodeId,
+        serverHostname: saved.serverHostname,
+        name: saved.name,
+      },
+    });
+    await client.query("COMMIT");
+    return saved;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function createRegistryConfigureTask(task) {
   return createTask({
     id: task.id,

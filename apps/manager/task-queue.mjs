@@ -247,6 +247,47 @@ export function createN8nInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
   };
 }
 
+export function createPostgresqlInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
+  if (!agent || typeof agent.requestPostgresqlInstall !== "function" || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
+    throw new TypeError("The PostgreSQL installation task handler configuration is invalid.");
+  }
+
+  return async (task, signal) => {
+    if (task.type !== "application.postgresql.install"
+      || !task.payload || typeof task.payload !== "object" || Object.keys(task.payload).length !== 0) {
+      throw new TaskExecutionError("La tarea contiene una solicitud de instalación de PostgreSQL inválida.", {
+        retryable: false,
+      });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+    await agent.requestPostgresqlInstall(task.id);
+
+    while (!signal.aborted) {
+      const operation = await agent.getStatus();
+      if (operation?.id === task.id) {
+        if (operation.operation !== "install-postgresql"
+          || typeof operation.credentialsAvailable !== "boolean") {
+          throw new TaskExecutionError("El agente devolvió un resultado de PostgreSQL inconsistente.", {
+            retryable: false,
+          });
+        }
+        if (operation.state === "succeeded") {
+          return {
+            message: "PostgreSQL está disponible en la red privada de Swarm como vps-manager-postgresql:5432.",
+            credentialsAvailable: operation.credentialsAvailable,
+          };
+        }
+        if (operation.state === "failed") {
+          throw new TaskExecutionError(operation.message, { retryable: false });
+        }
+      }
+      await waitForRetry(signal, pollIntervalMs);
+    }
+    throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+  };
+}
+
 export function createRegistryConfigureHandler(agent, {
   pollIntervalMs = 1000,
   maximumDurationMs = 14 * 60 * 1000,

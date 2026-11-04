@@ -60,6 +60,9 @@ function mapTask(row, { includePayload = false } = {}) {
         ...(row.type === "application.n8n.install" && typeof row.result.url === "string"
           ? { url: row.result.url }
           : {}),
+        ...(row.type === "application.postgresql.install" && row.result.credentialsAvailable === true
+          ? { credentialsAvailable: true }
+          : {}),
         ...(row.type === "project.build" && typeof row.result.image === "string"
           ? {
             image: row.result.image,
@@ -126,6 +129,9 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
     throw new TypeError("n8n application installation task fields are invalid.");
   }
+  if (type === "application.postgresql.install" && Object.keys(payload).length !== 0) {
+    throw new TypeError("PostgreSQL application installation task fields are invalid.");
+  }
   if (type === "registry.configure"
     && (Object.keys(payload).sort().join(",") !== ["domain", "username"].sort().join(",")
       || typeof payload.domain !== "string"
@@ -180,7 +186,9 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      if (type === "application.gitea.install" || type === "application.n8n.install") {
+      if (type === "application.gitea.install"
+        || type === "application.n8n.install"
+        || type === "application.postgresql.install") {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [type]);
         const activeTask = await client.query(
           `SELECT id FROM tasks
