@@ -1,4 +1,5 @@
 import { createProjectZip, detectProjectBuildProfile, inspectProjectZip } from "/project-archive.mjs";
+import { projectTemplates } from "/project-templates.mjs";
 
 const request = async (path, options = {}) => {
   const response = await fetch(path, {
@@ -29,6 +30,7 @@ const selectionDetails = document.querySelector("#project-selection-details");
 const selectionTree = document.querySelector("#project-selection-tree");
 const importButton = document.querySelector("#project-import-files");
 const deploymentTypeSelect = document.querySelector("#project-import-deployment-type");
+const templateButtons = document.querySelectorAll("[data-project-template]");
 
 let selectedFiles = [];
 let importing = false;
@@ -314,6 +316,28 @@ filesInput.addEventListener("change", () => {
   void showSelection(Array.from(filesInput.files ?? []).map((file) => ({ file, path: file.name })));
 });
 importButton.addEventListener("click", () => void importSelectedFiles());
+for (const button of templateButtons) {
+  button.addEventListener("click", async () => {
+    const template = projectTemplates.find(({ id }) => id === button.dataset.projectTemplate);
+    if (!template) {
+      uploadStatus.textContent = "No se encontró la plantilla seleccionada.";
+      return;
+    }
+    for (const candidate of templateButtons) candidate.disabled = true;
+    try {
+      await showSelection(template.files.map(({ name, type, content }) => ({
+        file: new File([content], name, { type }),
+        path: name,
+      })), template.name);
+      deploymentTypeSelect.value = template.deploymentType;
+      selection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (error) {
+      uploadStatus.textContent = `No se pudo preparar la plantilla: ${error.message}`;
+    } finally {
+      for (const candidate of templateButtons) candidate.disabled = false;
+    }
+  });
+}
 
 for (const eventName of ["dragenter", "dragover"]) {
   dropzone.addEventListener(eventName, (event) => {

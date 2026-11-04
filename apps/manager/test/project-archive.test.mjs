@@ -5,6 +5,7 @@ import {
   detectProjectBuildProfile,
   inspectProjectZip,
 } from "../public/project-archive.mjs";
+import { projectTemplates } from "../public/project-templates.mjs";
 import { validateProjectArchive } from "../project-archive-validation.mjs";
 
 function fileWithPath(name, content, path) {
@@ -32,6 +33,32 @@ test("recommends deploy strategies only for supported project layouts", () => {
   assert.equal(detectProjectBuildProfile(["package.json", "server.js"]).recommendedDeploymentType, "dynamic");
   assert.equal(detectProjectBuildProfile(["package.json", "package-lock.json"]).recommendedDeploymentType, "build");
   assert.equal(detectProjectBuildProfile(["main.cpp"]).requiresCustomDockerfile, true);
+});
+
+test("included project templates create valid archives with deployable profiles", async () => {
+  assert.deepEqual(projectTemplates.map(({ id }) => id), [
+    "html-vanilla",
+    "node-no-dependencies",
+    "python-no-dependencies",
+  ]);
+  for (const template of projectTemplates) {
+    const files = template.files.map(({ name, content }) => ({
+      file: fileWithPath(name, content, name),
+      path: name,
+    }));
+    const archive = await createProjectZip(files, template.name);
+    const inspected = await inspectProjectZip(archive);
+    const profile = detectProjectBuildProfile(inspected.paths);
+    assert.equal(profile.recommendedDeploymentType, template.deploymentType, template.id);
+    assert.deepEqual(inspected.paths, template.files.map(({ name }) => name), template.id);
+  }
+
+  const nodeTemplate = projectTemplates.find(({ id }) => id === "node-no-dependencies");
+  assert.match(nodeTemplate.files[0].content, /require\("node:http"\)/);
+  assert.match(nodeTemplate.files[0].content, /"0\.0\.0\.0"/);
+  const pythonTemplate = projectTemplates.find(({ id }) => id === "python-no-dependencies");
+  assert.match(pythonTemplate.files[0].content, /ThreadingHTTPServer\(\("0\.0\.0\.0", port\)/);
+  assert.match(pythonTemplate.files[0].content, /\/health/);
 });
 
 test("creates a ZIP with one project root and UTF-8 filenames", async () => {

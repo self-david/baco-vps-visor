@@ -14,12 +14,13 @@ test("project deployment configuration parser imports its fingerprint dependency
 });
 
 test("projects tab exposes GitHub OAuth, imports, and a route-based detail view", async () => {
-  const [page, projectsPanel, projectSettingsForm, projectDetailView, projectImport] = await Promise.all([
+  const [page, projectsPanel, projectSettingsForm, projectDetailView, projectImport, projectTemplates] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectsPanel.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectSettingsForm.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/project-templates.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
@@ -36,6 +37,13 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /id="project-zip-input"/);
   assert.match(projectsPanel, /id="project-files-input"/);
   assert.match(projectsPanel, /id="project-selection-tree"/);
+  assert.match(projectsPanel, /data-project-template="html-vanilla"/);
+  assert.match(projectsPanel, /data-project-template="node-no-dependencies"/);
+  assert.match(projectsPanel, /data-project-template="python-no-dependencies"/);
+  assert.match(projectImport, /projectTemplates\.find/);
+  assert.match(projectImport, /new File\(\[content\]/);
+  assert.match(projectTemplates, /name: "server\.js"/);
+  assert.match(projectTemplates, /name: "main\.py"/);
   const domainsPanel = await readFile(new URL("../src/components/DomainsPanel.astro", import.meta.url), "utf8");
   const dialogs = await readFile(new URL("../src/components/DashboardDialogs.astro", import.meta.url), "utf8");
   const guideDialog = await readFile(new URL("../src/components/GuideDialog.astro", import.meta.url), "utf8");
