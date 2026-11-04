@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, link, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { validateSwarmNodeRequest } from "./swarm-node-manager.mjs";
 
 const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
@@ -13,6 +14,7 @@ const allowedOperations = new Set([
   "build-project",
   "deploy-project",
   "remove-project",
+  "enroll-swarm-node",
 ]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
@@ -112,7 +114,24 @@ function validateStatus(status) {
               && (!serviceIdPattern.test(status.serviceId ?? "") || typeof status.image !== "string")))
           : status.operation === "remove-project"
             ? !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
-        : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
+            : status.operation === "enroll-swarm-node"
+              ? (() => {
+                try {
+                  validateSwarmNodeRequest({
+                    address: status.nodeAddress,
+                    sshUser: status.sshUser,
+                    sshPort: status.sshPort,
+                    hostFingerprint: status.hostFingerprint,
+                    privateCidr: status.privateCidr,
+                    managerAddress: status.managerAddress,
+                    role: status.role,
+                  });
+                  return status.state === "succeeded" && !serviceIdPattern.test(status.nodeId ?? "");
+                } catch {
+                  return true;
+                }
+              })()
+            : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
     || (status.operation === "configure-registry"
@@ -133,6 +152,7 @@ export function createServiceOperationAgent({
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
+  const nodeCredentialsPath = (requestId) => join(directory, `node-ssh-key-${requestId}`);
   const registryStatusPath = join(directory, "registry-status.json");
 
   async function readOptional(path) {
@@ -181,7 +201,24 @@ export function createServiceOperationAgent({
                   && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
                 : queuedRequest.operation === "remove-project"
                   ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
-              : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
+                  : queuedRequest.operation === "enroll-swarm-node"
+                    ? (() => {
+                      try {
+                        validateSwarmNodeRequest({
+                          address: queuedRequest.address,
+                          sshUser: queuedRequest.sshUser,
+                          sshPort: queuedRequest.sshPort,
+                          hostFingerprint: queuedRequest.hostFingerprint,
+                          privateCidr: queuedRequest.privateCidr,
+                          managerAddress: queuedRequest.managerAddress,
+                          role: queuedRequest.role,
+                        });
+                        return true;
+                      } catch {
+                        return false;
+                      }
+                    })()
+                : serviceIdPattern.test(queuedRequest.serviceId ?? "")));
       if (!validCommonFields) {
         throw new Error("The service operation request file has an invalid format.");
       }
@@ -199,6 +236,8 @@ export function createServiceOperationAgent({
             ? ["id", "operation", "projectId", "commitSha"]
             : queuedRequest.operation === "remove-project"
               ? ["id", "operation", "projectId"]
+              : queuedRequest.operation === "enroll-swarm-node"
+                ? ["id", "operation", "address", "sshUser", "sshPort", "hostFingerprint", "privateCidr", "managerAddress", "role"]
         : queuedRequest.operation === "scale-service"
         ? ["id", "operation", "serviceId", "replicas"]
         : ["id", "operation", "serviceId"];
@@ -223,6 +262,16 @@ export function createServiceOperationAgent({
                   ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
                   : queuedRequest.operation === "remove-project"
                     ? { projectId: queuedRequest.projectId }
+                    : queuedRequest.operation === "enroll-swarm-node"
+                      ? {
+                        nodeAddress: queuedRequest.address,
+                        sshUser: queuedRequest.sshUser,
+                        sshPort: queuedRequest.sshPort,
+                        hostFingerprint: queuedRequest.hostFingerprint,
+                        privateCidr: queuedRequest.privateCidr,
+                        managerAddress: queuedRequest.managerAddress,
+                        role: queuedRequest.role,
+                      }
               : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
           message: queuedRequest.operation === "install-gitea"
@@ -237,6 +286,8 @@ export function createServiceOperationAgent({
                   ? "Despliegue aceptado; esperando al agente Swarm del VPS."
                   : queuedRequest.operation === "remove-project"
                     ? "Retiro aceptado; esperando al agente Swarm del VPS."
+                    : queuedRequest.operation === "enroll-swarm-node"
+                      ? `Alta de nodo ${queuedRequest.address} aceptada; esperando al agente host.`
             : queuedRequest.operation === "scale-service"
             ? "Solicitud aceptada; esperando que el agente del VPS escale el servicio."
             : "Solicitud aceptada; esperando que el agente del VPS reinicie el servicio.",
@@ -529,6 +580,76 @@ export function createServiceOperationAgent({
     };
   }
 
+  async function stageNodeCredentials(requestId, privateKey) {
+    if (!requestIdPattern.test(requestId ?? "")
+      || typeof privateKey !== "string"
+      || Buffer.byteLength(privateKey) > 32_768
+      || !/-----BEGIN (?:OPENSSH|RSA|EC|DSA) PRIVATE KEY-----/.test(privateKey)
+      || /[\u0000]/.test(privateKey)) {
+      throw new TypeError("The SSH private key is invalid.");
+    }
+    await writeFile(nodeCredentialsPath(requestId), privateKey, { flag: "wx", mode: 0o600 });
+  }
+
+  async function removeNodeCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The node enrollment request identifier is invalid.");
+    }
+    await unlink(nodeCredentialsPath(requestId)).catch((error) => {
+      if (!isMissing(error)) throw error;
+    });
+  }
+
+  async function requestSwarmNodeEnrollment(input, requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The node enrollment request identifier is invalid.");
+    }
+    const node = validateSwarmNodeRequest(input);
+    const keyMetadata = await lstat(nodeCredentialsPath(requestId));
+    if (!keyMetadata.isFile() || (process.platform !== "win32" && (keyMetadata.mode & 0o077) !== 0)) {
+      throw new Error("The staged SSH private key has unsafe permissions.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "enroll-swarm-node"
+        || currentStatus.nodeAddress !== node.address
+        || currentStatus.role !== node.role) {
+        throw new Error("The task identifier already belongs to a different Swarm node enrollment.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const requestData = { id: requestId, operation: "enroll-swarm-node", ...node };
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "enroll-swarm-node",
+      state: "queued",
+      nodeAddress: node.address,
+      role: node.role,
+      message: `Alta de ${node.address} aceptada; el agente host iniciará el aprovisionamiento.`,
+    };
+  }
+
   async function getRegistryConfiguration() {
     const contents = await readOptional(registryStatusPath);
     if (contents === undefined) return null;
@@ -712,6 +833,9 @@ export function createServiceOperationAgent({
       requestProjectServiceOperation("deploy-project", projectId, commitSha, requestId),
     requestProjectUndeploy: (projectId, requestId = createId()) =>
       requestProjectServiceOperation("remove-project", projectId, undefined, requestId),
+    stageNodeCredentials,
+    removeNodeCredentials,
+    requestSwarmNodeEnrollment,
     stageProjectBuildArchive,
     removeProjectBuildArchive,
     getRegistryConfiguration,

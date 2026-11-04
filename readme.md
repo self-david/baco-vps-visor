@@ -7,7 +7,7 @@
 **Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos, rollback a despliegues anteriores, registro privado, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. La incorporación de nodos desde el panel, secretos de aplicaciones, configuración genérica del catálogo y despliegue automático por push siguen pendientes.
+> **Estado de implementación:** el panel incluye autenticación de administrador, consulta de datos Docker mediante un proxy de solo lectura, repositorios privados de Gitea, builds y despliegues manuales globales por nodo, variables por proyecto, dominios Cloudflare para proyectos, rollback a despliegues anteriores, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Los secretos de aplicaciones, la configuración genérica del catálogo y el despliegue automático por push siguen pendientes.
 
 ---
 
@@ -171,7 +171,7 @@ configurar el registro privado; los builds no se activan con webhooks.
 El instalador:
 
 - Solo admite Ubuntu Server 24.04 LTS en `amd64` o `arm64`.
-- Instala Docker Engine desde el repositorio APT oficial e inicializa un Swarm de un solo nodo si hace falta. Para distribuir proyectos entre VPS, el administrador debe unir los demás servidores al mismo Swarm; el panel aún no gestiona el alta de nodos.
+- Instala Docker Engine desde el repositorio APT oficial e inicializa un Swarm de un solo nodo si hace falta. Los nodos adicionales se pueden aprovisionar desde el panel mediante SSH.
 - Despliega el panel y Traefik con HTTPS de Let's Encrypt.
 - Espera a que los servicios estén activos y valida el certificado HTTPS y el endpoint de salud.
 - Requiere un dominio con DNS configurado y los puertos TCP 80/443 disponibles y permitidos en el firewall del VPS y del proveedor.
@@ -179,10 +179,12 @@ El instalador:
 - Usa Traefik 3.7.17, cuyo cliente Docker actualizado negocia una API compatible con versiones actuales de Docker Engine.
 - Pide una contraseña administrativa de al menos 16 caracteres; la guarda como secreto Swarm con hash scrypt, no como texto plano.
 - Consulta por defecto las releases públicas de `self-david/baco-vps-visor`; se puede cambiar con `VPS_MANAGER_GITHUB_REPOSITORY=owner/repo`.
-- No configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor.
+- La instalación inicial no configura ni altera UFW ni reglas externas. Es responsabilidad del administrador permitir TCP 80/443 en el firewall del VPS y del proveedor. El flujo de alta de nodos sí requiere UFW ya activo en el manager y el destino, y agrega reglas Swarm limitadas a la CIDR privada indicada.
 - Conserva los secretos y los volúmenes (Traefik y PostgreSQL) durante la desinstalación normal.
 
-El panel permite consultar contenedores, servicios y stacks; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar los servicios permitidos en modo replicado, de 1 a 100 réplicas; el API y el registro privado conservan una sola réplica. El agente `systemd` del host valida nuevamente las operaciones permitidas (reiniciar, escalar, instalar Gitea, configurar el registro privado, construir/publicar imágenes y desplegar o retirar servicios de proyecto); no acepta comandos Docker arbitrarios. El escalado puede dejar tareas pendientes si no hay recursos disponibles. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
+El panel permite consultar contenedores, servicios, stacks y nodos Swarm; buscar por nombre, imagen o ID; filtrar por estado, modo o cantidad de servicios; y revisar logs recientes y métricas actuales e históricas de CPU/RAM. El muestreo es configurable y los datos se conservan siete días. El proxy Docker mantiene desactivadas las operaciones de escritura y sigue siendo de solo lectura. El administrador autenticado puede reiniciar servicios Swarm etiquetados `vps-manager.managed=true` y escalar los servicios permitidos en modo replicado, de 1 a 100 réplicas; el API y el registro privado conservan una sola réplica. El agente `systemd` del host valida nuevamente las operaciones permitidas (reiniciar, escalar, aprovisionar un nodo Swarm, instalar Gitea, configurar el registro privado, construir/publicar imágenes y desplegar o retirar servicios de proyecto); no acepta comandos Docker arbitrarios. El escalado puede dejar tareas pendientes si no hay recursos disponibles. Los demás servicios y las operaciones de contenedor permanecen de solo lectura. PostgreSQL solo escucha en la red interna del stack; su contraseña se guarda como secreto Swarm y sus datos en un volumen persistente.
+
+La incorporación de nodos desde el panel usa una llave SSH dedicada sin passphrase, una cuenta no root con `sudo -n` y un fingerprint del host verificado. El VPS destino debe usar Ubuntu Server 24.04; UFW debe estar activo tanto en el manager como en el destino y el administrador debe proporcionar las IP privadas y la CIDR compartida correctas. El flujo instala Docker desde el repositorio oficial y agrega reglas UFW para TCP 2377, TCP/UDP 7946 y UDP 4789, limitadas a esa CIDR; no habilita UFW ni modifica las reglas SSH. Los firewalls del proveedor y de todos los nodos Swarm preexistentes también deben permitir el tráfico privado necesario entre nodos. La llave temporal no se guarda en PostgreSQL, tareas ni auditoría. Este flujo aún requiere validación de extremo a extremo en VPS Ubuntu 24.04 dentro de una red privada real.
 
 #### Prueba en una red privada
 
@@ -1609,8 +1611,9 @@ Traefik y con volumen persistente; su dominio DNS debe apuntar al VPS.
 BuildKit permite solicitar construcciones manuales desde los repositorios
 registrados y publica las imágenes en ese registro. El panel despliega
 manualmente proyectos como servicios Swarm globales, con una tarea por nodo
-activo unido al clúster. Variables y dominios configurados para un proyecto se
-aplican en el siguiente despliegue. El instalador no añade otros VPS al Swarm.
+activo unido al clúster. Desde el panel también se pueden incorporar VPS
+Ubuntu 24.04 por SSH y consultar el estado de los nodos. Variables y dominios
+configurados para un proyecto se aplican en el siguiente despliegue.
 Los pushes de Git no disparan builds ni despliegues.
 
 ## 17.2. Configuración declarativa

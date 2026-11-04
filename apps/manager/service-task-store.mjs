@@ -1,3 +1,5 @@
+import { validateSwarmNodeRequest } from "./swarm-node-manager.mjs";
+
 const taskTypePattern = /^[a-z][a-z0-9._-]{0,99}$/;
 const serviceIdPattern = /^[a-f0-9]{25,64}$/i;
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -23,6 +25,12 @@ function mapTask(row, { includePayload = false } = {}) {
     ...(row.type === "application.gitea.install" ? { domain: row.payload.domain } : {}),
     ...(row.type === "registry.configure"
       ? { domain: row.payload.domain, username: row.payload.username }
+      : {}),
+    ...(row.type === "swarm.node.enroll"
+      ? {
+        nodeAddress: row.payload.address,
+        nodeRole: row.payload.role,
+      }
       : {}),
     ...(row.type === "project.build"
       ? {
@@ -64,6 +72,9 @@ function mapTask(row, { includePayload = false } = {}) {
           : {}),
         ...(row.type === "registry.configure" && typeof row.result.domain === "string"
           ? { domain: row.result.domain }
+          : {}),
+        ...(row.type === "swarm.node.enroll" && typeof row.result.nodeId === "string"
+          ? { nodeId: row.result.nodeId, nodeAddress: row.result.nodeAddress }
           : {}),
       }
       : null,
@@ -135,6 +146,16 @@ function validateTask({ id, type, payload, maxAttempts }) {
       || typeof payload.projectName !== "string" || payload.projectName.length < 1 || payload.projectName.length > 100)) {
     throw new TypeError("Project removal task fields are invalid.");
   }
+  if (type === "swarm.node.enroll") {
+    try {
+      const validated = validateSwarmNodeRequest(payload);
+      if (Object.keys(payload).length !== Object.keys(validated).length) {
+        throw new TypeError("Swarm node enrollment task fields are invalid.");
+      }
+    } catch (error) {
+      throw new TypeError("Swarm node enrollment task fields are invalid.", { cause: error });
+    }
+  }
 }
 
 export function createTaskStore({ pool, insertAuditEvent }) {
@@ -173,6 +194,20 @@ export function createTaskStore({ pool, insertAuditEvent }) {
         if (activeTask.rowCount > 0) {
           const error = new Error("Ya hay una configuración del registro en curso.");
           error.code = "REGISTRY_CONFIGURATION_IN_PROGRESS";
+          throw error;
+        }
+      }
+      if (type === "swarm.node.enroll") {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["swarm.node.enroll"]);
+        const activeTask = await client.query(
+          `SELECT id FROM tasks
+           WHERE type = $1 AND status IN ('pending', 'in_progress')
+           LIMIT 1`,
+          [type],
+        );
+        if (activeTask.rowCount > 0) {
+          const error = new Error("Ya hay un alta de nodo Swarm en curso.");
+          error.code = "SWARM_NODE_ENROLLMENT_IN_PROGRESS";
           throw error;
         }
       }
@@ -222,8 +257,13 @@ export function createTaskStore({ pool, insertAuditEvent }) {
       );
       await insertAuditEvent(client, {
         action: `${type}.requested`,
-        resourceType: type.startsWith("service.") ? "service" : type.startsWith("project.") ? "project" : "task",
-        resourceId: type.startsWith("service.") ? payload.serviceId : type.startsWith("project.") ? payload.projectId : id,
+        resourceType: type.startsWith("service.") ? "service"
+          : type.startsWith("project.") ? "project"
+            : type === "swarm.node.enroll" ? "node"
+              : "task",
+        resourceId: type.startsWith("service.") ? payload.serviceId
+          : type.startsWith("project.") ? payload.projectId
+            : id,
         details: type.startsWith("service.")
           ? {
             serviceName: payload.serviceName,
@@ -241,6 +281,12 @@ export function createTaskStore({ pool, insertAuditEvent }) {
               projectName: payload.projectName,
               ...(type === "project.build" ? { repository: payload.repository, branch: payload.branch } : {}),
               ...(type === "project.deploy" ? { commitSha: payload.commitSha } : {}),
+            }
+          : type === "swarm.node.enroll"
+            ? {
+              taskId: id,
+              address: payload.address,
+              role: payload.role,
             }
           : { type },
       });

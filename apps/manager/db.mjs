@@ -535,6 +535,23 @@ export async function createRegistryConfigureTask(task) {
   });
 }
 
+export async function createSwarmNodeEnrollTask(task) {
+  return createTask({
+    id: task.id,
+    type: "swarm.node.enroll",
+    payload: {
+      address: task.address,
+      sshUser: task.sshUser,
+      sshPort: task.sshPort,
+      hostFingerprint: task.hostFingerprint,
+      privateCidr: task.privateCidr,
+      managerAddress: task.managerAddress,
+      role: task.role,
+    },
+    maxAttempts: 1,
+  });
+}
+
 export async function createProjectBuildTask(task) {
   return createTask({
     id: task.id,

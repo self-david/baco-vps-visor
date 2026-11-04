@@ -145,7 +145,7 @@ log "El instalador no modificará UFW ni reglas existentes del firewall."
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg git python3 openssl apache2-utils
+apt-get install -y ca-certificates curl gnupg git python3 openssl apache2-utils openssh-client
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL --retry 3 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -292,6 +292,7 @@ install -m 0755 "${SOURCE_DIR}/installer/diagnostics.sh" /usr/local/bin/vps-mana
 install -m 0755 "${SOURCE_DIR}/installer/uninstall.sh" /usr/local/bin/vps-manager-uninstall
 install -m 0755 "${SOURCE_DIR}/installer/reset-password.sh" /usr/local/bin/vps-manager-reset-password
 install -m 0755 "${SOURCE_DIR}/installer/web-update-worker.sh" /usr/local/libexec/vps-manager-web-update
+install -m 0755 "${SOURCE_DIR}/installer/swarm-node-enroll.sh" /usr/local/libexec/vps-manager-swarm-node-enroll
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.path" /etc/systemd/system/vps-manager-web-update.path
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.service" /etc/systemd/system/vps-manager-web-update.service
 install -m 0755 "${SOURCE_DIR}/installer/service-agent.sh" /usr/local/libexec/vps-manager-service-agent

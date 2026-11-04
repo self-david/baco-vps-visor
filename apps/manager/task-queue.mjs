@@ -422,3 +422,58 @@ export function createProjectUndeployHandler(agent, {
     throw signal.reason ?? new Error("El retiro fue interrumpido.");
   };
 }
+
+export function createSwarmNodeEnrollHandler(agent, {
+  pollIntervalMs = 1000,
+  maximumDurationMs = 30 * 60 * 1000,
+} = {}) {
+  if (!agent || typeof agent.requestSwarmNodeEnrollment !== "function"
+    || typeof agent.removeNodeCredentials !== "function"
+    || typeof agent.getStatus !== "function"
+    || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100
+    || !Number.isInteger(maximumDurationMs) || maximumDurationMs < pollIntervalMs) {
+    throw new TypeError("The Swarm node enrollment task handler configuration is invalid.");
+  }
+  return async (task, signal) => {
+    const node = task.payload ?? {};
+    if (task.type !== "swarm.node.enroll") {
+      throw new TaskExecutionError("La tarea no corresponde al alta de un nodo Swarm.", { retryable: false });
+    }
+    if (signal.aborted) throw signal.reason ?? new Error("El alta del nodo fue interrumpida.");
+    const deadline = Date.now() + maximumDurationMs;
+    try {
+      await agent.requestSwarmNodeEnrollment(node, task.id);
+      while (!signal.aborted) {
+        const operation = await agent.getStatus();
+        if (operation?.id === task.id) {
+          if (operation.operation !== "enroll-swarm-node"
+            || operation.nodeAddress !== node.address
+            || operation.role !== node.role) {
+            throw new TaskExecutionError("El agente devolvió un resultado de alta de nodo inconsistente.", {
+              retryable: false,
+            });
+          }
+          if (operation.state === "succeeded") {
+            return {
+              message: `El nodo ${node.address} se unió al Swarm como ${node.role}.`,
+              nodeId: operation.nodeId,
+              nodeAddress: node.address,
+            };
+          }
+          if (operation.state === "failed") {
+            throw new TaskExecutionError(operation.message, { retryable: false });
+          }
+        }
+        if (Date.now() >= deadline) {
+          throw new TaskExecutionError("El aprovisionamiento del nodo superó el límite de 30 minutos.", {
+            retryable: false,
+          });
+        }
+        await waitForRetry(signal, Math.min(pollIntervalMs, deadline - Date.now()));
+      }
+      throw signal.reason ?? new Error("El alta del nodo fue interrumpida.");
+    } finally {
+      await agent.removeNodeCredentials(task.id);
+    }
+  };
+}

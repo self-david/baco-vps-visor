@@ -21,7 +21,7 @@ if [[ -L "${REQUEST_FILE}" || ! -f "${REQUEST_FILE}" ]]; then
   exit 1
 fi
 request_size="$(stat -c '%s' "${REQUEST_FILE}")"
-if (( request_size > 1024 )); then
+if (( request_size > 4096 )); then
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an oversized service operation request." >&2
   exit 1
@@ -48,6 +48,13 @@ project_id = "-"
 commit_sha = "-"
 registry_domain = "-"
 registry_username = "-"
+node_address = "-"
+node_ssh_user = "-"
+node_ssh_port = "-"
+node_fingerprint = "-"
+node_private_cidr = "-"
+manager_private_address = "-"
+node_role = "-"
 common_fields = {"id", "operation", "serviceId"}
 if request.get("operation") == "restart-service":
     if set(request) != common_fields:
@@ -154,20 +161,62 @@ elif request.get("operation") == "remove-project":
     service_id = "-"
     replicas = "-"
     project_id = request["projectId"].lower()
+elif request.get("operation") == "enroll-swarm-node":
+    if set(request) != {
+        "id", "operation", "address", "sshUser", "sshPort",
+        "hostFingerprint", "privateCidr", "managerAddress", "role",
+    }:
+        raise SystemExit("Invalid Swarm node enrollment request fields.")
+    import ipaddress
+    try:
+        node_ip = ipaddress.ip_address(request["address"])
+        manager_ip = ipaddress.ip_address(request["managerAddress"])
+        private_network = ipaddress.ip_network(request["privateCidr"], strict=False)
+    except (ValueError, TypeError):
+        raise SystemExit("Invalid private Swarm node network.")
+    private_ranges = [
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    ]
+    if private_network.version != 4 or not 8 <= private_network.prefixlen <= 30 \
+        or node_ip.version != 4 or manager_ip.version != 4 \
+        or not any(node_ip in network for network in private_ranges) \
+        or not any(manager_ip in network for network in private_ranges) \
+        or node_ip not in private_network or manager_ip not in private_network:
+        raise SystemExit("Swarm node addresses must be inside a private IPv4 CIDR.")
+    if not isinstance(request["sshUser"], str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", request["sshUser"]) \
+        or request["sshUser"] == "root" \
+        or not isinstance(request["sshPort"], int) or isinstance(request["sshPort"], bool) \
+        or not 1 <= request["sshPort"] <= 65535 \
+        or not isinstance(request["hostFingerprint"], str) \
+        or not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", request["hostFingerprint"]) \
+        or request["role"] not in {"worker", "manager"}:
+        raise SystemExit("Invalid SSH access or Swarm node role.")
+    service_id = "-"
+    replicas = "-"
+    node_address = str(node_ip)
+    node_ssh_user = request["sshUser"]
+    node_ssh_port = str(request["sshPort"])
+    node_fingerprint = request["hostFingerprint"]
+    node_private_cidr = str(private_network)
+    manager_private_address = str(manager_ip)
+    node_role = request["role"]
 else:
     raise SystemExit("Invalid service operation request fields.")
 if request["operation"] in {"restart-service", "scale-service"} and not re.fullmatch(
     r"[a-fA-F0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -202,6 +251,14 @@ write_status() {
   elif [[ "${operation}" == "remove-project" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${project_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "enroll-swarm-node" ]]; then
+    if [[ "${state}" == "succeeded" ]]; then
+      printf '{"id":"%s","operation":"%s","state":"%s","nodeAddress":"%s","sshUser":"%s","sshPort":%s,"hostFingerprint":"%s","privateCidr":"%s","managerAddress":"%s","role":"%s","nodeId":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${node_address}" "${node_ssh_user}" "${node_ssh_port}" "${node_fingerprint}" "${node_private_cidr}" "${manager_private_address}" "${node_role}" "${node_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    else
+      printf '{"id":"%s","operation":"%s","state":"%s","nodeAddress":"%s","sshUser":"%s","sshPort":%s,"hostFingerprint":"%s","privateCidr":"%s","managerAddress":"%s","role":"%s","updatedAt":"%s","message":"%s"}\n' \
+        "${request_id}" "${operation}" "${state}" "${node_address}" "${node_ssh_user}" "${node_ssh_port}" "${node_fingerprint}" "${node_private_cidr}" "${manager_private_address}" "${node_role}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+    fi
   elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -228,6 +285,8 @@ elif [[ "${operation}" == "deploy-project" ]]; then
   write_status "running" "Preparando el despliegue privado del proyecto."
 elif [[ "${operation}" == "remove-project" ]]; then
   write_status "running" "Validando el retiro del servicio del proyecto."
+elif [[ "${operation}" == "enroll-swarm-node" ]]; then
+  write_status "running" "Validando red privada, UFW y acceso SSH del VPS destino."
 elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
 else
@@ -849,6 +908,27 @@ PY
   fi
   gitea_credentials_available=true
   write_status "succeeded" "Gitea instalado en https://${gitea_domain}/. El administrador inicial puede consultar sus credenciales una sola vez durante 30 minutos."
+  exit 0
+fi
+
+if [[ "${operation}" == "enroll-swarm-node" ]]; then
+  enrollment_error_file="$(mktemp "${STATE_DIRECTORY}/node-enroll-error.XXXXXX")"
+  chmod 0600 "${enrollment_error_file}"
+  if ! node_id="$(/usr/local/libexec/vps-manager-swarm-node-enroll \
+    "${request_id}" "${node_address}" "${node_ssh_user}" "${node_ssh_port}" \
+    "${node_fingerprint}" "${node_private_cidr}" "${manager_private_address}" "${node_role}" \
+    2>"${enrollment_error_file}")"; then
+    enrollment_error="$(grep '^VPS_MANAGER_ERROR=' "${enrollment_error_file}" | tail -n 1 | cut -d= -f2- || true)"
+    rm -f -- "${enrollment_error_file}"
+    write_status "failed" "${enrollment_error:-No se pudo completar el aprovisionamiento SSH del VPS destino.}"
+    exit 1
+  fi
+  rm -f -- "${enrollment_error_file}"
+  if [[ ! "${node_id}" =~ ^[a-fA-F0-9]{25,64}$ ]]; then
+    write_status "failed" "El VPS se unió, pero el identificador de nodo devuelto no es válido."
+    exit 1
+  fi
+  write_status "succeeded" "Docker quedó instalado y el VPS está ready en el Swarm; se agregaron reglas UFW para la CIDR privada."
   exit 0
 fi
 

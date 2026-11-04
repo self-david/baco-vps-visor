@@ -98,7 +98,7 @@ Estado: **parcial** (build, despliegue, variables, dominios y rollback manuales;
 - [x] Construir manualmente imágenes de repositorios Gitea registrados y publicarlas en el registro privado, etiquetadas por commit y sin desplegarlas.
 - [x] Configurar el registro privado desde el navegador, con HTTPS, autenticación y almacenamiento persistente.
 - [x] Desplegar manualmente en modo global la última imagen construida, con una tarea por nodo activo del Swarm y sin publicar puertos.
-- [ ] Gestionar desde el panel la incorporación y el estado de VPS/nodos adicionales del Swarm (por ahora se unen manualmente).
+- [x] Consultar el estado de los nodos y aprovisionar VPS Ubuntu 24.04 adicionales por SSH con fingerprint verificado, instalación de Docker y reglas UFW restringidas a una CIDR privada.
 - [x] Configurar variables de entorno por proyecto; se almacenan en archivo restringido del VPS y se aplican al desplegar.
 - [x] Administrar dominios en un panel central, conectar Cloudflare por dominio, sincronizar registros A y asignar hostnames/puertos HTTP a proyectos.
 - [x] Revertir un proyecto a un despliegue anterior exitoso, conservando su configuración actual.

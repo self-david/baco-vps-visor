@@ -51,6 +51,13 @@ const diagnosticsStatus = document.querySelector("#diagnostics-status");
 const diagnosticsList = document.querySelector("#diagnostics-list");
 const refreshDiagnosticsButton = document.querySelector("#refresh-diagnostics");
 const serviceOperationStatus = document.querySelector("#service-operation-status");
+const swarmNodesList = document.querySelector("#swarm-nodes-list");
+const nodesStatus = document.querySelector("#nodes-status");
+const nodeEnrollForm = document.querySelector("#node-enroll-form");
+const nodeEnrollStatus = document.querySelector("#node-enroll-status");
+const nodeEnrollSubmit = document.querySelector("#node-enroll-submit");
+const nodePrivateKey = document.querySelector("#node-private-key");
+const refreshNodesButton = document.querySelector("#refresh-nodes");
 const tasksList = document.querySelector("#tasks-list");
 const tasksStatus = document.querySelector("#tasks-status");
 const giteaStatus = document.querySelector("#gitea-status");
@@ -140,6 +147,7 @@ let lastWebUpdateState;
 let serviceOperationPollTimer;
 let serviceOperationPending = false;
 let registryConfigurationPollTimer;
+let nodeEnrollmentPollTimer;
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -286,6 +294,47 @@ function renderServerInfo(server, database) {
     target.append(item);
   }
   document.querySelector("#swarm-state").textContent = `Swarm: ${server.swarmState}`;
+}
+
+function renderSwarmNodes(nodes) {
+  swarmNodesList.replaceChildren();
+  if (nodes.length === 0) {
+    nodesStatus.textContent = "Este Swarm todavía no tiene nodos visibles.";
+    return;
+  }
+  nodesStatus.textContent = `${nodes.length} nodo${nodes.length === 1 ? "" : "s"} en el Swarm.`;
+  for (const node of nodes) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = `${node.hostname} · ${node.state} · ${node.role}`;
+    const details = document.createElement("div");
+    details.className = "resource-detail";
+    details.textContent = [
+      node.address ? `IP ${node.address}` : "",
+      `Disponibilidad ${node.availability}`,
+      node.managerReachability ? `Manager ${node.managerReachability}${node.leader ? " (líder)" : ""}` : "",
+      node.engineVersion ? `Docker ${node.engineVersion}` : "",
+      node.architecture ?? "",
+    ].filter(Boolean).join(" · ");
+    main.append(name, details);
+    row.append(main);
+    swarmNodesList.append(row);
+  }
+}
+
+async function loadSwarmNodes() {
+  nodesStatus.textContent = "Consultando nodos del Swarm…";
+  try {
+    const result = await request("/api/nodes");
+    renderSwarmNodes(result.nodes);
+  } catch (error) {
+    swarmNodesList.replaceChildren();
+    nodesStatus.textContent = error.message;
+  }
 }
 
 function renderStacks(stacks, emptyMessage) {
@@ -500,6 +549,8 @@ async function loadTaskHistory() {
       title.className = "resource-name";
       title.textContent = task.type === "application.gitea.install"
         ? "Instalación de Gitea"
+        : task.type === "swarm.node.enroll"
+          ? `Alta del nodo ${task.nodeAddress} · ${task.nodeRole}`
         : task.type === "registry.configure"
           ? `Configuración del registro · ${task.domain}`
         : task.type === "project.build"
@@ -1604,6 +1655,33 @@ async function pollRegistryConfigurationTask(taskId) {
   }
 }
 
+async function pollSwarmNodeEnrollment(taskId) {
+  try {
+    const result = await request("/api/system/tasks");
+    const task = result.tasks.find((candidate) => candidate.id === taskId);
+    if (task?.status === "completed") {
+      nodeEnrollStatus.textContent = task.result?.message ?? "El nodo se incorporó al Swarm.";
+      await Promise.all([loadSwarmNodes(), loadTaskHistory()]);
+      nodeEnrollSubmit.disabled = false;
+      nodeEnrollmentPollTimer = undefined;
+      return;
+    }
+    if (task?.status === "failed") {
+      nodeEnrollStatus.textContent = `No se pudo incorporar el nodo: ${task.error ?? "error desconocido"}`;
+      await Promise.all([loadSwarmNodes(), loadTaskHistory()]);
+      nodeEnrollSubmit.disabled = false;
+      nodeEnrollmentPollTimer = undefined;
+      return;
+    }
+    nodeEnrollStatus.textContent = "Instalando Docker, configurando UFW y esperando a que Swarm marque el nodo ready…";
+    nodeEnrollmentPollTimer = setTimeout(() => void pollSwarmNodeEnrollment(taskId), 2500);
+  } catch (error) {
+    nodeEnrollStatus.textContent = error.message;
+    nodeEnrollSubmit.disabled = false;
+    nodeEnrollmentPollTimer = undefined;
+  }
+}
+
 async function loadProjectBranches(preferredBranch = "") {
   const repository = projectRepositorySelect.value;
   const requestId = ++projectBranchRequestId;
@@ -1928,6 +2006,7 @@ async function loadResources() {
       loadBackups(),
       loadAuditLog(),
       loadDiagnostics(),
+      loadSwarmNodes(),
       loadServiceOperationStatus(),
       loadTaskHistory(),
       loadGiteaApplication(),
@@ -1970,6 +2049,7 @@ logoutButton.addEventListener("click", async () => {
 });
 
 refreshButton.addEventListener("click", loadResources);
+refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
 document.querySelector("#refresh-history").addEventListener("click", loadMetricsHistory);
@@ -1978,6 +2058,28 @@ document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog)
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
 installGiteaButton.addEventListener("click", installGitea);
+nodeEnrollForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!confirm("El manager se conectará por SSH, instalará Docker y añadirá reglas UFW para el Swarm en los dos VPS. No se habilitará UFW ni se cambiarán reglas SSH. ¿Continuar?")) return;
+  nodeEnrollSubmit.disabled = true;
+  nodeEnrollStatus.textContent = "Validando VPS y enviando la solicitud segura…";
+  try {
+    const values = Object.fromEntries(new FormData(nodeEnrollForm));
+    values.sshPort = Number(values.sshPort);
+    const result = await request("/api/nodes/enroll", {
+      method: "POST",
+      body: JSON.stringify(values),
+    });
+    nodePrivateKey.value = "";
+    nodeEnrollStatus.textContent = result.message;
+    await loadTaskHistory();
+    pollSwarmNodeEnrollment(result.task.id);
+  } catch (error) {
+    nodePrivateKey.value = "";
+    nodeEnrollStatus.textContent = error.message;
+    nodeEnrollSubmit.disabled = false;
+  }
+});
 registryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   registrySaveButton.disabled = true;

@@ -80,6 +80,44 @@ test("accepts only public DNS hostnames for application subdomains", () => {
   assert.equal(isPublicHostname("git.local"), false);
 });
 
+test("stages SSH credentials separately from the Swarm node request", async () => {
+  const fixture = await createFixture();
+  try {
+    const node = {
+      address: "10.10.0.12",
+      sshUser: "vpsadmin",
+      sshPort: 22,
+      hostFingerprint: `SHA256:${"A".repeat(43)}`,
+      privateCidr: "10.10.0.0/24",
+      managerAddress: "10.10.0.2",
+      role: "worker",
+    };
+    const privateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-data\n-----END OPENSSH PRIVATE KEY-----";
+    await fixture.agent.stageNodeCredentials(requestId, privateKey);
+    await fixture.agent.requestSwarmNodeEnrollment(node, requestId);
+    const requestContents = await readFile(join(fixture.directory, "request.json"), "utf8");
+    assert.doesNotMatch(requestContents, /private-key-data/);
+    assert.deepEqual(await fixture.agent.getStatus(), {
+      id: requestId,
+      state: "queued",
+      operation: "enroll-swarm-node",
+      nodeAddress: node.address,
+      sshUser: node.sshUser,
+      sshPort: node.sshPort,
+      hostFingerprint: node.hostFingerprint,
+      privateCidr: node.privateCidr,
+      managerAddress: node.managerAddress,
+      role: node.role,
+      replicas: undefined,
+      message: `Alta de nodo ${node.address} aceptada; esperando al agente host.`,
+    });
+    await fixture.agent.removeNodeCredentials(requestId);
+    await assert.rejects(readFile(join(fixture.directory, `node-ssh-key-${requestId}`)), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function createFixture(createId = () => requestId) {
   const directory = await mkdtemp(join(tmpdir(), "vps-service-operations-"));
   return {

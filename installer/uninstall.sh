@@ -51,6 +51,7 @@ if [[ -f /etc/systemd/system/vps-manager-web-update.path \
     /etc/systemd/system/vps-manager-web-update.path \
     /etc/systemd/system/vps-manager-web-update.service \
     /usr/local/libexec/vps-manager-web-update \
+    /usr/local/libexec/vps-manager-swarm-node-enroll \
     /etc/systemd/system/vps-manager-service-agent.path \
     /etc/systemd/system/vps-manager-service-agent.service \
     /usr/local/libexec/vps-manager-service-agent

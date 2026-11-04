@@ -23,6 +23,7 @@ import {
   createProjectBuildHandler,
   createProjectDeployHandler,
   createProjectUndeployHandler,
+  createSwarmNodeEnrollHandler,
   createTaskQueueWorker,
 } from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
@@ -74,6 +75,7 @@ import {
   createProjectBuildTask,
   createProjectDeployTask,
   createProjectUndeployTask,
+  createSwarmNodeEnrollTask,
   createServiceRestartTask,
   createServiceScaleTask,
   updateMetricAlertThresholds,
@@ -92,6 +94,7 @@ import {
   deleteCloudflareToken,
 } from "./project-deployment-config.mjs";
 import { createCloudflareClient, isIpv4Address, validateDomainConfiguration } from "./cloudflare-client.mjs";
+import { mapSwarmNode, validateSwarmNodeEnrollment } from "./swarm-node-manager.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, "dist");
@@ -146,6 +149,7 @@ const taskQueueWorker = createTaskQueueWorker({
     }),
     "project.deploy": createProjectDeployHandler(serviceOperationAgent),
     "project.undeploy": createProjectUndeployHandler(serviceOperationAgent),
+    "swarm.node.enroll": createSwarmNodeEnrollHandler(serviceOperationAgent),
   },
   onError: (...args) => console.error("Task queue worker error:", ...args),
 });
@@ -2668,6 +2672,82 @@ const server = createServer(async (request, response) => {
     respondJson(response, 200, { authenticated: false }, {
       "Set-Cookie": `${cookieName}=; HttpOnly${secureCookies ? "; Secure" : ""}; SameSite=Strict; Path=/; Max-Age=0`,
     });
+    return;
+  }
+
+  if (url.pathname === "/api/nodes") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    try {
+      const nodes = await dockerGet("/nodes");
+      respondJson(response, 200, { nodes: nodes.map(mapSwarmNode) });
+    } catch (error) {
+      console.error("Swarm node status request failed:", error);
+      respondJson(response, 503, { error: "No se pudo consultar el estado de los nodos Swarm." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/nodes/enroll") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let taskId;
+    try {
+      const enrollment = validateSwarmNodeEnrollment(await readJson(request, 40_000));
+      const dockerInfo = await dockerGet("/info");
+      if (dockerInfo.Swarm?.LocalNodeState !== "active" || dockerInfo.Swarm?.ControlAvailable !== true) {
+        respondJson(response, 409, { error: "Este VPS no está disponible como manager activo de Swarm." });
+        return;
+      }
+      const currentNodes = await dockerGet("/nodes");
+      if (currentNodes.some((node) => node.Status?.Addr === enrollment.address)) {
+        respondJson(response, 409, { error: "Ya existe un nodo Swarm con esa IP. Retira manualmente el nodo anterior antes de volver a unirlo." });
+        return;
+      }
+      taskId = randomUUID();
+      await serviceOperationAgent.stageNodeCredentials(taskId, enrollment.privateKey);
+      try {
+        await createSwarmNodeEnrollTask({ id: taskId, ...enrollment });
+      } catch (error) {
+        await serviceOperationAgent.removeNodeCredentials(taskId);
+        throw error;
+      }
+      respondJson(response, 202, {
+        task: await getTaskById(taskId),
+        message: "Alta solicitada. El VPS manager instalará Docker y añadirá reglas UFW para el tráfico Swarm de la CIDR privada indicada.",
+      });
+    } catch (error) {
+      if (taskId) {
+        await serviceOperationAgent.removeNodeCredentials(taskId).catch((cleanupError) => {
+          console.error("Could not remove staged SSH credentials after node enrollment request failure:", cleanupError);
+        });
+      }
+      const status = error?.code === "SWARM_NODE_ENROLLMENT_IN_PROGRESS" || error?.code === "OPERATION_IN_PROGRESS"
+        ? 409
+        : error instanceof TypeError || error instanceof RangeError ? 400 : 503;
+      if (status === 503) {
+        console.error("Could not request Swarm node enrollment:", error);
+      }
+      respondJson(response, status, {
+        error: status === 503 ? "No se pudo iniciar el aprovisionamiento del nodo." : error.message,
+      });
+    }
     return;
   }
 

@@ -6,6 +6,7 @@ import {
   createProjectDeployHandler,
   createProjectUndeployHandler,
   createRegistryConfigureHandler,
+  createSwarmNodeEnrollHandler,
   createServiceRestartHandler,
   createServiceScaleHandler,
   createTaskQueueWorker,
@@ -338,4 +339,46 @@ test("does not automatically retry a host-reported operation failure", async () 
 
   await assert.rejects(handler(task, new AbortController().signal), (error) =>
     error instanceof TaskExecutionError && error.retryable === false);
+});
+
+test("enrolls a Swarm node through the host agent and removes the staged SSH key", async () => {
+  const nodeTask = {
+    id: task.id,
+    type: "swarm.node.enroll",
+    payload: {
+      address: "10.10.0.12",
+      sshUser: "vpsadmin",
+      sshPort: 22,
+      hostFingerprint: `SHA256:${"A".repeat(43)}`,
+      privateCidr: "10.10.0.0/24",
+      managerAddress: "10.10.0.2",
+      role: "worker",
+    },
+  };
+  const calls = [];
+  const handler = createSwarmNodeEnrollHandler({
+    async requestSwarmNodeEnrollment(node, id) { calls.push(["request", node.address, id]); },
+    async getStatus() {
+      return {
+        id: nodeTask.id,
+        operation: "enroll-swarm-node",
+        state: "succeeded",
+        nodeAddress: nodeTask.payload.address,
+        role: nodeTask.payload.role,
+        nodeId: "9a7f51bdff120d8d0d48d4ca5",
+        message: "ready",
+      };
+    },
+    async removeNodeCredentials(id) { calls.push(["remove", id]); },
+  }, { pollIntervalMs: 100, maximumDurationMs: 1000 });
+
+  assert.deepEqual(await handler(nodeTask, new AbortController().signal), {
+    message: "El nodo 10.10.0.12 se unió al Swarm como worker.",
+    nodeId: "9a7f51bdff120d8d0d48d4ca5",
+    nodeAddress: "10.10.0.12",
+  });
+  assert.deepEqual(calls, [
+    ["request", nodeTask.payload.address, nodeTask.id],
+    ["remove", nodeTask.id],
+  ]);
 });

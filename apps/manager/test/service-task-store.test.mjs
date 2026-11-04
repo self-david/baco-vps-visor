@@ -375,6 +375,38 @@ test("persists reusable registry configuration metadata without accepting creden
   }), /fields are invalid/);
 });
 
+test("records Swarm node enrollment metadata without storing SSH private keys", async () => {
+  const { pool, tasks, auditEvents } = createFakePool();
+  const store = createTaskStore({ pool, insertAuditEvent: async (_client, event) => auditEvents.push(event) });
+  const nodeTask = {
+    id: taskId,
+    type: "swarm.node.enroll",
+    payload: {
+      address: "10.10.0.12",
+      sshUser: "vpsadmin",
+      sshPort: 22,
+      hostFingerprint: `SHA256:${"A".repeat(43)}`,
+      privateCidr: "10.10.0.0/24",
+      managerAddress: "10.10.0.2",
+      role: "worker",
+    },
+    maxAttempts: 1,
+  };
+  await store.createTask(nodeTask);
+  assert.deepEqual(tasks.get(taskId).payload, nodeTask.payload);
+  assert.equal(Object.hasOwn(tasks.get(taskId).payload, "privateKey"), false);
+  assert.equal((await store.getTaskById(taskId)).nodeAddress, nodeTask.payload.address);
+  assert.equal(auditEvents[0].details.address, nodeTask.payload.address);
+  await assert.rejects(store.createTask({ ...nodeTask, id: workerId }), {
+    code: "SWARM_NODE_ENROLLMENT_IN_PROGRESS",
+  });
+  await assert.rejects(store.createTask({
+    ...nodeTask,
+    id: workerId,
+    payload: { ...nodeTask.payload, privateKey: "not-persisted" },
+  }), /fields are invalid/);
+});
+
 test("claims tasks with a lease, records attempts and recovers expired work", async () => {
   const { store, tasks } = createFakePool();
   await store.createTask({
