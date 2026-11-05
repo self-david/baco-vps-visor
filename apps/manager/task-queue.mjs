@@ -508,8 +508,8 @@ export function createProjectBuildHandler({
             }
             return {
               message: branch
-                ? `Imagen construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`
-                : `Imagen construida para ${projectName} · ${source.commitSha.slice(0, 12)}.`,
+                ? `Imagen local construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`
+                : `Imagen local construida para ${projectName} · ${source.commitSha.slice(0, 12)}.`,
               image: operation.image,
               commitSha: source.commitSha,
               ...(source.deploymentType ? {
@@ -571,7 +571,7 @@ export function createProjectDeployHandler(agent, {
         }
         if (operation.state === "succeeded") {
           return {
-            message: `Servicio global de ${projectName} desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
+            message: `Servicio de ${projectName} desplegado con el commit ${commitSha.slice(0, 12)}; Swarm mantiene una tarea en el VPS principal y no se publicaron puertos.`,
             image: operation.image,
             commitSha,
             serviceId: operation.serviceId,

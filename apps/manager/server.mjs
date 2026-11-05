@@ -187,6 +187,7 @@ async function updateCloudflareTunnelHosts(
   tunnel,
   hostnames,
   originProtocol = getCloudflareTunnelOriginProtocol(tunnel),
+  managerHostname = tunnel.managerHostname ?? null,
 ) {
   const token = await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId);
   return cloudflareClient.updateTunnelConfiguration(
@@ -194,7 +195,7 @@ async function updateCloudflareTunnelHosts(
     tunnel.accountId,
     tunnel.tunnelId,
     [...new Set(hostnames)].sort(),
-    { originProtocol },
+    { originProtocol, managerHostname },
   );
 }
 const taskQueueWorker = createTaskQueueWorker({
@@ -1373,6 +1374,9 @@ const server = createServer(async (request, response) => {
             tunnelId: settings.tunnelId,
             accountId: settings.accountId,
             originProtocol: getCloudflareTunnelOriginProtocol(settings),
+            managerHostname: typeof settings.managerHostname === "string" ? settings.managerHostname : null,
+            managerSubdomain: typeof settings.managerSubdomain === "string" ? settings.managerSubdomain : "",
+            managerZoneId: typeof settings.managerZoneId === "string" ? settings.managerZoneId : "",
             lastError: typeof settings.lastError === "string" ? settings.lastError : null,
             configured: await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
             latestTask: await getLatestTaskByType("cloudflare.tunnel.configure"),
@@ -1483,7 +1487,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const domains = await getProjectDomains();
-      if (domains.length > 100) {
+      if (domains.length + (tunnel.managerHostname ? 1 : 0) > 100) {
         respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
         return;
       }
@@ -1531,13 +1535,21 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)
-        || Object.keys(body).some((key) => !["accountId", "name", "token", "originProtocol"].includes(key))
+        || Object.keys(body).some((key) => ![
+          "accountId", "name", "token", "originProtocol", "managerSubdomain", "managerZoneId",
+        ].includes(key))
         || !["accountId", "name", "token"].every((key) => Object.hasOwn(body, key))) {
         respondJson(response, 400, { error: "La solicitud debe incluir Account ID, nombre del túnel y API Token; originProtocol es opcional." });
         return;
       }
       if (body.originProtocol !== undefined && !["http", "https"].includes(body.originProtocol)) {
         respondJson(response, 400, { error: "El origen del túnel debe ser HTTP local o HTTPS." });
+        return;
+      }
+      if ((body.managerSubdomain !== undefined
+        && (typeof body.managerSubdomain !== "string" || body.managerSubdomain.length > 253))
+        || (body.managerZoneId !== undefined && typeof body.managerZoneId !== "string")) {
+        respondJson(response, 400, { error: "El subdominio o la zona seleccionada para el panel no son válidos." });
         return;
       }
       if (body.originProtocol === "http" && !testMode) {
@@ -1574,7 +1586,55 @@ const server = createServer(async (request, response) => {
       const originProtocol = body.originProtocol
         ?? getCloudflareTunnelOriginProtocol(current);
       const [domains, domainZones] = await Promise.all([getProjectDomains(), getDomainZones()]);
-      if (domains.length > 100) {
+      const managerSubdomain = body.managerSubdomain === undefined
+        ? current?.managerSubdomain ?? ""
+        : body.managerSubdomain.trim().toLowerCase();
+      const managerZoneId = managerSubdomain
+        ? (body.managerZoneId === undefined ? current?.managerZoneId ?? "" : body.managerZoneId.toLowerCase())
+        : "";
+      let managerZone = null;
+      let managerHostname = null;
+      if (managerSubdomain) {
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(managerZoneId)) {
+          respondJson(response, 400, { error: "Selecciona un dominio raíz conectado para el subdominio del panel." });
+          return;
+        }
+        managerZone = domainZones.find((candidate) => candidate.id === managerZoneId) ?? null;
+        if (!managerZone || managerZone.connectionStatus !== "connected") {
+          respondJson(response, 409, { error: "El dominio raíz seleccionado para el panel no está conectado a Cloudflare." });
+          return;
+        }
+        managerHostname = buildDomainHostname(managerZone.zone, managerSubdomain);
+        if (managerHostname === managerZone.zone) {
+          respondJson(response, 400, { error: "Para el panel escribe un subdominio, no el dominio raíz." });
+          return;
+        }
+        if (domains.some((domain) => domain.hostname.toLowerCase() === managerHostname)) {
+          respondJson(response, 409, { error: "Ese hostname ya está asignado a un proyecto o aplicación." });
+          return;
+        }
+        const registry = await serviceOperationAgent.getRegistryConfiguration();
+        const reservedHostnames = new Set([
+          managerDomain.toLowerCase(),
+          managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
+          registry?.domain?.toLowerCase() ?? "",
+        ].filter(Boolean));
+        if (reservedHostnames.has(managerHostname) && managerHostname !== managerDomain.toLowerCase()) {
+          respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });
+          return;
+        }
+        if (!await hasCloudflareToken(serviceOperationsDirectory, managerZone.credentialId)) {
+          respondJson(response, 409, { error: "Actualiza el token de Cloudflare del dominio raíz seleccionado para el panel." });
+          return;
+        }
+        const zoneToken = await getCloudflareToken(serviceOperationsDirectory, managerZone.credentialId);
+        const verifiedZone = await cloudflareClient.verifyZone(zoneToken, managerZone.zone);
+        if (verifiedZone.id !== managerZone.zoneId) {
+          respondJson(response, 409, { error: "La zona de Cloudflare cambió. Actualiza la conexión en Dominios." });
+          return;
+        }
+      }
+      if (domains.length + (managerHostname ? 1 : 0) > 100) {
         respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
         return;
       }
@@ -1596,6 +1656,12 @@ const server = createServer(async (request, response) => {
         tunnelId: tunnel.id,
         name: body.name,
         originProtocol,
+        ...(current?.managerHostname ? {
+          managerHostname: current.managerHostname,
+          managerSubdomain: current.managerSubdomain ?? "",
+          managerZoneId: current.managerZoneId ?? "",
+          managerDnsRecordId: current.managerDnsRecordId ?? null,
+        } : {}),
       };
       await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
       await saveCloudflareTunnelSettings({
@@ -1617,13 +1683,69 @@ const server = createServer(async (request, response) => {
         });
         await saveProjectDomain({ ...domain, proxied: true, dnsRecordId: dnsRecord.id });
       }
-      await cloudflareClient.updateTunnelConfiguration(
-        body.token,
-        body.accountId.toLowerCase(),
-        tunnel.id,
-        domains.map((domain) => domain.hostname),
-        { originProtocol },
-      );
+      let managerDnsRecord = null;
+      let managerZoneToken = null;
+      if (managerHostname && managerZone) {
+        managerZoneToken = await getCloudflareToken(serviceOperationsDirectory, managerZone.credentialId);
+        managerDnsRecord = await cloudflareClient.upsertTunnelCname(managerZoneToken, {
+          zoneId: managerZone.zoneId,
+          hostname: managerHostname,
+          tunnelId: tunnel.id,
+          existingRecordId: current?.managerHostname === managerHostname
+            && current?.managerZoneId === managerZone.id
+            ? current.managerDnsRecordId
+            : undefined,
+        });
+      }
+      try {
+        await cloudflareClient.updateTunnelConfiguration(
+          body.token,
+          body.accountId.toLowerCase(),
+          tunnel.id,
+          domains.map((domain) => domain.hostname),
+          { originProtocol, managerHostname },
+        );
+      } catch (error) {
+        if (managerDnsRecord && (current?.managerHostname !== managerHostname
+          || current?.managerZoneId !== managerZone?.id)) {
+          try {
+            await cloudflareClient.deleteTunnelCname(managerZoneToken, {
+              zoneId: managerZone.zoneId,
+              hostname: managerHostname,
+              tunnelId: tunnel.id,
+              recordId: managerDnsRecord.id,
+            });
+          } catch (cleanupError) {
+            console.error("Could not remove the panel DNS record after a tunnel update failure:", cleanupError);
+            throw new AggregateError([error, cleanupError], "Cloudflare Tunnel failed and the new panel DNS record could not be removed.");
+          }
+        }
+        throw error;
+      }
+      attemptedTunnel = {
+        ...attemptedTunnel,
+        managerHostname,
+        managerSubdomain,
+        managerZoneId: managerZone?.id ?? null,
+        managerDnsRecordId: managerDnsRecord?.id ?? null,
+        lastError: null,
+      };
+      await saveCloudflareTunnelSettings(attemptedTunnel);
+      if (current?.managerHostname
+        && (current.managerHostname !== managerHostname || current.managerZoneId !== managerZone?.id)) {
+        const previousZone = await getDomainZone(current.managerZoneId);
+        if (!previousZone || !current.managerDnsRecordId
+          || !await hasCloudflareToken(serviceOperationsDirectory, previousZone.credentialId)) {
+          throw new Error("No se pudo verificar el registro DNS anterior del panel; reconecta esa zona antes de cambiarlo.");
+        }
+        const previousZoneToken = await getCloudflareToken(serviceOperationsDirectory, previousZone.credentialId);
+        await cloudflareClient.deleteTunnelCname(previousZoneToken, {
+          zoneId: previousZone.zoneId,
+          hostname: current.managerHostname,
+          tunnelId: tunnel.id,
+          recordId: current.managerDnsRecordId,
+        });
+      }
 
       taskId = randomUUID();
       await serviceOperationAgent.stageCloudflareTunnelCredentials(taskId, tunnel.token);
@@ -1638,12 +1760,20 @@ const server = createServer(async (request, response) => {
         throw error;
       }
       respondJson(response, 202, {
-        tunnel: { provider: "cloudflare", accountId: body.accountId.toLowerCase(), tunnelId: tunnel.id, name: body.name },
+        tunnel: {
+          provider: "cloudflare",
+          accountId: body.accountId.toLowerCase(),
+          tunnelId: tunnel.id,
+          name: body.name,
+          managerHostname,
+        },
         task: {
           id: taskId,
           type: "cloudflare.tunnel.configure",
           status: "pending",
-          message: "Túnel creado y hostnames configurados; esperando que el agente active el conector en Swarm.",
+          message: managerHostname
+            ? `Túnel y hostname del panel (${managerHostname}) configurados; esperando que el agente active el conector en Swarm.`
+            : "Túnel y hostnames configurados; esperando que el agente active el conector en Swarm.",
         },
       });
     } catch (error) {
@@ -1732,12 +1862,14 @@ const server = createServer(async (request, response) => {
         });
         const token = await getCloudflareToken(serviceOperationsDirectory, existing.credentialId);
         const verifiedZone = await cloudflareClient.verifyZone(token, existing.zone);
+        const tunnelSettings = await getCloudflareTunnelSettings();
         if (existing.zoneId && existing.zoneId !== verifiedZone.id
-          && (await getProjectDomains()).some((domain) =>
-            domain.zone.toLowerCase() === existing.zone.toLowerCase())) {
+          && ((await getProjectDomains()).some((domain) =>
+            domain.zone.toLowerCase() === existing.zone.toLowerCase())
+            || tunnelSettings?.managerZoneId === existing.id)) {
           throw new RequestError(
             409,
-            "La zona de Cloudflare cambió mientras tiene hostnames asignados. Quita las asignaciones antes de actualizar la conexión.",
+            "La zona de Cloudflare cambió mientras tiene hostnames asignados. Quita las asignaciones de proyectos y del panel antes de actualizar la conexión.",
           );
         }
         const saved = await saveDomainZone({
@@ -1782,6 +1914,13 @@ const server = createServer(async (request, response) => {
         const existing = await getDomainZone(zoneId);
         if (!existing) {
           respondJson(response, 404, { error: "No se encontró el dominio conectado." });
+          return;
+        }
+        const tunnelSettings = await getCloudflareTunnelSettings();
+        if (tunnelSettings?.managerZoneId === existing.id) {
+          respondJson(response, 409, {
+            error: "Quita primero el hostname del panel desde la configuración de Cloudflare Tunnel antes de desconectar esta zona.",
+          });
           return;
         }
         if ((await getProjectDomains()).some((domain) =>
@@ -2065,6 +2204,7 @@ const server = createServer(async (request, response) => {
         managerDomain.toLowerCase(),
         managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
         registryConfiguration?.domain?.toLowerCase() ?? "",
+        tunnel?.managerHostname?.toLowerCase() ?? "",
       ].filter(Boolean));
       if (reservedHostnames.has(input.hostname)) {
         respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });
@@ -2302,9 +2442,6 @@ const server = createServer(async (request, response) => {
       await validateProjectSource(projectInput);
       let initialCommitSha = null;
       if (projectInput.sourceType === "github" && projectInput.autoDeploy) {
-        if (!(await serviceOperationAgent.getRegistryConfiguration())) {
-          throw new RequestError(409, "Configura primero el registro privado en Configuración para importar y desplegar repositorios.");
-        }
         initialCommitSha = await githubOAuth.getCommit(
           projectInput.githubInstallationId,
           projectInput.repository,
@@ -2600,13 +2737,6 @@ const server = createServer(async (request, response) => {
         respondJson(response, 404, { error: "No se encontró el proyecto." });
         return;
       }
-      const registry = await serviceOperationAgent.getRegistryConfiguration();
-      if (!registry) {
-        respondJson(response, 409, {
-          error: "Configura primero el registro privado en Configuración; construir también publica la imagen Docker para que Swarm pueda descargarla en todos los nodos.",
-        });
-        return;
-      }
       let sourceDigest;
       if (project.sourceType === "github") {
         await validateProjectSource(project);
@@ -2631,7 +2761,7 @@ const server = createServer(async (request, response) => {
       const task = await getTaskById(taskId);
       respondJson(response, 202, {
         task,
-        message: "Construcción solicitada. La imagen se publicará en el registro privado; no se desplegarán servicios.",
+        message: "Construcción solicitada en el VPS; la imagen quedará disponible localmente y no se desplegarán servicios.",
       });
     } catch (error) {
       const status = {
@@ -2696,21 +2826,16 @@ const server = createServer(async (request, response) => {
         respondJson(response, 404, { error: "No se encontró el proyecto." });
         return;
       }
-      const registry = await serviceOperationAgent.getRegistryConfiguration();
-      if (!registry) {
-        respondJson(response, 409, { error: "Configura primero el registro privado en Configuración." });
-        return;
-      }
       const [latestBuild] = await getLatestProjectBuilds([project.id]);
       if (!latestBuild) {
         respondJson(response, 409, { error: "Construye una imagen del proyecto antes de desplegarlo." });
         return;
       }
       const commitSha = latestBuild.result?.commitSha;
-      const expectedImage = `${registry.domain}/vps-manager-project-${project.id.replaceAll("-", "")}:${commitSha}`;
+      const expectedImage = `vps-manager-project-${project.id.replaceAll("-", "")}:${commitSha}`;
       if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? "")
         || latestBuild.result?.image !== expectedImage) {
-        respondJson(response, 409, { error: "El último build no coincide con la imagen esperada en el registro privado." });
+        respondJson(response, 409, { error: "El último build no coincide con la imagen local esperada. Vuelve a construir el proyecto." });
         return;
       }
       if (project.deploymentType === "build"
@@ -2731,7 +2856,7 @@ const server = createServer(async (request, response) => {
       });
       respondJson(response, 202, {
         task: await getTaskById(taskId),
-        message: `Despliegue global solicitado para ${project.name} (${commitSha.slice(0, 12)}): Swarm ejecutará una tarea por nodo activo. El servicio no publicará puertos.`,
+        message: `Despliegue solicitado para ${project.name} (${commitSha.slice(0, 12)}): Swarm ejecutará una tarea en el VPS principal. El servicio no publicará puertos.`,
       });
     } catch (error) {
       if (error?.code === "PROJECT_NOT_FOUND") {
@@ -2800,12 +2925,9 @@ const server = createServer(async (request, response) => {
         respondJson(response, 404, { error: "El commit no corresponde a un despliegue exitoso anterior de este proyecto." });
         return;
       }
-      const registry = await serviceOperationAgent.getRegistryConfiguration();
-      const expectedImage = registry
-        ? `${registry.domain}/vps-manager-project-${projectId.replaceAll("-", "")}:${targetCommitSha}`
-        : null;
-      if (!registry || previousDeployment.result?.image !== expectedImage) {
-        respondJson(response, 409, { error: "La imagen anterior no coincide con la imagen esperada en el registro privado." });
+      const expectedImage = `vps-manager-project-${projectId.replaceAll("-", "")}:${targetCommitSha}`;
+      if (previousDeployment.result?.image !== expectedImage) {
+        respondJson(response, 409, { error: "La imagen anterior no está disponible como imagen local del VPS." });
         return;
       }
       await getProjectDeploymentConfig(serviceOperationsDirectory, projectId);
@@ -3333,10 +3455,12 @@ const server = createServer(async (request, response) => {
             return;
           }
           hostname = buildDomainHostname(domainZone.zone, body.subdomain);
+          const tunnelSettings = await getCloudflareTunnelSettings();
           const reservedHostnames = new Set([
             managerDomain.toLowerCase(),
             managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
             (await serviceOperationAgent.getRegistryConfiguration())?.domain?.toLowerCase() ?? "",
+            tunnelSettings?.managerHostname?.toLowerCase() ?? "",
           ].filter(Boolean));
           if (reservedHostnames.has(hostname)) {
             respondJson(response, 409, { error: "Ese hostname ya está reservado por VPS Manager, Gitea o el registro privado." });

@@ -14,13 +14,14 @@ test("project deployment configuration parser imports its fingerprint dependency
 });
 
 test("projects tab exposes GitHub OAuth, imports, and a route-based detail view", async () => {
-  const [page, projectsPanel, projectSettingsForm, projectDetailView, projectImport, projectTemplates] = await Promise.all([
+  const [page, projectsPanel, projectSettingsForm, projectDetailView, projectImport, projectTemplates, application] = await Promise.all([
     readFile(new URL("../src/pages/index.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectsPanel.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectSettingsForm.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
     readFile(new URL("../public/project-templates.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
   ]);
 
   assert.equal(applicationCatalog.some((application) => application.id === "gitea"), false);
@@ -59,6 +60,8 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /id="assigned-domains-list"/);
   assert.match(domainsPanel, /id="cloudflare-tunnel-status"/);
   assert.match(domainsPanel, /id="cloudflare-tunnel-origin"/);
+  assert.match(domainsPanel, /id="cloudflare-tunnel-manager-subdomain"/);
+  assert.match(domainsPanel, /id="cloudflare-tunnel-manager-zone"/);
   assert.match(domainsPanel, /Local: HTTP interno de Swarm/);
   assert.match(domainsPanel, /HTTPS al origen/);
   assert.match(domainsPanel, /Elige cómo Cloudflare Tunnel se conecta a Traefik/);
@@ -67,6 +70,8 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(domainsPanel, /Account Resources/);
   assert.match(domainsPanel, /No uses el token del conector/);
   assert.match(domainsPanel, /solo sirve para ejecutar un túnel ya creado/);
+  assert.match(domainsPanel, /hostname opcional del panel/);
+  assert.match(application, /renderCloudflareTunnelManagerZones/);
   assert.match(domainsPanel, /data-guide-target="#guide-cloudflare-tunnel"/);
   assert.match(domainsPanel, /data-guide-target="#guide-domain-connect"/);
   assert.match(projectsPanel, /data-guide-target="#guide-project-files"/);
@@ -88,7 +93,7 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectDetailView, /project-detail-operation-status/);
   assert.match(projectDetailView, /project-release-status/);
   assert.match(projectDetailView, /Publicación/);
-  assert.match(projectDetailView, /La construcción publica la imagen en el registro privado/);
+  assert.match(projectDetailView, /No necesitas configurar un registro privado para este modo/);
   assert.doesNotMatch(projectDetailView, /<dialog/);
   assert.doesNotMatch(projectSettingsForm, /<dialog|data-close-project-dialog/);
   assert.match(page, /src="\/project-import\.js"/);
@@ -128,8 +133,7 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /manage\.href = `\/projects\/\$\{encodeURIComponent\(project\.id\)\}`/);
   assert.match(renderer, /button-danger/);
   assert.match(renderer, /Primero retira el servicio desplegado y desasigna sus dominios/);
-  assert.match(renderer, /project-registry-guidance/);
-  assert.match(renderer, /Configurar registro/);
+  assert.doesNotMatch(renderer, /project-registry-guidance/);
   assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
   assert.match(application, /dashboardTabsRoot\.hidden = showingProject/);
   assert.match(application, /function renderAssignedDomains\(domains\)/);
@@ -145,11 +149,22 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(application, /HTTP \$\{response\.status\}: \$\{responseMessage\}/);
   assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
   assert.match(application, /function updateProjectDeploymentFields\(\)/);
+  assert.match(application, /project\.deployment\?\.mode === "replicated"/);
+  assert.match(application, /instancia independiente en el VPS principal/);
   assert.match(application, /connectDomains\.href = "\/#tab-domains"/);
   assert.match(projectDetailView, /data-project-tab-panel="deploy"/);
   assert.match(projectDetailView, /id="project-detail-file-tree"/);
   assert.match(server, /source.{0,10}files/);
-  assert.match(server, /construir también publica la imagen Docker para que Swarm pueda descargarla en todos los nodos/);
+  assert.match(server, /vps-manager-project-\$\{project\.id\.replaceAll\("-", ""\)\}:\$\{commitSha\}/);
+  assert.doesNotMatch(server, /Configura primero el registro privado en Configuración para importar y desplegar repositorios/);
+  const projectBuildStart = serviceAgent.indexOf('\nif [[ "${operation}" == "build-project" ]]; then');
+  const projectBuildEnd = serviceAgent.indexOf('\nif [[ "${operation}" == "configure-registry" ]]', projectBuildStart);
+  const projectBuild = serviceAgent.slice(projectBuildStart, projectBuildEnd);
+  assert.match(projectBuild, /--load/);
+  assert.doesNotMatch(projectBuild, /--push/);
+  assert.match(serviceAgent, /--mode replicated/);
+  assert.match(serviceAgent, /--constraint "node\.id==\$\{project_manager_node_id\}"/);
+  assert.match(serviceAgent, /--restart-condition any/);
   assert.match(server, /validateProjectArchive\(archive\)/);
   assert.match(server, /projects.{0,30}0-9a-f/);
   assert.match(serviceAgent, /has_root_contents/);

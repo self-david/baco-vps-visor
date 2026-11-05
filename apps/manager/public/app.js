@@ -164,6 +164,8 @@ const ingressIpCard = document.querySelector("#domains-ingress-ip-card");
 const cloudflareTunnelForm = document.querySelector("#cloudflare-tunnel-form");
 const cloudflareTunnelAccountInput = document.querySelector("#cloudflare-tunnel-account");
 const cloudflareTunnelNameInput = document.querySelector("#cloudflare-tunnel-name");
+const cloudflareTunnelManagerSubdomainInput = document.querySelector("#cloudflare-tunnel-manager-subdomain");
+const cloudflareTunnelManagerZoneSelect = document.querySelector("#cloudflare-tunnel-manager-zone");
 const cloudflareTunnelTokenInput = document.querySelector("#cloudflare-tunnel-token");
 const cloudflareTunnelSaveButton = document.querySelector("#cloudflare-tunnel-save");
 const cloudflareTunnelStatus = document.querySelector("#cloudflare-tunnel-status");
@@ -1540,7 +1542,7 @@ function renderLegacyProjects() {
     build.textContent = "Construir imagen";
     build.disabled = !giteaCanManageProjects;
     build.addEventListener("click", async () => {
-      if (!confirm(`¿Construir y publicar una imagen de ${project.name} desde ${project.repository} · ${project.productionBranch}? No se desplegará automáticamente.`)) return;
+      if (!confirm(`¿Construir una imagen local de ${project.name} desde ${project.repository} · ${project.productionBranch}? No se desplegará automáticamente.`)) return;
       build.disabled = true;
       projectsStatus.textContent = `Solicitando construcción de ${project.name}…`;
       try {
@@ -1563,7 +1565,7 @@ function renderLegacyProjects() {
     const deploymentMatchesLatestBuild = Boolean(project.latestBuild)
       && project.deployment?.commitSha === project.latestBuild.commitSha;
     const deploymentIsCurrent = deploymentMatchesLatestBuild
-      && project.deployment?.mode === "global"
+      && project.deployment?.mode === "replicated"
       && project.deployment.desiredReplicas > 0
       && project.deployment.runningReplicas === project.deployment.desiredReplicas
       && project.deployment.configurationCurrent === true;
@@ -1576,7 +1578,7 @@ function renderLegacyProjects() {
       : "Desplegar imagen";
     deploy.disabled = !project.latestBuild || deploymentIsCurrent;
     deploy.addEventListener("click", async () => {
-      if (!confirm(`¿Desplegar en Swarm la imagen ${project.latestBuild.commitSha.slice(0, 12)} de ${project.name}? Se ejecutará una instancia por cada VPS/nodo activo. Se aplicarán las variables y rutas de dominio configuradas; no se publicarán puertos del host.`)) return;
+      if (!confirm(`¿Desplegar en Swarm la imagen ${project.latestBuild.commitSha.slice(0, 12)} de ${project.name}? Se ejecutará una instancia independiente en el VPS principal. Se aplicarán las variables y rutas de dominio configuradas; no se publicarán puertos del host.`)) return;
       deploy.disabled = true;
       projectsStatus.textContent = `Solicitando despliegue de ${project.name}…`;
       try {
@@ -2105,18 +2107,6 @@ function renderProjects() {
         await Promise.all([loadProjects(), loadTaskHistory()]);
       } catch (error) {
         projectsStatus.textContent = error.message;
-        if (error.message.includes("Configura primero el registro privado")) {
-          const guidance = document.createElement("div");
-          guidance.className = "project-registry-guidance";
-          const explanation = document.createElement("p");
-          explanation.textContent = "La construcción también publica la imagen para que Swarm pueda distribuirla entre los nodos. Configura el registro privado y vuelve a intentarlo.";
-          const link = document.createElement("a");
-          link.className = "button secondary";
-          link.href = "/#tab-settings";
-          link.textContent = "Configurar registro";
-          guidance.append(explanation, link);
-          buildInfo.append(guidance);
-        }
       }
     }, project.sourceType === "upload" && !project.latestSource));
 
@@ -2532,8 +2522,9 @@ async function loadDomains() {
     cloudflareTunnelOriginSelect.querySelector('option[value="http"]').disabled
       = !result.localTunnelOriginAvailable;
     ingressIpCard.hidden = result.ingressMode === "cloudflare-tunnel";
-    renderCloudflareTunnel(result.tunnel, result.tunnelStatusError);
     renderDomainZones(result.zones);
+    renderCloudflareTunnelManagerZones(result.zones, result.tunnel);
+    renderCloudflareTunnel(result.tunnel, result.tunnelStatusError);
     renderAssignedDomains(result.domains);
     if (["pending", "in_progress"].includes(result.tunnel?.latestTask?.status)) {
       if (cloudflareTunnelPollTimer !== undefined) clearTimeout(cloudflareTunnelPollTimer);
@@ -2555,6 +2546,25 @@ async function loadDomains() {
   }
 }
 
+function renderCloudflareTunnelManagerZones(zones, tunnel) {
+  const options = [new Option("Sin hostname propio para el panel", "")];
+  for (const zone of zones) {
+    const option = new Option(
+      `${zone.zone}${zone.connectionStatus === "connected" && zone.tokenConfigured ? "" : " (revisar conexión)"}`,
+      zone.id,
+    );
+    options.push(option);
+  }
+  cloudflareTunnelManagerZoneSelect.replaceChildren(...options);
+  cloudflareTunnelManagerZoneSelect.value = tunnel?.managerZoneId ?? "";
+  cloudflareTunnelManagerSubdomainInput.value = tunnel?.managerSubdomain ?? "";
+  cloudflareTunnelManagerZoneSelect.required = Boolean(cloudflareTunnelManagerSubdomainInput.value.trim());
+}
+
+cloudflareTunnelManagerSubdomainInput.addEventListener("input", () => {
+  cloudflareTunnelManagerZoneSelect.required = Boolean(cloudflareTunnelManagerSubdomainInput.value.trim());
+});
+
 function renderCloudflareTunnel(tunnel, tunnelStatusError) {
   const task = tunnel?.latestTask;
   cloudflareTunnelStatus.setAttribute("role", task?.status === "failed" || tunnelStatusError ? "alert" : "status");
@@ -2565,6 +2575,8 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
     cloudflareTunnelNameInput.readOnly = false;
     cloudflareTunnelSaveButton.textContent = "Crear y conectar túnel";
     cloudflareTunnelOriginSelect.disabled = true;
+    cloudflareTunnelManagerSubdomainInput.value = "";
+    cloudflareTunnelManagerZoneSelect.value = "";
     return;
   }
   cloudflareTunnelOriginSelect.value = tunnel.originProtocol ?? "https";
@@ -2587,6 +2599,7 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
               : "El túnel está creado; todavía no hay una tarea de conexión registrada.";
   cloudflareTunnelStatus.textContent = [
     `Cloudflare Tunnel “${tunnel.name}” (${tunnel.tunnelId}).`,
+    tunnel.managerHostname ? `Panel: https://${tunnel.managerHostname}.` : "El panel no tiene un hostname propio en el túnel.",
     tunnel.configured ? "API Token protegido." : "Falta el API Token protegido; vuelve a introducirlo.",
     taskStatus,
     task?.id ? `Tarea: ${task.id}.` : "",
@@ -3280,6 +3293,10 @@ cloudflareTunnelForm.addEventListener("submit", async (event) => {
         name: cloudflareTunnelNameInput.value.trim(),
         token: cloudflareTunnelTokenInput.value,
         originProtocol: cloudflareTunnelOriginSelect.value,
+        managerSubdomain: cloudflareTunnelManagerSubdomainInput.value.trim(),
+        managerZoneId: cloudflareTunnelManagerSubdomainInput.value.trim()
+          ? cloudflareTunnelManagerZoneSelect.value
+          : "",
       }),
     });
     cloudflareTunnelTokenInput.value = "";

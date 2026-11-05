@@ -168,13 +168,29 @@ test("configures local-mode Tunnel ingress over the private Swarm HTTP network",
     "a".repeat(32),
     "11111111-1111-4111-8111-111111111111",
     ["app.example.com"],
-    { originProtocol: "http" },
+    { originProtocol: "http", managerHostname: "panel.example.com" },
   );
 
-  assert.equal(configuration.config.ingress[0].service, "http://vps-manager_traefik:80");
-  assert.equal(configuration.config.ingress[0].originRequest.httpHostHeader, "app.example.com");
-  assert.equal("noTLSVerify" in configuration.config.ingress[0].originRequest, false);
-  assert.equal(configuration.config.ingress[1].service, "http_status:404");
+  assert.deepEqual(configuration.config.ingress, [
+    {
+      hostname: "panel.example.com",
+      service: "http://vps-manager_manager:3000",
+      originRequest: { httpHostHeader: "panel.example.com" },
+    },
+    {
+      hostname: "app.example.com",
+      service: "http://vps-manager_traefik:80",
+      originRequest: { httpHostHeader: "app.example.com" },
+    },
+    { service: "http_status:404" },
+  ]);
+  await assert.rejects(client.updateTunnelConfiguration(
+    "test-cloudflare-api-key-value-123456789",
+    "a".repeat(32),
+    "11111111-1111-4111-8111-111111111111",
+    ["panel.example.com"],
+    { managerHostname: "panel.example.com" },
+  ), /hostnames/);
 });
 
 test("converts only a tracked A record to a proxied tunnel CNAME", async () => {
@@ -207,6 +223,43 @@ test("converts only a tracked A record to a proxied tunnel CNAME", async () => {
   assert.equal(calls[2].options.method, "POST");
   assert.match(calls[2].options.body, new RegExp(`${tunnelId}\\.cfargotunnel\\.com`));
   assert.match(calls[2].options.body, /"proxied":true/);
+});
+
+test("deletes only the tracked panel CNAME pointing at its configured tunnel", async () => {
+  const calls = [];
+  const tunnelId = "11111111-1111-4111-8111-111111111111";
+  const client = createCloudflareClient({
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (String(url).includes("/dns_records?")) {
+        return Response.json({
+          success: true,
+          result: [{
+            id: "panel-record",
+            type: "CNAME",
+            name: "panel.example.com",
+            content: `${tunnelId}.cfargotunnel.com`,
+            proxied: true,
+          }],
+        });
+      }
+      return Response.json({ success: true, result: { id: "panel-record" } });
+    },
+  });
+  const result = await client.deleteTunnelCname("test-cloudflare-api-key-value-123456789", {
+    zoneId: "b".repeat(32),
+    hostname: "panel.example.com",
+    tunnelId,
+    recordId: "panel-record",
+  });
+  assert.deepEqual(result, { deleted: true });
+  assert.equal(calls[1].options.method, "DELETE");
+  await assert.rejects(client.deleteTunnelCname("test-cloudflare-api-key-value-123456789", {
+    zoneId: "b".repeat(32),
+    hostname: "panel.example.com",
+    tunnelId,
+    recordId: "other-record",
+  }), { code: "CLOUDFLARE_RECORD_EXISTS" });
 });
 
 test("includes Cloudflare's API reason when a Tunnel operation is rejected", async () => {

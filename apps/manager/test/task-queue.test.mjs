@@ -363,7 +363,7 @@ test("builds and deploys the exact commit from an authenticated production push"
   };
 
   assert.deepEqual(await handler(pushTask, new AbortController().signal), {
-    message: `Push a main: Imagen construida para Website (main · ${commitSha.slice(0, 12)}). Servicio global de Website desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
+    message: `Push a main: Imagen local construida para Website (main · ${commitSha.slice(0, 12)}). Servicio de Website desplegado con el commit ${commitSha.slice(0, 12)}; Swarm mantiene una tarea en el VPS principal y no se publicaron puertos.`,
     image: `registry.example.com/project:${commitSha}`,
     commitSha,
     serviceId: "service-id",
@@ -441,7 +441,7 @@ test("publishes a project image from a bounded source archive without deploying 
           state: "succeeded",
           projectId,
           commitSha: sha,
-          image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${sha}`,
+          image: `vps-manager-project-${projectId.replaceAll("-", "")}:${sha}`,
         };
       },
       async getStatus() { return operation; },
@@ -454,8 +454,8 @@ test("publishes a project image from a bounded source archive without deploying 
   });
 
   assert.deepEqual(await handler(projectTask, new AbortController().signal), {
-    message: `Imagen construida para project (main · ${commitSha.slice(0, 12)}).`,
-    image: `registry.example.com/vps-manager-project-${projectTask.payload.projectId.replaceAll("-", "")}:${commitSha}`,
+    message: `Imagen local construida para project (main · ${commitSha.slice(0, 12)}).`,
+    image: `vps-manager-project-${projectTask.payload.projectId.replaceAll("-", "")}:${commitSha}`,
     commitSha,
     branch: "main",
   });
@@ -488,15 +488,15 @@ test("deploys the last successful image as a manual Swarm task", async () => {
         projectId,
         commitSha,
         serviceId: "7p9aac885t16uxz1f5gdftz17",
-        image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+        image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
         message: "Servicio desplegado.",
       };
     },
   }, { pollIntervalMs: 100 });
 
   assert.deepEqual(await handler(deployTask, new AbortController().signal), {
-    message: `Servicio global de project desplegado con el commit ${commitSha.slice(0, 12)}; Swarm programa una tarea por nodo activo y no se publicaron puertos.`,
-    image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+    message: `Servicio de project desplegado con el commit ${commitSha.slice(0, 12)}; Swarm mantiene una tarea en el VPS principal y no se publicaron puertos.`,
+    image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
     commitSha,
     serviceId: "7p9aac885t16uxz1f5gdftz17",
   });

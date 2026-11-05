@@ -4,7 +4,7 @@
 **Estado:** Implementación incremental; primera fase funcional en desarrollo  
 **Versión:** 1.0  
 **Sistema operativo objetivo:** Ubuntu Server 24.04 LTS  
-**Arquitectura:** VPS Manager en un nodo manager; los servicios de proyecto pueden ejecutarse en modo global en todos los nodos activos del Swarm.
+**Arquitectura:** VPS Manager y una tarea por proyecto en el nodo manager; la ejecución de proyectos en varios nodos requiere un registro compartido y no está habilitada en este modo local.
 **Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
 
 > **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare y Cloudflare Tunnel, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir y desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los proyectos ofrecen tres perfiles: estático servido por Nginx, dinámico con Dockerfile o Railpack, y Build que instala dependencias según el lockfile, ejecuta el comando configurado y publica la carpeta de salida con Nginx. La integración debe validarse en un VPS antes de considerarse lista para producción.
@@ -397,7 +397,7 @@ Mostrar:
 Configurar, construir y desplegar proyectos propios desde GitHub o archivos ZIP.
 Cada proyecto tiene una vista `/projects/<id>` con pestañas de despliegue, configuración, archivos, variables, dominios e historial. Los ZIP subidos muestran el árbol de nombres sin leer ni exponer el contenido de sus archivos.
 La importación incluye plantillas predeterminadas para HTML/CSS/JavaScript vanilla, un servidor Node.js con `node:http` y un servidor Python con la biblioteca estándar. Node y Python escuchan en `0.0.0.0:3000`, leen el puerto de `PORT` y exponen `/health`; no requieren manifiestos ni dependencias. Al elegir una plantilla, crea el proyecto y luego usa **Construir** y **Desplegar** desde su vista para publicarlo.
-Antes de construir, configura el registro privado desde la pestaña general **Configuración** y dirige un registro DNS público al VPS. Cada build publica su imagen ahí para que Swarm pueda obtenerla en todos los nodos.
+Los builds se cargan localmente en el nodo principal, por lo que no requieren un registro privado. Cada proyecto se ejecuta en su propio servicio Swarm; los dominios asociados se enrutan a ese servicio mediante Traefik.
 
 ### Aplicaciones
 
@@ -473,9 +473,8 @@ usando la llave de respaldos del VPS Manager y se guardan fuera de PostgreSQL.
 El callback de OAuth es `/api/github/callback` y el endpoint público de
 webhooks es `/api/webhooks/github`. Los webhooks requieren que el panel sea
 accesible públicamente por HTTPS; el endpoint valida su firma antes de encolar
-un despliegue. Los despliegues requieren que el registro privado esté
-configurado. Los proyectos subidos se crean sin desplegar y pueden construirse
-desde su tarjeta una vez configurados.
+un despliegue. Los proyectos subidos se crean sin desplegar y pueden construirse
+desde su tarjeta.
 
 ## 5.2. Builds y despliegues
 
@@ -486,10 +485,12 @@ Cada proyecto ofrece uno de estos perfiles:
 - **Build + despliegue:** instala dependencias según `package-lock.json`, `pnpm-lock.yaml` o `yarn.lock`, ejecuta el comando configurado (por defecto `npm run build`) y publica la carpeta de salida (por defecto `dist`) con Nginx. Requiere `package.json`.
 
 El agente del VPS obtiene el código, construye con Docker Buildx/BuildKit y
-publica la imagen en el registro privado configurado. Los despliegues se crean
-como servicios Swarm administrados, sin publicar puertos en el host; la
+carga la imagen localmente en el nodo manager. Cada proyecto se despliega como
+un servicio Swarm administrado con una tarea, fijada al manager y sin puertos
+publicados en el host; Swarm reinicia la tarea si el contenedor se detiene. La
 publicación web se realiza por Traefik. Se configura el puerto HTTP interno y
-se pueden asociar dominios conectados desde la pestaña Dominios.
+se pueden asociar varios dominios conectados desde la pestaña Dominios. Un
+despliegue en varios nodos requiere publicar la imagen en un registro compartido.
 
 En proyectos GitHub se puede habilitar el despliegue automático al recibir un
 push a la rama de producción. El webhook despliega el commit exacto del evento.
@@ -510,14 +511,14 @@ pero no comprueba por sí sola la propagación DNS pública ni HTTPS.
 El historial registra los intentos de despliegue y permite volver a una imagen
 de un despliegue exitoso anterior. El rollback conserva la configuración actual
 del proyecto (variables, dominio y puerto) y solo restaura la imagen anterior.
-Las imágenes deben seguir disponibles en el registro privado.
+Las imágenes locales deben seguir presentes en el VPS.
 
 ## 5.4. Límites y validación pendiente
 
 Los ZIP tienen un máximo de 32 MiB; el agente valida la extracción para impedir
 salidas del directorio, enlaces simbólicos, archivos especiales y archivos
-descomprimidos que excedan los límites definidos. Los builds requieren que el
-registro privado esté configurado y accesible por los nodos.
+descomprimidos que excedan los límites definidos. El modo local ejecuta una
+tarea por proyecto en el manager; no distribuye las imágenes a otros nodos.
 
 La implementación tiene pruebas automatizadas, pero aún debe validarse en un
 VPS de pruebas con GitHub OAuth, recepción de webhook, build, despliegue,
@@ -555,7 +556,10 @@ conectadas. Al activar Tunnel, los registros A que ya administra VPS Manager
 se convierten en CNAME proxied. Al asignar o quitar hostnames, también se
 actualiza la configuración de ingreso del túnel. El túnel solo enruta los
 hostnames asignados a proyectos o aplicaciones; las zonas raíz conectadas no
-se publican automáticamente. Sin Tunnel, el panel usa la IPv4 pública
+se publican automáticamente. El formulario también permite elegir, de forma
+opcional, un subdominio de una zona conectada para el panel. Ese hostname se
+reserva para VPS Manager y Cloudflare Tunnel lo enruta directamente al servicio
+privado del panel, separado de las rutas de proyectos. Sin Tunnel, el panel usa la IPv4 pública
 configurada para crear registros A. La asignación de dominios a proyectos y
 aplicaciones se realiza desde sus respectivos flujos.
 
@@ -1522,9 +1526,9 @@ navegador. El formulario crea un servicio Swarm autenticado por HTTPS detrás de
 Traefik y con volumen persistente; su dominio DNS debe apuntar al VPS.
 
 BuildKit permite solicitar construcciones manuales desde los repositorios
-registrados y publica las imágenes en ese registro. El panel despliega
-manualmente proyectos como servicios Swarm globales, con una tarea por nodo
-activo unido al clúster. Desde el panel también se pueden incorporar VPS
+registrados y carga las imágenes localmente en el manager. El panel despliega
+manualmente cada proyecto como servicio Swarm de una tarea, fijado al manager.
+Desde el panel también se pueden incorporar VPS
 Ubuntu 24.04 por SSH y consultar el estado de los nodos. Variables y dominios
 configurados para un proyecto se aplican en el siguiente despliegue.
 Los pushes autenticados a la rama de producción de proyectos registrados

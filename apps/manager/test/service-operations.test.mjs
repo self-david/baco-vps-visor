@@ -547,7 +547,7 @@ test("requests a fixed Swarm deployment and removal for a project", async () => 
       projectId,
       commitSha,
       serviceId,
-      image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+      image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
       updatedAt: "2026-11-03T18:00:00Z",
       message: "Servicio desplegado.",
     }));

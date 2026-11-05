@@ -511,10 +511,8 @@ fi
 if [[ "${operation}" == "build-project" ]]; then
   archive="${STATE_DIRECTORY}/build-source-${request_id}.zip"
   build_directory=""
-  docker_config_directory=""
   cleanup_project_build() {
     if [[ -n "${build_directory}" ]]; then rm -rf -- "${build_directory}"; fi
-    if [[ -n "${docker_config_directory}" ]]; then rm -rf -- "${docker_config_directory}"; fi
     rm -f -- "${archive}"
   }
   trap cleanup_project_build EXIT
@@ -669,63 +667,11 @@ PY
     exit 1
   fi
 
-  if [[ -L "${REGISTRY_CONFIG_FILE}" || ! -f "${REGISTRY_CONFIG_FILE}" ]]; then
-    write_status "failed" "Configura primero el registro privado desde el panel."
-    exit 1
-  fi
-  docker_config_directory="$(mktemp -d /tmp/vps-manager-registry-auth.XXXXXX)"
-  chmod 0700 "${docker_config_directory}"
-  if ! registry_domain="$(python3 - "${REGISTRY_CONFIG_FILE}" "${docker_config_directory}/config.json" <<'PY'
-import base64
-import json
-import os
-import re
-import stat
-import sys
-
-config_path, docker_config_path = sys.argv[1:]
-descriptor = os.open(config_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-try:
-    metadata = os.fstat(descriptor)
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
-        raise ValueError("registry credentials file permissions are invalid")
-    with os.fdopen(descriptor, encoding="utf-8") as config_file:
-        descriptor = -1
-        configuration = json.load(config_file)
-finally:
-    if descriptor >= 0:
-        os.close(descriptor)
-domain = configuration.get("domain")
-username = configuration.get("username")
-password = configuration.get("password")
-if not isinstance(domain, str) or not re.fullmatch(
-    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
-    domain,
-) or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", domain, re.IGNORECASE):
-    raise SystemExit("The configured registry domain is invalid.")
-if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
-    raise SystemExit("The configured registry username is invalid.")
-if not isinstance(password, str) or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", password):
-    raise SystemExit("The configured registry password is invalid.")
-auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-temporary = f"{docker_config_path}.tmp"
-descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
-    json.dump({"auths": {domain.lower(): {"auth": auth}}}, config_file)
-    config_file.write("\n")
-os.replace(temporary, docker_config_path)
-print(domain.lower())
-PY
-  )"; then
-    write_status "failed" "No se pudo leer de forma segura la configuración del registro."
-    exit 1
-  fi
-
-  built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
+  built_image="vps-manager-project-${project_id//-/}:${commit_sha}"
   if [[ "${deployment_type}" != "dynamic" || "${build_strategy}" == "dockerfile" ]]; then
     build_arguments=(
       --pull
-      --push
+      --load
       --tag "${built_image}"
       --label vps-manager.managed=true
       --label "vps-manager.project-id=${project_id}"
@@ -741,7 +687,7 @@ PY
     fi
     build_arguments=(
       --pull
-      --push
+      --load
       --tag "${built_image}"
       --label vps-manager.managed=true
       --label "vps-manager.project-id=${project_id}"
@@ -751,11 +697,11 @@ PY
       "${build_context_directory}"
     )
   fi
-  if ! DOCKER_CONFIG="${docker_config_directory}" docker buildx build "${build_arguments[@]}"; then
-    write_status "failed" "BuildKit no pudo construir o publicar la imagen en el registro privado."
+  if ! docker buildx build "${build_arguments[@]}"; then
+    write_status "failed" "BuildKit no pudo construir y cargar la imagen local en el VPS."
     exit 1
   fi
-  write_status "succeeded" "Imagen construida y publicada en el registro privado; no fue desplegada."
+  write_status "succeeded" "Imagen construida y cargada localmente en el VPS; no fue desplegada."
   exit 0
 fi
 
@@ -1694,11 +1640,6 @@ if [[ "${operation}" == "enroll-swarm-node" ]]; then
 fi
 
 if [[ "${operation}" == "deploy-project" || "${operation}" == "remove-project" ]]; then
-  docker_config_directory=""
-  cleanup_project_service_operation() {
-    if [[ -n "${docker_config_directory}" ]]; then rm -rf -- "${docker_config_directory}"; fi
-  }
-  trap cleanup_project_service_operation EXIT
   readonly PROJECT_SERVICE="vps-manager-project-${project_id//-/}"
   if [[ "${operation}" == "remove-project" ]]; then
     if ! service_names="$(docker service ls --format '{{.Name}}')"; then
@@ -1726,59 +1667,12 @@ if [[ "${operation}" == "deploy-project" || "${operation}" == "remove-project" ]
     exit 0
   fi
 
-  if [[ -L "${REGISTRY_CONFIG_FILE}" || ! -f "${REGISTRY_CONFIG_FILE}" ]]; then
-    write_status "failed" "Configura primero el registro privado desde el panel."
+  if ! project_manager_node_id="$(docker info --format '{{.Swarm.NodeID}}')" \
+    || ! [[ "${project_manager_node_id}" =~ ^[a-zA-Z0-9]{25,64}$ ]]; then
+    write_status "failed" "El VPS no tiene un identificador válido de nodo manager en Swarm."
     exit 1
   fi
-  if ! docker_config_directory="$(mktemp -d /tmp/vps-manager-project-auth.XXXXXX)" \
-    || ! chmod 0700 "${docker_config_directory}"; then
-    write_status "failed" "No se pudo preparar el archivo temporal de autenticación."
-    exit 1
-  fi
-  if ! registry_domain="$(python3 - "${REGISTRY_CONFIG_FILE}" "${docker_config_directory}/config.json" <<'PY'
-import base64
-import json
-import os
-import re
-import stat
-import sys
-
-config_path, docker_config_path = sys.argv[1:]
-descriptor = os.open(config_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-try:
-    metadata = os.fstat(descriptor)
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
-        raise ValueError("registry credentials permissions are invalid")
-    with os.fdopen(descriptor, encoding="utf-8") as config_file:
-        descriptor = -1
-        configuration = json.load(config_file)
-finally:
-    if descriptor >= 0:
-        os.close(descriptor)
-domain = configuration.get("domain")
-username = configuration.get("username")
-password = configuration.get("password")
-if not isinstance(domain, str) or not re.fullmatch(
-    r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
-    domain,
-) or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", domain, re.IGNORECASE):
-    raise SystemExit("The configured registry domain is invalid.")
-if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
-    raise SystemExit("The configured registry username is invalid.")
-if not isinstance(password, str) or not re.fullmatch(r"[A-Za-z0-9._-]{20,72}", password):
-    raise SystemExit("The configured registry password is invalid.")
-auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-descriptor = os.open(docker_config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(descriptor, "w", encoding="utf-8") as docker_config_file:
-    json.dump({"auths": {domain.lower(): {"auth": auth}}}, docker_config_file)
-    docker_config_file.write("\n")
-print(domain.lower())
-PY
-  )"; then
-    write_status "failed" "No se pudo preparar la autenticación segura del registro privado."
-    exit 1
-  fi
-  built_image="${registry_domain}/vps-manager-project-${project_id//-/}:${commit_sha}"
+  built_image="vps-manager-project-${project_id//-/}:${commit_sha}"
   deployment_config_file="${STATE_DIRECTORY}/project-config-${project_id}.json"
   deployment_environment_file="$(mktemp "${STATE_DIRECTORY}/project-env.XXXXXX")"
   deployment_metadata_file="$(mktemp "${STATE_DIRECTORY}/project-metadata.XXXXXX")"
@@ -1953,15 +1847,25 @@ PY
     if [[ " ${existing_network_ids} " != *" ${project_network_id} "* ]]; then
       project_network_args+=(--network-add vps-manager-proxy)
     fi
-    if ! DOCKER_CONFIG="${docker_config_directory}" docker service update --detach=false \
-      --mode global \
+    if ! existing_constraints="$(docker service inspect --format '{{json .Spec.TaskTemplate.Placement.Constraints}}' "${PROJECT_SERVICE}")"; then
+      write_status "failed" "No se pudieron consultar las restricciones del servicio existente."
+      exit 1
+    fi
+    project_manager_constraint_args=()
+    if [[ "${existing_constraints}" != *"node.id==${project_manager_node_id}"* ]]; then
+      project_manager_constraint_args+=(--constraint-add "node.id==${project_manager_node_id}")
+    fi
+    if ! docker service update --detach=false \
+      --mode replicated \
+      --replicas 1 \
       --restart-condition any \
       --image "${built_image}" \
-      --with-registry-auth \
+      --resolve-image never \
       --force \
       "${project_environment_remove_args[@]}" \
       "${project_environment_args[@]}" \
       "${project_network_args[@]}" \
+      "${project_manager_constraint_args[@]}" \
       --label-rm traefik.enable \
       --label-rm traefik.swarm.network \
       "${project_traefik_remove_args[@]}" \
@@ -1977,12 +1881,14 @@ PY
       exit 1
     fi
   else
-    if ! DOCKER_CONFIG="${docker_config_directory}" docker service create --detach=false \
+    if ! docker service create --detach=false \
       --name "${PROJECT_SERVICE}" \
-      --mode global \
+      --mode replicated \
+      --replicas 1 \
+      --constraint "node.id==${project_manager_node_id}" \
       --restart-condition any \
       --network vps-manager-proxy \
-      --with-registry-auth \
+      --resolve-image never \
       "${project_environment_args[@]}" \
       --label vps-manager.managed=true \
       --label vps-manager.component=project \
@@ -2001,7 +1907,7 @@ PY
     write_status "failed" "Swarm creó el servicio, pero no se pudo validar su identificador."
     exit 1
   fi
-  write_status "succeeded" "Servicio global desplegado con una tarea por nodo Swarm activo y sin puertos publicados."
+  write_status "succeeded" "Servicio desplegado con una tarea en el nodo manager y sin puertos publicados."
   exit 0
 fi
 

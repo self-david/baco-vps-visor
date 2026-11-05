@@ -27,7 +27,7 @@
                 </div>
                 <p class="muted">Publica tus servicios sin abrir puertos en el router. Configura el API Token y el origen mediante la ayuda.</p>
                 <template id="guide-cloudflare-tunnel">
-                  <p>VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Elige cómo Cloudflare Tunnel se conecta a Traefik: HTTP local dentro de Swarm o HTTPS al origen. Los visitantes acceden mediante HTTPS en ambos casos. Los tokens por zona conectada se siguen usando para editar DNS.</p>
+                  <p>VPS Manager crea el túnel, configura el conector en Swarm y actualiza sus hostnames. Elige cómo Cloudflare Tunnel se conecta a Traefik: HTTP local dentro de Swarm o HTTPS al origen. Los visitantes acceden mediante HTTPS en ambos casos. El hostname opcional del panel se enruta directamente al servicio privado del manager; los tokens por zona conectada se usan para editar DNS.</p>
                   <p>HTTP local solo está disponible en modo de prueba; en producción elige HTTPS. El modo HTTPS no valida el certificado del origen. Si un proyecto ya estaba desplegado antes de esta actualización, vuelve a desplegarlo para que tenga su router HTTP local.</p>
                   <ol class="roadmap-list">
                   <li>En Cloudflare, abre tu perfil y ve a <strong>API Tokens → Create Token → Create Custom Token → Get started</strong>.</li>
@@ -51,6 +51,12 @@
                   <input id="cloudflare-tunnel-account" name="accountId" type="text" autocomplete="off" spellcheck="false" pattern="[A-Fa-f0-9]{32}" title="Debe tener exactamente 32 caracteres hexadecimales." required>
                   <label for="cloudflare-tunnel-name">Nombre del túnel</label>
                   <input id="cloudflare-tunnel-name" name="name" type="text" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_\x2d]{0,62}" required>
+                  <label for="cloudflare-tunnel-manager-subdomain">Subdominio del panel (opcional)</label>
+                  <input id="cloudflare-tunnel-manager-subdomain" name="managerSubdomain" type="text" autocomplete="off" spellcheck="false" placeholder="panel">
+                  <label for="cloudflare-tunnel-manager-zone">Dominio raíz del panel</label>
+                  <select id="cloudflare-tunnel-manager-zone" name="managerZoneId">
+                    <option value="">Sin hostname propio para el panel</option>
+                  </select>
                   <label for="cloudflare-tunnel-token">API Token de Cloudflare</label>
                   <input id="cloudflare-tunnel-token" name="token" type="password" autocomplete="new-password" required>
                   <div class="container-heading-actions">

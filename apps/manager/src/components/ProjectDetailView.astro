@@ -26,8 +26,8 @@ import ProjectSettingsForm from "./ProjectSettingsForm.astro";
     <div class="project-panel-heading">
       <div>
         <p class="eyebrow">PUBLICACIÓN</p>
-        <h3>Construye y publica</h3>
-        <p class="muted">Construye una imagen con tus archivos y publícala en el VPS. Después, despliega la versión lista.</p>
+        <h3>Construye y despliega</h3>
+        <p class="muted">Construye la imagen localmente en el VPS y despliega una tarea aislada para este proyecto.</p>
       </div>
       <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-deployment-types" data-guide-title="Tipos de despliegue" aria-label="Ayuda sobre los tipos de despliegue" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
     </div>
@@ -37,7 +37,7 @@ import ProjectSettingsForm from "./ProjectSettingsForm.astro";
     </div>
     <template id="guide-deployment-types">
       <p>Los sitios con <code>index.html</code> se sirven con Nginx; <code>server.js</code> y <code>main.py</code> sueltos tienen un runtime básico. <code>package.json</code> y manifiestos compatibles usan Railpack. C++ requiere un Dockerfile que compile el código y exponga un servidor HTTP.</p>
-      <p>La construcción publica la imagen en el registro privado de VPS Manager para que Swarm pueda distribuirla entre los nodos. Configura ese registro desde la pestaña general <em>Configuración</em> antes de construir.</p>
+      <p>La imagen se construye en el VPS principal y Swarm ejecuta una tarea por proyecto en ese nodo. No necesitas configurar un registro privado para este modo; para distribuir proyectos entre varios nodos se necesitaría un registro accesible por todos.</p>
     </template>
     <div class="project-release-actions" id="project-detail-actions"></div>
   </section>

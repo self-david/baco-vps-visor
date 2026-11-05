@@ -72,7 +72,7 @@
                     <input id="github-client-id" name="clientId" autocomplete="off" required>
                     <label for="github-client-secret">Client Secret</label>
                     <input id="github-client-secret" name="clientSecret" type="password" autocomplete="new-password" required>
-                    <p class="muted">URL de callback para pegar en GitHub: <code id="github-callback-url"></code>. El panel solicitará los permisos <code>repo</code> y <code>admin:repo_hook</code> para leer código privado y configurar actualizaciones automáticas. El Client Secret se cifra en este VPS. Los webhooks requieren una URL pública HTTPS y los despliegues requieren configurar el registro privado.</p>
+                    <p class="muted">URL de callback para pegar en GitHub: <code id="github-callback-url"></code>. El panel solicitará los permisos <code>repo</code> y <code>admin:repo_hook</code> para leer código privado y configurar actualizaciones automáticas. El Client Secret se cifra en este VPS. Los webhooks requieren una URL pública HTTPS; los builds se guardan localmente en el VPS principal.</p>
                     <button class="button" type="submit">Guardar y continuar</button>
                   </form>
                 </details>
@@ -87,7 +87,7 @@
                   <template id="guide-github-oauth">
                     <p>Conecta GitHub para elegir un repositorio y desplegar sus cambios automáticamente.</p>
                     <p>Solo necesitas crear una GitHub OAuth App una vez. <a href="https://github.com/settings/applications/new" target="_blank" rel="noopener noreferrer">Crear OAuth App en GitHub</a> y usa como callback la URL que aparece en la configuración de GitHub OAuth.</p>
-                    <p>VPS Manager genera y protege automáticamente el secreto para los webhooks. La aplicación solicita los permisos <code>repo</code> y <code>admin:repo_hook</code>; los webhooks requieren una URL pública HTTPS y los despliegues requieren configurar el registro privado.</p>
+                    <p>VPS Manager genera y protege automáticamente el secreto para los webhooks. La aplicación solicita los permisos <code>repo</code> y <code>admin:repo_hook</code>; los webhooks requieren una URL pública HTTPS y los proyectos se ejecutan como un servicio independiente en el VPS principal.</p>
                   </template>
                   <p id="github-connect-status" class="muted" role="status" aria-live="polite"></p>
                   <form id="github-import-form" class="form-stack">
