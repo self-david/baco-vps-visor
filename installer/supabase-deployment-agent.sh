@@ -297,19 +297,28 @@ PY
       return 1
     fi
     local clone_directory="${temporary_directory}/source"
-    if ! git init --quiet "${clone_directory}" \
-      || ! git -C "${clone_directory}" remote add origin https://github.com/supabase/supabase.git \
-      || ! git -C "${clone_directory}" fetch --filter=blob:none --depth=1 --quiet origin \
-        189adda99d1b56da55fc5a6ee3f849354aaea92a \
-      || ! git -C "${clone_directory}" sparse-checkout init --cone \
-      || ! git -C "${clone_directory}" sparse-checkout set docker \
-      || ! git -C "${clone_directory}" checkout --quiet 189adda99d1b56da55fc5a6ee3f849354aaea92a \
-      || [[ "$(git -C "${clone_directory}" rev-parse HEAD)" != "189adda99d1b56da55fc5a6ee3f849354aaea92a" ]]; then
+    if ! (
+      umask 022
+      git init --quiet "${clone_directory}" \
+        && git -C "${clone_directory}" remote add origin https://github.com/supabase/supabase.git \
+        && git -C "${clone_directory}" fetch --filter=blob:none --depth=1 --quiet origin \
+          189adda99d1b56da55fc5a6ee3f849354aaea92a \
+        && git -C "${clone_directory}" sparse-checkout init --cone \
+        && git -C "${clone_directory}" sparse-checkout set docker \
+        && git -C "${clone_directory}" checkout --quiet 189adda99d1b56da55fc5a6ee3f849354aaea92a \
+        && [[ "$(git -C "${clone_directory}" rev-parse HEAD)" == "189adda99d1b56da55fc5a6ee3f849354aaea92a" ]]
+    ); then
       write_status "failed" "No se pudo obtener y verificar la configuración oficial fijada de Supabase v0.8.4."
       rm -rf -- "${temporary_directory}"
       return 1
     fi
     mv -- "${clone_directory}" "${source_directory}"
+  fi
+
+  if ! chmod -R a+rX -- "${source_directory}/docker"; then
+    write_status "failed" "No se pudieron normalizar los permisos de los archivos oficiales de Supabase."
+    rm -rf -- "${temporary_directory}"
+    return 1
   fi
 
   if [[ ! -d "${application_directory}" ]]; then
@@ -681,8 +690,9 @@ PY
     rm -rf -- "${temporary_directory}"
     return 1
   fi
-  if ! "${compose_command[@]}" up --detach --remove-orphans; then
-    write_status "failed" "Docker Compose no pudo iniciar el stack self-hosted de Supabase."
+  if ! compose_error="$("${compose_command[@]}" up --detach --remove-orphans 2>&1)"; then
+    compose_error="$(printf '%s' "${compose_error}" | tr '\r\n' '  ' | cut -c1-600)"
+    write_status "failed" "Docker Compose no pudo iniciar el stack self-hosted de Supabase. Detalle: ${compose_error:-sin detalle adicional}"
     rm -rf -- "${temporary_directory}"
     return 1
   fi

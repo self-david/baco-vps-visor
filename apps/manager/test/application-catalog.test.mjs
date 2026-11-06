@@ -51,6 +51,15 @@ test("Supabase Compose service memory limits use one consistent value", async ()
   assert.match(agent, /Compose rechazó la configuración generada para Supabase\. Detalle:/);
 });
 
+test("Supabase source files are readable in containers despite the service agent umask", async () => {
+  const agent = await readFile(new URL("../../../installer/supabase-deployment-agent.sh", import.meta.url), "utf8");
+
+  assert.match(agent, /if ! \(\s*umask 022[\s\S]*git init[\s\S]*git -C "\$\{clone_directory\}" checkout/);
+  assert.match(agent, /chmod -R a\+rX -- "\$\{source_directory\}\/docker"/);
+  assert.match(agent, /compose_error="\$\("\$\{compose_command\[@\]\}" up --detach --remove-orphans 2>&1\)"/);
+  assert.match(agent, /Docker Compose no pudo iniciar el stack self-hosted de Supabase\. Detalle:/);
+});
+
 test("Ubuntu 24.04 compatibility checks warn and continue in both installation flows", async () => {
   const [installer, nodeEnrollment] = await Promise.all([
     readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
