@@ -137,8 +137,11 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
 PY
 
 mkdir "${TEMP_DIRECTORY}/extracted"
-tar -xzf "${TEMP_DIRECTORY}/source.tar.gz" \
-  --no-same-owner --no-same-permissions -C "${TEMP_DIRECTORY}/extracted"
+(
+  umask 022
+  tar -xzf "${TEMP_DIRECTORY}/source.tar.gz" \
+    --no-same-owner --no-same-permissions -C "${TEMP_DIRECTORY}/extracted"
+)
 SOURCE_DIR="${TEMP_DIRECTORY}/extracted/vps-manager"
 [[ -f "${SOURCE_DIR}/install.sh" && -f "${SOURCE_DIR}/apps/manager/VERSION" ]] \
   || fail "La release no contiene el instalador o la versión del panel."

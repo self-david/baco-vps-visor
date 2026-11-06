@@ -443,6 +443,18 @@ test("manager image includes the root runtime modules imported by the API", asyn
   assert.match(dockerfile, /^COPY public\/project-archive\.mjs \.\/public\/project-archive\.mjs$/m);
 });
 
+test("release extraction preserves runtime readability under the updater's restrictive umask", async () => {
+  const [dockerfile, updater] = await Promise.all([
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/update.sh", import.meta.url), "utf8"),
+  ]);
+  const permissionNormalization = dockerfile.indexOf("RUN chmod -R a+rX /app");
+  const runtimeUser = dockerfile.indexOf("USER node");
+
+  assert.match(updater, /\(\s*umask 022\s+tar -xzf/);
+  assert.ok(permissionNormalization >= 0 && permissionNormalization < runtimeUser);
+});
+
 test("browser application script has no duplicate function declarations", async () => {
   const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const declarations = [...app.matchAll(/^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm)]

@@ -20,7 +20,7 @@ COPY server.mjs db.mjs backup-manager.mjs backup-scheduler.mjs diagnostics.mjs u
 COPY --from=frontend-build /app/dist ./dist
 COPY public/project-archive.mjs ./public/project-archive.mjs
 COPY database ./database
-RUN chmod -R a+rX /app/database
+RUN chmod -R a+rX /app
 USER node
 EXPOSE 3000
 CMD ["node", "server.mjs"]
