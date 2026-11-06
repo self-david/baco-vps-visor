@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateApplicationTemplate } from "../application-template.mjs";
+import {
+  validateApplicationTemplate,
+  validateManualApplicationInput,
+} from "../application-template.mjs";
 
 const template = {
   id: "sample-web",
@@ -82,4 +85,39 @@ test("requires valid template identifiers, semantic versions and environment met
     ...template,
     environment: [{ ...template.environment[0], description: "" }],
   }), /description is invalid/);
+});
+
+test("validates manual application resource limits and defaults omitted limits", () => {
+  const input = {
+    id: "sample-web",
+    version: "1.0.0",
+    name: "Sample web",
+    description: "An application.",
+    category: "Web",
+    image: "ghcr.io/example/sample-web:1.0.0",
+    port: 8080,
+    domain: "sample.example.com",
+    serverNodeId: "a".repeat(25),
+    environmentValues: {},
+    secretValues: {},
+  };
+
+  const validated = validateManualApplicationInput(input);
+  assert.equal(validated.cpus, 1);
+  assert.equal(validated.memoryMb, 1024);
+  assert.throws(() => validateManualApplicationInput({ ...input, cpus: 0.1 }), /CPU limit/);
+  assert.throws(() => validateManualApplicationInput({ ...input, memoryMb: 255 }), /memory limit/);
+});
+
+test("allows the n8n latest image tag without weakening other application versions", () => {
+  assert.equal(validateApplicationTemplate({
+    ...template,
+    id: "n8n-instance",
+    version: "latest",
+    image: "n8nio/n8n:latest",
+  }).version, "latest");
+  assert.throws(() => validateApplicationTemplate({
+    ...template,
+    version: "latest",
+  }), /semantic versioning/);
 });

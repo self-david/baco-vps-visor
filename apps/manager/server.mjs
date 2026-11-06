@@ -107,9 +107,12 @@ import {
   createPostgresqlInstallTask,
   getApplicationCatalog,
   getApplicationInstances,
+  getApplicationInstanceDomains,
+  updateApplicationInstanceDomainDnsRecord,
   saveApplicationInstanceConfiguration,
   createManualApplication,
   updateManualApplicationDeployment,
+  deleteManualApplicationInstance,
   createManualApplicationDeployTask,
   createRegistryConfigureTask,
   createCloudflareTunnelConfigureTask,
@@ -246,11 +249,12 @@ async function updateCloudflareTunnelHosts(
   managerHostname = tunnel.managerHostname ?? null,
 ) {
   const token = await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId);
+  const applicationDomains = await getApplicationInstanceDomains();
   return cloudflareClient.updateTunnelConfiguration(
     token,
     tunnel.accountId,
     tunnel.tunnelId,
-    [...new Set(hostnames)].sort(),
+    [...new Set([...hostnames, ...applicationDomains.map((domain) => domain.hostname)])].sort(),
     { originProtocol, managerHostname },
   );
 }
@@ -258,7 +262,10 @@ const reconcileCloudflareTunnel = createCloudflareTunnelReconciler({
   getSettings: getCloudflareTunnelSettings,
   hasApiToken: () => hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
   getApiToken: () => getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
-  getDomains: getProjectDomains,
+  getDomains: async () => [
+    ...(await getProjectDomains()),
+    ...(await getApplicationInstanceDomains()),
+  ],
   getDomainZones,
   hasZoneToken: (credentialId) => hasCloudflareToken(serviceOperationsDirectory, credentialId),
   getZoneToken: (credentialId) => getCloudflareToken(serviceOperationsDirectory, credentialId),
@@ -1324,6 +1331,8 @@ async function serveStatic(pathname, response) {
     fileName = decodedPath === "/"
       ? "index.html"
       : /^\/projects\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decodedPath)
+        || /^\/applications\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decodedPath)
+        || decodedPath === "/applications/new"
         ? "index.html"
         : decodedPath.slice(1);
   } catch {
@@ -1601,8 +1610,9 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const [domains, domainZones, projects, ingressIp] = await Promise.all([
+      const [domains, applicationInstanceDomains, domainZones, projects, ingressIp] = await Promise.all([
         getProjectDomains(),
+        getApplicationInstanceDomains(),
         getDomainZones(),
         getProjects(),
         getIngressIp(),
@@ -1660,7 +1670,8 @@ const server = createServer(async (request, response) => {
             tokenConfigured,
           };
         })),
-        domains: await Promise.all(domains.map(async (domain) => ({
+        domains: await Promise.all([
+          ...domains.map(async (domain) => ({
           id: domain.id,
           provider: domain.provider,
           zone: domain.zone,
@@ -1677,7 +1688,23 @@ const server = createServer(async (request, response) => {
             domainZones.find((domainZone) => domainZone.zone.toLowerCase() === domain.zone.toLowerCase())?.credentialId
               ?? domain.id,
           ),
-        }))),
+          })),
+          ...applicationInstanceDomains.map(async (domain) => ({
+            id: domain.id,
+            provider: domain.provider,
+            zone: domain.zone,
+            hostname: domain.hostname,
+            projectId: null,
+            applicationId: domain.applicationId,
+            projectName: domain.applicationName,
+            port: domain.port,
+            proxied: domain.proxied,
+            tokenConfigured: await hasCloudflareToken(
+              serviceOperationsDirectory,
+              domainZones.find((candidate) => candidate.id === domain.domainZoneId)?.credentialId,
+            ),
+          })),
+        ]),
         projects,
       });
     } catch (error) {
@@ -1731,7 +1758,8 @@ const server = createServer(async (request, response) => {
         return;
       }
       const domains = await getProjectDomains();
-      if (domains.length + (tunnel.managerHostname ? 1 : 0) > 100) {
+      const applicationDomains = await getApplicationInstanceDomains();
+      if (domains.length + applicationDomains.length + (tunnel.managerHostname ? 1 : 0) > 100) {
         respondJson(response, 409, { error: "Cloudflare Tunnel admite como máximo 100 hostnames administrados por VPS Manager." });
         return;
       }
@@ -1866,7 +1894,9 @@ const server = createServer(async (request, response) => {
           respondJson(response, 400, { error: "Para el panel escribe un subdominio, no el dominio raíz." });
           return;
         }
-        if (domains.some((domain) => domain.hostname.toLowerCase() === managerHostname)) {
+        const applicationDomains = await getApplicationInstanceDomains();
+        if (domains.some((domain) => domain.hostname.toLowerCase() === managerHostname)
+          || applicationDomains.some((domain) => domain.hostname.toLowerCase() === managerHostname)) {
           respondJson(response, 409, { error: "Ese hostname ya está asignado a un proyecto o aplicación." });
           return;
         }
@@ -1940,6 +1970,27 @@ const server = createServer(async (request, response) => {
         });
         await saveProjectDomain({ ...domain, proxied: true, dnsRecordId: dnsRecord.id });
       }
+      const applicationDomains = await getApplicationInstanceDomains();
+      for (const applicationDomain of applicationDomains) {
+        const domainZone = domainZones.find((candidate) => candidate.id === applicationDomain.domainZoneId);
+        if (!domainZone || domainZone.connectionStatus !== "connected"
+          || !await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId)) {
+          throw new Error(`La zona Cloudflare de ${applicationDomain.hostname} no está conectada.`);
+        }
+        const zoneToken = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
+        const dnsRecord = await cloudflareClient.upsertTunnelCname(zoneToken, {
+          zoneId: applicationDomain.zoneId,
+          hostname: applicationDomain.hostname,
+          tunnelId: tunnel.id,
+          existingRecordId: applicationDomain.dnsRecordId,
+        });
+        if (!await updateApplicationInstanceDomainDnsRecord(applicationDomain.id, {
+          dnsRecordId: dnsRecord.id,
+          proxied: true,
+        })) {
+          throw new Error(`No se pudo actualizar el registro DNS de ${applicationDomain.hostname}.`);
+        }
+      }
       let managerDnsRecord = null;
       let managerZoneToken = null;
       if (managerHostname && managerZone) {
@@ -1959,7 +2010,7 @@ const server = createServer(async (request, response) => {
           apiToken,
           body.accountId.toLowerCase(),
           tunnel.id,
-          domains.map((domain) => domain.hostname),
+          [...domains, ...applicationDomains].map((domain) => domain.hostname),
           { originProtocol, managerHostname },
         );
       } catch (error) {
@@ -2181,7 +2232,9 @@ const server = createServer(async (request, response) => {
           return;
         }
         if ((await getProjectDomains()).some((domain) =>
-          domain.zone.toLowerCase() === existing.zone.toLowerCase())) {
+          domain.zone.toLowerCase() === existing.zone.toLowerCase())
+          || (await getApplicationInstanceDomains()).some((domain) =>
+            domain.zone.toLowerCase() === existing.zone.toLowerCase())) {
           respondJson(response, 409, {
             error: "Quita primero las asignaciones de aplicaciones y proyectos antes de desconectar esta zona.",
           });
@@ -2400,6 +2453,30 @@ const server = createServer(async (request, response) => {
           }
         }
         const tunnel = await getCloudflareTunnelSettings();
+        const domainZone = await getDomainZoneByName(existing.zone);
+        if (!domainZone || domainZone.zoneId !== existing.zoneId || domainZone.connectionStatus !== "connected") {
+          throw new RequestError(409, "La zona Cloudflare original ya no está conectada; se conserva la asignación para evitar perder el control del registro DNS.");
+        }
+        const token = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
+        const verifiedZone = await cloudflareClient.verifyZone(token, domainZone.zone);
+        if (verifiedZone.id !== existing.zoneId) {
+          throw new RequestError(409, "La zona Cloudflare cambió; se conserva la asignación para evitar eliminar un registro DNS ajeno.");
+        }
+        if (tunnel) {
+          await cloudflareClient.deleteTunnelCname(token, {
+            zoneId: existing.zoneId,
+            hostname: existing.hostname,
+            tunnelId: tunnel.tunnelId,
+            recordId: existing.dnsRecordId,
+          });
+        } else {
+          await cloudflareClient.deleteARecord(token, {
+            zoneId: existing.zoneId,
+            hostname: existing.hostname,
+            proxied: existing.proxied,
+            recordId: existing.dnsRecordId,
+          });
+        }
         if (tunnel) {
           await updateCloudflareTunnelHosts(
             tunnel,
@@ -2408,7 +2485,6 @@ const server = createServer(async (request, response) => {
               .map((domain) => domain.hostname),
           );
         }
-        const domainZone = await getDomainZoneByName(existing.zone);
         await deleteProjectDomain(domainId);
         if (!domainZone || domainZone.credentialId !== domainId) {
           await deleteCloudflareToken(serviceOperationsDirectory, domainId);
@@ -2419,12 +2495,20 @@ const server = createServer(async (request, response) => {
         respondJson(response, 200, {
           deleted: true,
           message: tunnel
-            ? "Se quitó la configuración del dominio y su hostname dejó de estar en el túnel. El registro DNS de Cloudflare se conserva."
+            ? "Se quitó la configuración del dominio, su registro DNS de Cloudflare y el hostname del túnel."
             : existing.applicationId === "n8n"
-            ? "Se quitó la configuración de n8n. El registro A de Cloudflare se conserva."
-            : `Se quitó la configuración. El registro A de Cloudflare se conserva.${routeUpdate?.state === "not-deployed" ? " La ruta no está activa porque el proyecto aún no está desplegado." : " La ruta del proyecto se actualizará automáticamente."}`,
+            ? "Se quitó la configuración de n8n y su registro DNS de Cloudflare."
+            : `Se quitó la configuración y el registro DNS de Cloudflare.${routeUpdate?.state === "not-deployed" ? " La ruta no está activa porque el proyecto aún no está desplegado." : " La ruta del proyecto se actualizará automáticamente."}`,
         });
       } catch (error) {
+        if (error instanceof RequestError) {
+          respondJson(response, error.statusCode, { error: error.message });
+          return;
+        }
+        if (error?.code === "CLOUDFLARE_RECORD_EXISTS") {
+          respondJson(response, 409, { error: error.message });
+          return;
+        }
         console.error("Could not remove project domain:", error);
         respondJson(response, 503, { error: "No se pudo quitar la configuración del dominio." });
       }
@@ -2480,6 +2564,12 @@ const server = createServer(async (request, response) => {
         return;
       }
       const currentDomains = await getProjectDomains();
+      const currentApplicationDomains = await getApplicationInstanceDomains();
+      if (currentApplicationDomains.some((domain) => domain.hostname.toLowerCase() === input.hostname
+        && domain.id !== existing?.id)) {
+        respondJson(response, 409, { error: "Ese hostname ya está asignado a otra aplicación." });
+        return;
+      }
       if (input.applicationId
         && currentDomains.some((domain) => domain.applicationId === input.applicationId && domain.id !== existing?.id)) {
         respondJson(response, 409, { error: "n8n admite un solo dominio conectado desde el panel central." });
@@ -3902,8 +3992,10 @@ const server = createServer(async (request, response) => {
             return;
           }
           const domains = await getProjectDomains();
+          const applicationDomains = await getApplicationInstanceDomains();
           const existingDomain = domains.find((domain) => domain.applicationId === "n8n");
-          if (domains.some((domain) => domain.hostname === hostname && domain.id !== existingDomain?.id)) {
+          if (domains.some((domain) => domain.hostname === hostname && domain.id !== existingDomain?.id)
+            || applicationDomains.some((domain) => domain.hostname === hostname)) {
             respondJson(response, 409, { error: "Ese hostname ya está asignado a otro proyecto o aplicación." });
             return;
           }
@@ -4873,6 +4965,140 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const applicationInstanceMatch = url.pathname.match(/^\/api\/applications\/([a-f0-9-]{36})$/i);
+  if (applicationInstanceMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "DELETE") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "DELETE" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    const instanceId = applicationInstanceMatch[1].toLowerCase();
+    try {
+      const instance = (await getApplicationInstances())
+        .find((candidate) => candidate.id.toLowerCase() === instanceId);
+      if (!instance) {
+        respondJson(response, 404, { error: "No se encontró la instancia." });
+        return;
+      }
+      if (instance.applicationId !== "n8n-instance") {
+        respondJson(response, 409, { error: "Esta operación solo está disponible para instancias de n8n." });
+        return;
+      }
+      if (instance.status === "installing") {
+        respondJson(response, 409, { error: "Espera a que termine el despliegue antes de eliminar la instancia." });
+        return;
+      }
+
+      const instanceDomains = (await getApplicationInstanceDomains())
+        .filter((domain) => domain.applicationInstanceId === instanceId);
+      const domainTargets = [];
+      for (const domain of instanceDomains) {
+        const zone = await getDomainZone(domain.domainZoneId);
+        if (!zone || zone.zoneId !== domain.zoneId || zone.connectionStatus !== "connected"
+          || !await hasCloudflareToken(serviceOperationsDirectory, zone.credentialId)) {
+          throw new RequestError(409, `No se puede verificar la zona DNS de ${domain.hostname}; vuelve a conectar Cloudflare antes de eliminar.`);
+        }
+        const token = await getCloudflareToken(serviceOperationsDirectory, zone.credentialId);
+        const verifiedZone = await cloudflareClient.verifyZone(token, zone.zone);
+        if (verifiedZone.id !== domain.zoneId) {
+          throw new RequestError(409, `La zona Cloudflare de ${domain.hostname} cambió; no se eliminarán recursos.`);
+        }
+        domainTargets.push({ domain, token });
+      }
+
+      const tunnel = await getCloudflareTunnelSettings();
+      const tunnelToken = tunnel
+        ? await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId)
+        : null;
+      for (const { domain, token } of domainTargets) {
+        if (tunnel) {
+          await cloudflareClient.deleteTunnelCname(token, {
+            zoneId: domain.zoneId,
+            hostname: domain.hostname,
+            tunnelId: tunnel.tunnelId,
+            recordId: domain.dnsRecordId,
+          });
+        } else {
+          await cloudflareClient.deleteARecord(token, {
+            zoneId: domain.zoneId,
+            hostname: domain.hostname,
+            proxied: domain.proxied,
+            recordId: domain.dnsRecordId,
+          });
+        }
+      }
+
+      if (tunnel) {
+        const [projectDomains, applicationDomains] = await Promise.all([
+          getProjectDomains(),
+          getApplicationInstanceDomains(),
+        ]);
+        await cloudflareClient.updateTunnelConfiguration(
+          tunnelToken,
+          tunnel.accountId,
+          tunnel.tunnelId,
+          [...new Set([
+            ...projectDomains.map((domain) => domain.hostname),
+            ...applicationDomains
+              .filter((domain) => domain.applicationInstanceId !== instanceId)
+              .map((domain) => domain.hostname),
+          ])].sort(),
+          {
+            originProtocol: getCloudflareTunnelOriginProtocol(tunnel),
+            managerHostname: tunnel.managerHostname ?? null,
+          },
+        );
+      }
+
+      const removalRequestId = randomUUID();
+      await serviceOperationAgent.requestApplicationRemoval(
+        instance.applicationId,
+        instanceId,
+        removalRequestId,
+      );
+      let removalStatus;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        removalStatus = await serviceOperationAgent.getStatus();
+        if (removalStatus?.id === removalRequestId && removalStatus.state === "succeeded") break;
+        if (removalStatus?.id === removalRequestId && removalStatus.state === "failed") {
+          throw new RequestError(503, removalStatus.message || "El agente no pudo eliminar los recursos de la instancia.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      if (removalStatus?.id !== removalRequestId || removalStatus.state !== "succeeded") {
+        throw new RequestError(504, "El agente del VPS todavía no confirmó la eliminación. Actualiza el estado antes de reintentar.");
+      }
+
+      if (!await deleteManualApplicationInstance(instanceId)) {
+        throw new RequestError(409, "La instancia cambió durante la eliminación; actualiza el panel y vuelve a comprobar su estado.");
+      }
+      respondJson(response, 200, { deleted: true });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
+      if (error?.code === "CLOUDFLARE_RECORD_EXISTS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not delete application instance:", error);
+      respondJson(response, 503, { error: "No se pudo completar la eliminación de la instancia. Revisa el estado de Docker y Cloudflare antes de reintentar." });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/applications") {
     if (!hasSession(request)) {
       respondJson(response, 401, { error: "Sesión requerida." });
@@ -4907,17 +5133,151 @@ const server = createServer(async (request, response) => {
       return;
     }
     try {
-      const input = validateManualApplicationInput(await readJson(request));
-      const nodes = await dockerGet("/nodes");
-      const node = nodes.find((item) => item.ID?.toLowerCase() === input.serverNodeId);
-      if (!node || node.Status?.State !== "ready" || node.Spec?.Availability !== "active") {
-        respondJson(response, 409, { error: "Selecciona un VPS activo y listo del Swarm." });
-        return;
+      const requestBody = await readJson(request);
+      if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)
+        || typeof requestBody.zoneId !== "string"
+        || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestBody.zoneId)
+        || typeof requestBody.subdomain !== "string"
+        || !requestBody.subdomain.trim()
+        || requestBody.subdomain.trim() === "@") {
+        throw new RequestError(400, "Selecciona un dominio conectado e indica un subdominio.");
       }
-      const reservedDomains = await getProjectDomains();
-      if (reservedDomains.some((domain) => domain.hostname.toLowerCase() === input.domain)) {
-        respondJson(response, 409, { error: "El dominio ya está asignado a otro proyecto." });
-        return;
+      const domainZone = await getDomainZone(requestBody.zoneId);
+      if (!domainZone || domainZone.connectionStatus !== "connected"
+        || !await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId)) {
+        throw new RequestError(409, "Selecciona un dominio conectado con sus credenciales de Cloudflare disponibles.");
+      }
+      const hostname = buildDomainHostname(domainZone.zone, requestBody.subdomain);
+      const { zoneId, subdomain, ...applicationBody } = requestBody;
+      if (applicationBody.id === "n8n-instance") {
+        delete applicationBody.webhookZoneId;
+        delete applicationBody.webhookSubdomain;
+      }
+      const [nodes, dockerInfo] = await Promise.all([dockerGet("/nodes"), dockerGet("/info")]);
+      const managerNodeId = dockerInfo.Swarm?.NodeID;
+      const managerNode = nodes.find((item) => item.ID?.toLowerCase() === managerNodeId?.toLowerCase());
+      if (!managerNode || managerNode.Spec?.Role !== "manager"
+        || managerNode.Status?.State !== "ready" || managerNode.Spec?.Availability !== "active") {
+        throw new RequestError(409, "El VPS manager de Swarm no está listo para alojar aplicaciones.");
+      }
+      const input = validateManualApplicationInput({
+        ...applicationBody,
+        domain: hostname,
+        serverNodeId: managerNode.ID,
+      });
+      const domainTargets = [{ domainZone, hostname }];
+      if (input.id === "n8n-instance") {
+        if (typeof requestBody.webhookZoneId !== "string"
+          || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestBody.webhookZoneId)
+          || typeof requestBody.webhookSubdomain !== "string"
+          || !requestBody.webhookSubdomain.trim()
+          || requestBody.webhookSubdomain.trim() === "@") {
+          throw new RequestError(400, "Selecciona un dominio conectado e indica el subdominio para webhooks.");
+        }
+        const webhookZone = await getDomainZone(requestBody.webhookZoneId);
+        if (!webhookZone || webhookZone.connectionStatus !== "connected"
+          || !await hasCloudflareToken(serviceOperationsDirectory, webhookZone.credentialId)) {
+          throw new RequestError(409, "Selecciona un dominio de webhooks conectado con sus credenciales disponibles.");
+        }
+        const webhookHostname = buildDomainHostname(webhookZone.zone, requestBody.webhookSubdomain);
+        if (webhookHostname === hostname) {
+          throw new RequestError(400, "El dominio principal y el de webhooks deben ser distintos.");
+        }
+        domainTargets.push({ domainZone: webhookZone, hostname: webhookHostname });
+        const timezone = input.environmentValues.GENERIC_TIMEZONE ?? "UTC";
+        const configuration = validateN8nInstanceConfiguration({
+          version: input.version,
+          timezone,
+          cpus: input.cpus,
+          memoryMb: input.memoryMb,
+        });
+        if (input.port !== 5678
+          || input.volumeTarget !== "/home/node/.n8n"
+          || Object.hasOwn(input.secretValues, "N8N_ENCRYPTION_KEY")) {
+          throw new TypeError("La plantilla n8n requiere una imagen n8nio/n8n válida, el puerto 5678 y el volumen persistente predeterminado.");
+        }
+        input.environmentValues = {
+          ...input.environmentValues,
+          N8N_HOST: input.domain,
+          N8N_PROTOCOL: "https",
+          WEBHOOK_URL: `https://${webhookHostname}/`,
+          N8N_EDITOR_BASE_URL: `https://${input.domain}/`,
+          N8N_PROXY_HOPS: "1",
+          N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true",
+          N8N_DIAGNOSTICS_ENABLED: "false",
+          N8N_VERSION_NOTIFICATIONS_ENABLED: "false",
+          GENERIC_TIMEZONE: configuration.timezone,
+        };
+        input.secretValues = {
+          ...input.secretValues,
+          N8N_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+        };
+      }
+      const [reservedDomains, reservedApplicationDomains, tunnel, ingressIp, registry] = await Promise.all([
+        getProjectDomains(),
+        getApplicationInstanceDomains(),
+        getCloudflareTunnelSettings(),
+        getIngressIp(),
+        serviceOperationAgent.getRegistryConfiguration(),
+      ]);
+      const requestedHostnames = new Set(domainTargets.map((target) => target.hostname.toLowerCase()));
+      const assignedHostnames = new Set([
+        ...reservedDomains.map((domain) => domain.hostname.toLowerCase()),
+        ...reservedApplicationDomains.map((domain) => domain.hostname.toLowerCase()),
+      ]);
+      const reservedHostnames = new Set([
+        managerDomain.toLowerCase(),
+        managerDomain ? `git.${managerDomain}`.toLowerCase() : "",
+        registry?.domain?.toLowerCase() ?? "",
+        tunnel?.managerHostname?.toLowerCase() ?? "",
+      ].filter(Boolean));
+      if ([...requestedHostnames].some((requested) =>
+        assignedHostnames.has(requested) || reservedHostnames.has(requested))) {
+        throw new RequestError(409, "Uno de los dominios ya está asignado a otro proyecto o aplicación.");
+      }
+      if (!tunnel && !ingressIp) {
+        throw new RequestError(409, "Configura primero la IPv4 pública del VPS manager.");
+      }
+      for (const target of domainTargets) {
+        const token = await getCloudflareToken(serviceOperationsDirectory, target.domainZone.credentialId);
+        const verifiedZone = await cloudflareClient.verifyZone(token, target.domainZone.zone);
+        if (verifiedZone.id !== target.domainZone.zoneId) {
+          throw new RequestError(409, `La zona Cloudflare de ${target.hostname} cambió; vuelve a conectarla.`);
+        }
+        target.token = token;
+      }
+      const savedDomains = [];
+      for (const target of domainTargets) {
+        const dnsRecord = tunnel
+          ? await cloudflareClient.upsertTunnelCname(target.token, {
+            zoneId: target.domainZone.zoneId,
+            hostname: target.hostname,
+            tunnelId: tunnel.tunnelId,
+          })
+          : await cloudflareClient.upsertARecord(target.token, {
+            zoneId: target.domainZone.zoneId,
+            hostname: target.hostname,
+            address: ingressIp,
+            proxied: target.domainZone.proxied,
+          });
+        savedDomains.push({
+          hostname: target.hostname,
+          zone: target.domainZone.zone,
+          domainZoneId: target.domainZone.id,
+          zoneId: target.domainZone.zoneId,
+          proxied: tunnel ? true : target.domainZone.proxied,
+          dnsRecordId: dnsRecord.id,
+        });
+      }
+      if (tunnel) {
+        await updateCloudflareTunnelHosts(tunnel, [
+          ...reservedDomains.map((domain) => domain.hostname),
+          ...reservedApplicationDomains.map((domain) => domain.hostname),
+          ...savedDomains.map((domain) => domain.hostname),
+        ]);
+      }
+      if (savedDomains.length === 0) {
+        throw new Error("No se crearon registros DNS para la aplicación.");
       }
       const instanceId = randomUUID();
       const taskId = randomUUID();
@@ -4943,11 +5303,13 @@ const server = createServer(async (request, response) => {
         instance: {
           id: instanceId,
           serverNodeId: input.serverNodeId,
-          serverHostname: node.Description?.Hostname ?? input.serverNodeId,
+          serverHostname: managerNode.Description?.Hostname ?? input.serverNodeId,
           domain: input.domain,
+          domains: savedDomains,
           environmentValues: input.environmentValues,
           secretValues: input.secretValues,
         },
+        task: { id: taskId },
       });
       try {
         await serviceOperationAgent.stageApplicationDeployment(taskId, {
@@ -4956,7 +5318,12 @@ const server = createServer(async (request, response) => {
           applicationName: input.name,
           image: input.image,
           port: input.port,
+          cpus: input.cpus,
+          memoryMb: input.memoryMb,
           domain: input.domain,
+          additionalDomains: savedDomains
+            .map((domain) => domain.hostname)
+            .filter((hostname) => hostname !== input.domain),
           serverNodeId: input.serverNodeId,
           volumeTarget: input.volumeTarget,
           environment: input.environmentValues,
@@ -4984,7 +5351,13 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (error?.code === "23505") {
-        respondJson(response, 409, { error: "Ya existe una aplicación con ese identificador o el dominio ya está ocupado." });
+        const conflictMessage = error.constraint === "application_instances_server_key"
+          ? "La base de datos aún tiene activa la restricción antigua de una instancia por aplicación y VPS. Aplica las migraciones pendientes y vuelve a intentarlo."
+          : error.constraint === "application_instances_manual_domain_key"
+            || error.constraint === "application_instance_domains_hostname_lower_key"
+            ? "Uno de los dominios ya está asignado a otra aplicación o instancia."
+            : "Ya existe una aplicación con ese identificador o el dominio ya está ocupado.";
+        respondJson(response, 409, { error: conflictMessage });
         return;
       }
       if (error?.code === "OPERATION_IN_PROGRESS") {
@@ -5029,8 +5402,9 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Selecciona un VPS activo y listo del Swarm." });
         return;
       }
-      const [domains, registry] = await Promise.all([
+      const [domains, applicationDomains, registry] = await Promise.all([
         getProjectDomains(),
+        getApplicationInstanceDomains(),
         serviceOperationAgent.getRegistryConfiguration(),
       ]);
       const reservedDomains = new Set([
@@ -5038,6 +5412,7 @@ const server = createServer(async (request, response) => {
         managerDomain ? `git.${managerDomain}` : "",
         registry?.domain ?? "",
         ...domains.map((domain) => domain.hostname),
+        ...applicationDomains.map((domain) => domain.hostname),
       ].filter(Boolean).map((domain) => domain.toLowerCase()));
       const requestedDomains = [configuration.apiDomain, configuration.studioDomain];
       if (requestedDomains.some((domain) => reservedDomains.has(domain))

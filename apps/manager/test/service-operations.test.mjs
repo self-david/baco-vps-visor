@@ -658,6 +658,38 @@ test("requests a fixed Swarm deployment and removal for a project", async () => 
   }
 });
 
+test("requests removal of a managed n8n instance through the host agent", async () => {
+  const fixture = await createFixture();
+  const instanceId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  try {
+    const removal = await fixture.agent.requestApplicationRemoval("n8n-instance", instanceId, requestId);
+    assert.equal(removal.state, "queued");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "remove-application",
+      applicationId: "n8n-instance",
+      instanceId,
+    });
+    await assert.rejects(
+      fixture.agent.requestApplicationRemoval("custom-app", instanceId, secondRequestId),
+      /fields are invalid/,
+    );
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "remove-application",
+      state: "succeeded",
+      applicationId: "n8n-instance",
+      instanceId,
+      updatedAt: "2026-11-06T06:00:00Z",
+      message: "Instancia eliminada.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).operation, "remove-application");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("requests a project route update without requesting a container redeployment", async () => {
   const fixture = await createFixture();
   const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";

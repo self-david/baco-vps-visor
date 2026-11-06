@@ -1,4 +1,6 @@
 const dashboardView = document.querySelector("#dashboard-view");
+const applicationDetailView = document.querySelector("#application-detail-view");
+const applicationCreateView = document.querySelector("#application-create-view");
 const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
@@ -69,14 +71,7 @@ const giteaSsh = document.querySelector("#gitea-ssh");
 const installGiteaButton = document.querySelector("#install-gitea");
 const restartGiteaButton = document.querySelector("#restart-gitea");
 const n8nStatus = document.querySelector("#n8n-status");
-const n8nUrl = document.querySelector("#n8n-url");
-const installN8nButton = document.querySelector("#install-n8n");
-const n8nDomainZoneSelect = document.querySelector("#n8n-domain-zone");
-const n8nSubdomainInput = document.querySelector("#n8n-subdomain");
-const n8nVersionInput = document.querySelector("#n8n-version");
-const n8nTimezoneInput = document.querySelector("#n8n-timezone");
-const n8nCpusInput = document.querySelector("#n8n-cpus");
-const n8nMemoryInput = document.querySelector("#n8n-memory");
+const n8nInstancesList = document.querySelector("#n8n-instances");
 const postgresqlStatus = document.querySelector("#postgresql-status");
 const installPostgresqlButton = document.querySelector("#install-postgresql");
 const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
@@ -90,11 +85,19 @@ const supabaseConfigurationStatus = document.querySelector("#supabase-configurat
 const supabaseServerNodeSelect = document.querySelector("#supabase-server-node");
 const saveSupabaseConfigurationButton = document.querySelector("#save-supabase-configuration");
 const manualApplicationForm = document.querySelector("#manual-application-form");
+const manualApplicationTemplate = document.querySelector("#manual-app-template");
 const manualApplicationStatus = document.querySelector("#manual-app-status");
+const manualApplicationLogs = document.querySelector("#manual-app-deployment-logs");
 const manualApplicationSubmit = document.querySelector("#manual-app-submit");
 const manualApplicationsList = document.querySelector("#manual-applications-list");
 const manualApplicationsStatus = document.querySelector("#manual-applications-status");
-const manualApplicationServerSelect = document.querySelector("#manual-app-server");
+const manualApplicationZoneSelect = document.querySelector("#manual-app-zone");
+const manualApplicationSubdomainInput = document.querySelector("#manual-app-subdomain");
+const manualApplicationHostnamePreview = document.querySelector("#manual-app-hostname-preview");
+const manualApplicationWebhookFields = document.querySelector("#manual-app-webhook-domain-fields");
+const manualApplicationWebhookZoneSelect = document.querySelector("#manual-app-webhook-zone");
+const manualApplicationWebhookSubdomainInput = document.querySelector("#manual-app-webhook-subdomain");
+const manualApplicationWebhookHostnamePreview = document.querySelector("#manual-app-webhook-hostname-preview");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
 const giteaTokenForm = document.querySelector("#gitea-token-form");
 const giteaApiTokenStatus = document.querySelector("#gitea-api-token-status");
@@ -186,7 +189,6 @@ const registrySaveButton = document.querySelector("#registry-save");
 let domainZoneProxied = false;
 let cloudflareTunnelPollTimer;
 let giteaStatusPollTimer;
-let n8nStatusPollTimer;
 let postgresqlStatusPollTimer;
 let giteaTokenConfigurationPending = false;
 let giteaRepositoriesLoaded = false;
@@ -199,6 +201,7 @@ let projectBuildPollTimer;
 let projects = [];
 const projectDeployAfterBuild = new Set();
 let domainData = { zones: [], domains: [] };
+let manualApplicationServers = [];
 let giteaCanManageProjects = false;
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
@@ -1916,9 +1919,15 @@ function renderProjectRoute() {
   const projectId = routeMatch?.[1].toLowerCase() ?? null;
   const project = projectId ? projects.find((item) => item.id.toLowerCase() === projectId) : null;
   const showingProject = Boolean(routeMatch);
-  dashboardView.classList.toggle("hidden", showingProject);
+  const showingApplicationDetail = /^\/applications\/[0-9a-f-]{36}$/i.test(window.location.pathname);
+  const showingApplicationCreate = window.location.pathname === "/applications/new";
+  dashboardView.classList.toggle("hidden", showingProject || showingApplicationDetail || showingApplicationCreate);
   projectDetailView.classList.toggle("hidden", !showingProject);
   projectDetailView.hidden = !showingProject;
+  applicationDetailView.classList.toggle("hidden", !showingApplicationDetail);
+  applicationDetailView.hidden = !showingApplicationDetail;
+  applicationCreateView.classList.toggle("hidden", !showingApplicationCreate);
+  applicationCreateView.hidden = !showingApplicationCreate;
 
   if (!showingProject) {
     currentProjectEdit = null;
@@ -2650,7 +2659,7 @@ function renderProjects() {
         assignedDomains.length ? `se quitarán ${assignedDomains.length} dominio(s) asignado(s)` : "",
       ].filter(Boolean).join(" y ");
       const consequences = cleanupDescription
-        ? ` También ${cleanupDescription}. Los registros DNS de esos dominios se conservarán.`
+        ? ` También ${cleanupDescription}; se eliminarán sus registros DNS administrados en Cloudflare.`
         : "";
       if (!confirm(`¿Eliminar el proyecto ${project.name}? No se puede deshacer.${consequences}`)) return;
       removeProject.disabled = true;
@@ -2660,7 +2669,7 @@ function renderProjects() {
           projectsStatus.textContent = message;
           removeProject.textContent = message.includes("Retirando") ? "Retirando…" : "Eliminando…";
         });
-        projectsStatus.textContent = `Se eliminó ${project.name}. Los registros DNS existentes no se modificaron.`;
+        projectsStatus.textContent = `Se eliminó ${project.name} y sus dominios asignados con sus registros DNS administrados.`;
         if (selectedProjectId === project.id.toLowerCase()) returnToProjectsRoute();
         await Promise.all([loadProjects(), loadDomains()]);
       } catch (error) {
@@ -2952,8 +2961,9 @@ function renderProjects() {
       const removeDomain = document.createElement("button");
       removeDomain.className = "button secondary";
       removeDomain.type = "button";
-      removeDomain.textContent = "Desasignar";
+      removeDomain.textContent = "Quitar y borrar DNS";
       removeDomain.addEventListener("click", async () => {
+        if (!confirm(`¿Quitar ${domain.hostname} del proyecto y borrar su registro DNS administrado en Cloudflare?`)) return;
         try {
           await request(`/api/domains/${encodeURIComponent(domain.id)}`, { method: "DELETE" });
           await Promise.all([loadDomains(), loadProjects()]);
@@ -3266,6 +3276,7 @@ async function loadDomains() {
   try {
     const result = await request("/api/domains");
     domainData = result;
+    renderManualApplicationZones(result.zones);
     ingressIpInput.value = result.ingressIp ?? "";
     cloudflareTunnelOriginSelect.value = result.tunnel?.originProtocol
       ?? result.defaultTunnelOriginProtocol
@@ -3289,6 +3300,8 @@ async function loadDomains() {
     }
     if (projects.length) renderProjects();
   } catch (error) {
+    domainData = { zones: [], domains: [] };
+    renderManualApplicationZones([]);
     domainZonesList.replaceChildren();
     assignedDomainsList.replaceChildren();
     domainZonesStatus.textContent = error.message;
@@ -3396,88 +3409,69 @@ function openNewDomainZoneDialog() {
   domainZoneNameInput.focus();
 }
 
-function scheduleN8nStatusPoll() {
-  if (n8nStatusPollTimer !== undefined || dashboardView.classList.contains("hidden")) return;
-  n8nStatusPollTimer = setTimeout(() => {
-    n8nStatusPollTimer = undefined;
-    void loadN8nApplication();
-  }, 3000);
+function getApplicationVersionFromImage(image) {
+  const tag = image.match(/:([^/:@]+)$/)?.[1];
+  return tag && (/^\d+\.\d+\.\d+$/.test(tag) || tag === "latest") ? tag : "latest";
+}
+
+function applyManualApplicationTemplate() {
+  const isN8n = manualApplicationTemplate.value === "n8n";
+  const fields = Object.fromEntries(
+    ["name", "id", "version", "category", "description", "image", "port", "volumeTarget", "cpus", "memoryMb"]
+      .map((name) => [name, manualApplicationForm.elements.namedItem(name)]),
+  );
+  if (isN8n) {
+    fields.name.value ||= "n8n";
+    fields.id.value = "n8n-instance";
+    fields.category.value = "Automatización";
+    fields.description.value = "Automatización de flujos de trabajo.";
+    if (!fields.image.value.startsWith("n8nio/n8n:")) fields.image.value = "n8nio/n8n:latest";
+    fields.version.value = getApplicationVersionFromImage(fields.image.value);
+    fields.port.value = "5678";
+    fields.volumeTarget.value = "/home/node/.n8n";
+    fields.cpus.value ||= "1";
+    fields.memoryMb.value ||= "1536";
+    manualApplicationForm.elements.timezone.value ||= "UTC";
+  }
+  if (!isN8n && fields.version.value === "latest") {
+    fields.version.value = "1.0.0";
+    fields.image.value = "";
+  }
+  document.querySelector("#manual-app-metadata-fields").hidden = isN8n;
+  document.querySelector("#manual-app-fixed-fields").hidden = isN8n;
+  document.querySelector("#manual-app-fixed-volume-field").hidden = isN8n;
+  fields.volumeTarget.readOnly = isN8n;
+  fields.image.placeholder = isN8n ? "n8nio/n8n:latest" : "docker.io/usuario/aplicacion:1.0.0";
+  document.querySelector("#manual-app-environment-label").textContent = isN8n
+    ? "Variables de entorno adicionales (una por línea: NOMBRE=valor)"
+    : "Variables no secretas (una por línea: NOMBRE=valor)";
+  document.querySelector("#manual-app-secrets-label").textContent = isN8n
+    ? "Secretos Swarm adicionales (una por línea: NOMBRE=valor)"
+    : "Secretos Swarm (una por línea: NOMBRE=valor)";
+  fields.id.readOnly = isN8n;
+  document.querySelector("#manual-app-timezone-label").hidden = !isN8n;
+  const timezone = manualApplicationForm.elements.timezone;
+  timezone.hidden = !isN8n;
+  manualApplicationWebhookFields.hidden = !isN8n;
+  manualApplicationWebhookZoneSelect.required = isN8n;
+  manualApplicationWebhookSubdomainInput.required = isN8n;
+  if (isN8n) timezone.value = "UTC";
+  document.querySelector("#application-create-title").textContent = isN8n
+    ? "Crear instancia de n8n"
+    : "Agregar aplicación";
+  document.querySelector("#application-create-form-title").textContent = isN8n
+    ? "Configurar instancia de n8n"
+    : "Detalles de la instancia";
 }
 
 async function loadN8nApplication() {
   try {
     const { application } = await request("/api/system/applications/n8n");
-    const zones = application.domainZones ?? [];
-    if (application.configuration) {
-      n8nVersionInput.value = application.configuration.version;
-      n8nTimezoneInput.value = application.configuration.timezone;
-      n8nCpusInput.value = application.configuration.cpus;
-      n8nMemoryInput.value = application.configuration.memoryMb;
-    }
-    const selectedZoneId = n8nDomainZoneSelect.value;
-    n8nDomainZoneSelect.replaceChildren(
-      new Option(zones.length ? "Selecciona un dominio raíz" : "Conecta primero un dominio raíz en Dominios", ""),
-      ...zones.map((zone) => new Option(zone.zone, zone.id)),
-    );
-    const currentZone = application.domain
-      ? zones.find((zone) => application.domain === zone.zone || application.domain.endsWith(`.${zone.zone}`))
-      : null;
-    if (currentZone) {
-      n8nDomainZoneSelect.value = currentZone.id;
-      if (!n8nSubdomainInput.value) {
-        n8nSubdomainInput.value = application.domain === currentZone.zone
-          ? ""
-          : application.domain.slice(0, -(currentZone.zone.length + 1));
-      }
-    } else if (zones.some((zone) => zone.id === selectedZoneId)) {
-      n8nDomainZoneSelect.value = selectedZoneId;
-    } else if (zones.length > 0) {
-      n8nDomainZoneSelect.value = zones[0].id;
-    }
-    n8nDomainZoneSelect.disabled = application.installed || application.installing || zones.length === 0;
-    n8nSubdomainInput.disabled = application.installed || application.installing || zones.length === 0;
-    for (const input of [n8nVersionInput, n8nTimezoneInput, n8nCpusInput, n8nMemoryInput]) {
-      input.disabled = application.installed || application.installing;
-    }
-    const canInstall = !application.installed
-      && !application.installing
-      && !application.nameConflict
-      && zones.length > 0;
-    installN8nButton.classList.toggle("hidden", !canInstall);
-    installN8nButton.disabled = application.installing;
-    if (application.domain && application.installed) {
-      n8nUrl.href = application.url;
-      n8nUrl.classList.remove("hidden");
-    } else {
-      n8nUrl.classList.add("hidden");
-    }
-    const selectedZone = zones.find((zone) => zone.id === n8nDomainZoneSelect.value);
-    const selectedHostname = selectedZone
-      ? `${n8nSubdomainInput.value.trim() && n8nSubdomainInput.value.trim() !== "@"
-        ? `${n8nSubdomainInput.value.trim()}.`
-        : ""}${selectedZone.zone}`
-      : null;
-    n8nStatus.textContent = application.latestTask?.message
-      ?? (application.installed
-        ? `n8n está instalado en ${application.domain}.`
-        : application.nameConflict
-          ? "El nombre del servicio de n8n está ocupado por un servicio ajeno a VPS Manager."
-          : selectedHostname
-            ? `Dominio ${selectedHostname} listo. Puedes instalar n8n.`
-            : zones.length
-              ? "Elige un dominio raíz y un subdominio para instalar n8n."
-              : "Conecta primero un dominio raíz en la pestaña Dominios.");
-    if (application.installing) scheduleN8nStatusPoll();
-    else if (n8nStatusPollTimer !== undefined) {
-      clearTimeout(n8nStatusPollTimer);
-      n8nStatusPollTimer = undefined;
-    }
+    n8nStatus.textContent = application.installed
+      ? `Hay una instalación heredada de n8n en ${application.domain}. Las nuevas instalaciones se crean como instancias independientes.`
+      : "Crea una instancia independiente de n8n desde el catálogo.";
   } catch (error) {
     n8nStatus.textContent = error.message;
-    if (n8nStatusPollTimer !== undefined) {
-      clearTimeout(n8nStatusPollTimer);
-      n8nStatusPollTimer = undefined;
-    }
   }
 }
 
@@ -3519,9 +3513,62 @@ function getSupabaseDefaults(configurationSchema) {
   const defaults = configurationSchema?.defaults ?? {};
   return {
     ...defaults,
+    enabledServices: defaults.enabledServices
+      ?? Object.keys(supabaseApplicationData?.catalogEntry?.serviceManifest?.services ?? {}),
     resourceLimits: defaults.resourceLimits ?? {},
     smtp: defaults.smtp ?? null,
     oauthProviders: defaults.oauthProviders ?? {},
+  };
+}
+
+function renderSupabaseServiceSelection(entry, selectedServices) {
+  const container = document.querySelector("#supabase-service-selection");
+  const services = entry?.serviceManifest?.services ?? {};
+  const requiredServices = new Set(entry?.serviceManifest?.selection?.required ?? []);
+  const dependencies = entry?.serviceManifest?.selection?.dependencies ?? {};
+  container.replaceChildren();
+
+  for (const [serviceId, service] of Object.entries(services)) {
+    const label = document.createElement("label");
+    label.className = "checkbox-label";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.name = "enabledServices";
+    checkbox.value = serviceId;
+    checkbox.checked = selectedServices.includes(serviceId);
+    checkbox.disabled = requiredServices.has(serviceId);
+    checkbox.dataset.serviceId = serviceId;
+    const description = document.createElement("span");
+    const dependencyNames = dependencies[serviceId] ?? [];
+    description.textContent = `${serviceId}${requiredServices.has(serviceId) ? " (obligatorio)" : ""} — ${service.image}`
+      + (dependencyNames.length ? ` · requiere ${dependencyNames.join(", ")}` : "");
+    label.append(checkbox, description);
+    container.append(label);
+  }
+  container.onchange = (event) => {
+    const changed = event.target;
+    if (!(changed instanceof HTMLInputElement) || changed.name !== "enabledServices") return;
+    const selected = new Set(
+      [...container.querySelectorAll('input[name="enabledServices"]:checked')]
+        .map((checkbox) => checkbox.value),
+    );
+    if (changed.checked) {
+      for (const dependency of dependencies[changed.value] ?? []) selected.add(dependency);
+    } else {
+      let removed;
+      do {
+        removed = false;
+        for (const [serviceId, requiredDependencies] of Object.entries(dependencies)) {
+          if (selected.has(serviceId) && requiredDependencies.some((dependency) => !selected.has(dependency))) {
+            selected.delete(serviceId);
+            removed = true;
+          }
+        }
+      } while (removed);
+    }
+    for (const checkbox of container.querySelectorAll('input[name="enabledServices"]')) {
+      checkbox.checked = selected.has(checkbox.value);
+    }
   };
 }
 
@@ -3533,6 +3580,9 @@ function fillSupabaseConfigurationForm(serverNodeId) {
     ?? getSupabaseDefaults(supabaseApplicationData.catalogEntry?.configurationSchema);
   const values = {
     name: instance?.name ?? `Supabase - ${node.hostname}`,
+    enabledServices: configuration.enabledServices
+      ?? Object.keys(supabaseApplicationData.catalogEntry?.serviceManifest?.services ?? {}),
+    exposeDatabasePorts: configuration.exposeDatabasePorts ?? true,
     apiDomain: configuration.apiDomain ?? "",
     studioDomain: configuration.studioDomain ?? "",
     siteUrl: configuration.siteUrl ?? "",
@@ -3554,6 +3604,7 @@ function fillSupabaseConfigurationForm(serverNodeId) {
     resourceLimits: configuration.resourceLimits,
   };
   for (const [name, value] of Object.entries(values)) {
+    if (name === "enabledServices") continue;
     const field = supabaseConfigurationForm.elements.namedItem(name);
     if (!field) continue;
     if (field.type === "checkbox") field.checked = value === true;
@@ -3561,6 +3612,7 @@ function fillSupabaseConfigurationForm(serverNodeId) {
     else if (name === "oauthProviders" || name === "resourceLimits") field.value = JSON.stringify(value, null, 2);
     else field.value = value ?? "";
   }
+  renderSupabaseServiceSelection(supabaseApplicationData.catalogEntry, values.enabledServices);
   supabaseConfigurationStatus.textContent = instance
     ? `Editando la configuración guardada para ${node.hostname}.`
     : `Se creará la única instancia Supabase de ${node.hostname}.`;
@@ -3624,22 +3676,13 @@ function parseManualEnvironment(value, label) {
 
 function renderManualApplications(catalog, instances, servers) {
   manualApplicationsList.replaceChildren();
-  const definitions = catalog.filter((application) => application.serviceManifest?.manual === true);
+  const definitions = catalog.filter((application) =>
+    application.serviceManifest?.manual === true && application.id !== "n8n-instance");
   const definitionById = new Map(definitions.map((application) => [application.id, application]));
   const deployedInstances = instances.filter((instance) => definitionById.has(instance.applicationId));
-  const readyServers = servers.filter((server) => server.state === "ready" && server.availability === "active");
-  manualApplicationServerSelect.replaceChildren();
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = readyServers.length ? "Selecciona un VPS activo" : "No hay VPS activos";
-  manualApplicationServerSelect.append(placeholder);
-  for (const server of readyServers) {
-    const option = document.createElement("option");
-    option.value = server.id;
-    option.textContent = `${server.hostname} · ${server.role}`;
-    manualApplicationServerSelect.append(option);
-  }
-  manualApplicationSubmit.disabled = readyServers.length === 0;
+  manualApplicationServers = servers;
+  renderManualApplicationZones(domainData.zones);
+  updateManualApplicationAvailability();
   if (deployedInstances.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -3654,13 +3697,13 @@ function renderManualApplications(catalog, instances, servers) {
       main.className = "resource-main";
       const name = document.createElement("div");
       name.className = "resource-name";
-      name.textContent = application.name;
+      name.textContent = instance.name;
       const detail = document.createElement("div");
       detail.className = "resource-detail";
       const secretNames = instance.configuration.secretNames?.length
         ? ` · Secretos Swarm: ${instance.configuration.secretNames.join(", ")}`
         : "";
-      detail.textContent = `${instance.serverHostname} · ${instance.status} · ${instance.configuration.domain} · ${application.serviceManifest.image}${secretNames}`;
+      detail.textContent = `${instance.serverHostname} · ${instance.status} · ${instance.configuration.domain} · ${instance.configuration.image ?? application.serviceManifest.image}${secretNames}`;
       main.append(name, detail);
       row.append(main);
       if (instance.configuration.domain && instance.status === "installed") {
@@ -3676,6 +3719,168 @@ function renderManualApplications(catalog, instances, servers) {
     }
   }
   manualApplicationsStatus.textContent = `${definitions.length} aplicación${definitions.length === 1 ? "" : "es"} manual${definitions.length === 1 ? "" : "es"} en el catálogo; ${deployedInstances.length} instalación${deployedInstances.length === 1 ? "" : "es"}.`;
+}
+
+function updateManualApplicationHostnamePreview() {
+  const zone = domainData.zones.find((candidate) => candidate.id === manualApplicationZoneSelect.value);
+  const subdomain = manualApplicationSubdomainInput.value.trim();
+  manualApplicationHostnamePreview.textContent = zone && subdomain
+    ? `${subdomain}.${zone.zone}`
+    : "Elige un dominio conectado y escribe el subdominio.";
+}
+
+function renderManualApplicationZones(zones) {
+  const connectedZones = zones.filter((zone) =>
+    zone.connectionStatus === "connected" && zone.tokenConfigured);
+  const selectedZoneId = manualApplicationZoneSelect.value;
+  const options = [new Option(
+    connectedZones.length ? "Selecciona un dominio conectado" : "No hay dominios conectados",
+    "",
+  )];
+  for (const zone of connectedZones) options.push(new Option(zone.zone, zone.id));
+  manualApplicationZoneSelect.replaceChildren(...options);
+  const webhookSelectedZoneId = manualApplicationWebhookZoneSelect.value;
+  manualApplicationWebhookZoneSelect.replaceChildren(
+    new Option(
+      connectedZones.length ? "Selecciona un dominio conectado" : "No hay dominios conectados",
+      "",
+    ),
+    ...connectedZones.map((zone) => new Option(zone.zone, zone.id)),
+  );
+  if (connectedZones.some((zone) => zone.id === selectedZoneId)) {
+    manualApplicationZoneSelect.value = selectedZoneId;
+  }
+  if (connectedZones.some((zone) => zone.id === webhookSelectedZoneId)) {
+    manualApplicationWebhookZoneSelect.value = webhookSelectedZoneId;
+  }
+  manualApplicationZoneSelect.disabled = connectedZones.length === 0;
+  updateManualApplicationHostnamePreview();
+  updateManualApplicationWebhookHostnamePreview();
+  updateManualApplicationAvailability();
+}
+
+function updateManualApplicationWebhookHostnamePreview() {
+  const zone = domainData.zones.find((candidate) =>
+    candidate.id === manualApplicationWebhookZoneSelect.value);
+  const subdomain = manualApplicationWebhookSubdomainInput.value.trim();
+  manualApplicationWebhookHostnamePreview.textContent = zone && subdomain
+    ? `${subdomain}.${zone.zone}`
+    : "Elige un dominio conectado y escribe el subdominio.";
+}
+
+function updateManualApplicationAvailability() {
+  const readyManager = manualApplicationServers.some((server) =>
+    server.role === "manager" && server.state === "ready" && server.availability === "active");
+  const connectedZone = domainData.zones.some((zone) =>
+    zone.connectionStatus === "connected" && zone.tokenConfigured);
+  manualApplicationSubmit.disabled = !readyManager || !connectedZone;
+}
+
+function renderN8nInstances(instances) {
+  n8nInstancesList.replaceChildren();
+  if (instances.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Aún no hay instancias de n8n.";
+    n8nInstancesList.append(empty);
+    return;
+  }
+  for (const instance of instances) {
+    const row = document.createElement("div");
+    row.className = "resource";
+    const main = document.createElement("div");
+    main.className = "resource-main";
+    const name = document.createElement("div");
+    name.className = "resource-name";
+    name.textContent = instance.name;
+    const detail = document.createElement("div");
+    detail.className = "resource-detail";
+    detail.textContent = `${instance.serverHostname} · ${instance.status} · ${(instance.configuration.domains ?? [instance.configuration.domain]).join(" · ")}`;
+    main.append(name, detail);
+    row.append(main);
+    const details = document.createElement("a");
+    details.className = "button secondary resource-action";
+    details.href = `/applications/${encodeURIComponent(instance.id)}`;
+    details.textContent = "Ver";
+    row.append(details);
+    n8nInstancesList.append(row);
+  }
+}
+
+function renderApplicationDetail(instances) {
+  const routeMatch = window.location.pathname.match(/^\/applications\/([0-9a-f-]{36})$/i);
+  if (!routeMatch) return;
+  const instance = instances.find((candidate) =>
+    candidate.id.toLowerCase() === routeMatch[1].toLowerCase());
+  const title = document.querySelector("#application-detail-title");
+  const summary = document.querySelector("#application-detail-summary");
+  const status = document.querySelector("#application-detail-status");
+  const state = document.querySelector("#application-detail-state");
+  const open = document.querySelector("#application-detail-open");
+  const domains = document.querySelector("#application-detail-domains");
+  const loginGuide = document.querySelector("#application-detail-login-guide");
+  const usersGuide = document.querySelector("#application-detail-users-guide");
+  const deleteButton = document.querySelector("#application-detail-delete");
+  domains.replaceChildren();
+  open.hidden = true;
+  loginGuide.hidden = true;
+  usersGuide.hidden = true;
+  deleteButton.hidden = true;
+  if (!instance) {
+    title.textContent = "Instancia no encontrada";
+    summary.textContent = "";
+    state.textContent = "";
+    status.textContent = "No se encontró esta instancia en el catálogo.";
+    return;
+  }
+
+  const configuration = instance.configuration ?? {};
+  const instanceDomains = configuration.domains?.length
+    ? configuration.domains
+    : configuration.domain ? [{ hostname: configuration.domain }] : [];
+  const instanceStatusLabels = {
+    installed: "Instalada",
+    failed: "Fallida",
+    deploying: "Desplegando",
+    pending: "Pendiente",
+  };
+  title.textContent = instance.name;
+  summary.textContent = `${instance.serverHostname} · ${configuration.image ?? instance.applicationId}`;
+  state.textContent = instanceStatusLabels[instance.status] ?? instance.status;
+  deleteButton.hidden = instance.applicationId !== "n8n-instance" || instance.status === "installing";
+  deleteButton.dataset.instanceId = instance.id;
+  deleteButton.dataset.instanceName = instance.name;
+  status.textContent = instance.status === "installed"
+    ? "Instancia lista. Usa el dominio principal para abrirla."
+    : instance.status === "failed"
+      ? "El despliegue falló. Revisa la pestaña Tareas para consultar el detalle."
+      : `Estado de la instancia: ${instanceStatusLabels[instance.status] ?? instance.status}.`;
+
+  instanceDomains.forEach((domain, index) => {
+    const item = document.createElement("div");
+    item.className = "application-detail-domain";
+    const label = document.createElement("strong");
+    label.textContent = index === 0 ? "Dominio principal" : "Dominio de webhooks";
+    const link = document.createElement("a");
+    link.href = `https://${domain.hostname}/`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = domain.hostname;
+    item.append(label, link);
+    domains.append(item);
+  });
+  if (instance.status === "installed" && instanceDomains[0]?.hostname) {
+    open.href = `https://${instanceDomains[0].hostname}/`;
+    open.hidden = false;
+  }
+  loginGuide.hidden = instance.applicationId !== "n8n-instance" || instance.status !== "installed";
+  usersGuide.hidden = instance.applicationId !== "n8n-instance" || instance.status !== "installed";
+  if (instance.applicationId !== "n8n-instance" && instanceDomains.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Esta instancia no tiene dominios configurados.";
+    domains.append(empty);
+  }
 }
 
 function renderSupabaseCatalog(catalog, servers, instances) {
@@ -3728,11 +3933,15 @@ async function loadSupabaseApplications() {
       result.instances.filter((instance) => instance.applicationId === "supabase"),
     );
     renderManualApplications(result.catalog, result.instances, result.servers);
+    const n8nInstances = result.instances.filter((instance) => instance.applicationId === "n8n-instance");
+    renderN8nInstances(n8nInstances);
+    renderApplicationDetail(n8nInstances);
   } catch (error) {
     configureSupabaseButton.disabled = true;
     supabaseStatus.textContent = error.message;
     manualApplicationSubmit.disabled = true;
     manualApplicationsStatus.textContent = error.message;
+    document.querySelector("#application-detail-status").textContent = error.message;
   }
 }
 
@@ -3744,6 +3953,10 @@ function parseSupabaseJsonField(name, fallback) {
 function getSupabaseConfigurationFormValues() {
   const values = Object.fromEntries(new FormData(supabaseConfigurationForm));
   const configuration = {
+    enabledServices: [...supabaseConfigurationForm.querySelectorAll(
+      'input[name="enabledServices"]:checked',
+    )].map((checkbox) => checkbox.value),
+    exposeDatabasePorts: supabaseConfigurationForm.elements.exposeDatabasePorts.checked,
     apiDomain: values.apiDomain,
     studioDomain: values.studioDomain,
     siteUrl: values.siteUrl,
@@ -3847,25 +4060,44 @@ async function pollManualApplicationDeployment(taskId, applicationName) {
   try {
     const result = await request("/api/system/tasks");
     const task = result.tasks.find((candidate) => candidate.id === taskId);
+    try {
+      const { operation } = await request("/api/system/service-operations");
+      if (operation?.id === taskId && operation.message) appendManualApplicationLog(operation.message);
+    } catch (error) {
+      appendManualApplicationLog(`No se pudo consultar el avance del agente: ${error.message}`);
+    }
     if (task?.status === "completed") {
-      manualApplicationStatus.textContent = task.result?.message
-        ?? `${applicationName} se desplegó correctamente.`;
+      const message = task.result?.message ?? `${applicationName} se desplegó correctamente.`;
+      manualApplicationStatus.textContent = message;
+      appendManualApplicationLog(message);
       await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-      manualApplicationSubmit.disabled = false;
+      updateManualApplicationAvailability();
       return;
     }
     if (task?.status === "failed") {
-      manualApplicationStatus.textContent = `No se pudo desplegar ${applicationName}: ${task.error ?? "error desconocido"}`;
+      const message = `No se pudo desplegar ${applicationName}: ${task.error ?? "error desconocido"}`;
+      manualApplicationStatus.textContent = message;
+      appendManualApplicationLog(message);
       await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-      manualApplicationSubmit.disabled = false;
+      updateManualApplicationAvailability();
       return;
     }
     manualApplicationStatus.textContent = `Desplegando ${applicationName} en el VPS…`;
     setTimeout(() => void pollManualApplicationDeployment(taskId, applicationName), 2500);
   } catch (error) {
     manualApplicationStatus.textContent = `No se pudo consultar el despliegue: ${error.message}`;
-    manualApplicationSubmit.disabled = false;
+    appendManualApplicationLog(`Error al consultar el despliegue: ${error.message}`);
+    updateManualApplicationAvailability();
   }
+}
+
+function appendManualApplicationLog(message) {
+  const lines = manualApplicationLogs.textContent.split("\n").filter(Boolean);
+  if (lines.at(-1) === message) return;
+  lines.push(message);
+  manualApplicationLogs.textContent = lines.slice(-100).join("\n");
+  manualApplicationLogs.hidden = false;
+  manualApplicationLogs.scrollTop = manualApplicationLogs.scrollHeight;
 }
 
 async function installGitea() {
@@ -4216,6 +4448,25 @@ async function loadResources() {
 }
 
 refreshButton.addEventListener("click", loadResources);
+document.querySelector("#application-detail-delete").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const { instanceId, instanceName } = button.dataset;
+  if (!instanceId || !confirm(
+    `¿Eliminar la instancia ${instanceName}? Se borrarán permanentemente el servicio, el volumen con todos los workflows, credenciales e historial de ejecuciones, los secretos Swarm y los registros DNS de sus dominios. Esta acción no se puede deshacer.`,
+  )) return;
+  button.disabled = true;
+  button.textContent = "Eliminando…";
+  const status = document.querySelector("#application-detail-status");
+  status.textContent = "Eliminando servicio, datos persistentes, secretos y dominios DNS…";
+  try {
+    await request(`/api/applications/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
+    window.location.assign("/#tab-apps");
+  } catch (error) {
+    status.textContent = error.message;
+    button.disabled = false;
+    button.textContent = "Eliminar instancia";
+  }
+});
 configureSupabaseButton.addEventListener("click", () => {
   fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
   supabaseConfigurationDialog.showModal();
@@ -4247,6 +4498,23 @@ supabaseConfigurationForm.addEventListener("submit", async (event) => {
 refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
+manualApplicationZoneSelect.addEventListener("change", updateManualApplicationHostnamePreview);
+manualApplicationSubdomainInput.addEventListener("input", updateManualApplicationHostnamePreview);
+manualApplicationWebhookZoneSelect.addEventListener("change", updateManualApplicationWebhookHostnamePreview);
+manualApplicationWebhookSubdomainInput.addEventListener("input", updateManualApplicationWebhookHostnamePreview);
+manualApplicationTemplate.addEventListener("change", applyManualApplicationTemplate);
+manualApplicationForm.elements.image.addEventListener("input", () => {
+  if (manualApplicationTemplate.value === "n8n") {
+    manualApplicationForm.elements.version.value = getApplicationVersionFromImage(
+      manualApplicationForm.elements.image.value.trim(),
+    );
+  }
+});
+if (window.location.pathname === "/applications/new") {
+  const requestedTemplate = new URLSearchParams(window.location.search).get("template");
+  if (requestedTemplate === "n8n") manualApplicationTemplate.value = "n8n";
+  applyManualApplicationTemplate();
+}
 for (const button of document.querySelectorAll("[data-metrics-view]")) {
   button.addEventListener("click", () => {
     metricsView = button.dataset.metricsView;
@@ -4266,39 +4534,6 @@ document.querySelector("#refresh-backups").addEventListener("click", loadBackups
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
 document.querySelector("#check-updates").addEventListener("click", checkForUpdates);
 document.querySelector("#refresh-tasks").addEventListener("click", loadTaskHistory);
-installN8nButton.addEventListener("click", async () => {
-  const selectedZone = n8nDomainZoneSelect.selectedOptions[0];
-  if (!n8nDomainZoneSelect.value || !selectedZone) {
-    n8nStatus.textContent = "Selecciona un dominio raíz para instalar n8n.";
-    return;
-  }
-  const subdomain = n8nSubdomainInput.value.trim();
-  const hostname = subdomain && subdomain !== "@"
-    ? `${subdomain}.${selectedZone.textContent}`
-    : selectedZone.textContent;
-  if (!confirm(`n8n se instalará en https://${hostname}/ con SQLite y almacenamiento persistente. Se creará o actualizará su registro A en Cloudflare y se configurará HTTPS con Traefik. ¿Continuar?`)) return;
-  installN8nButton.disabled = true;
-  n8nStatus.textContent = "Solicitando la instalación segura de n8n…";
-  try {
-    await request("/api/system/applications/n8n", {
-      method: "POST",
-      body: JSON.stringify({
-        zoneId: n8nDomainZoneSelect.value,
-        subdomain,
-        configuration: {
-          version: n8nVersionInput.value.trim(),
-          timezone: n8nTimezoneInput.value.trim(),
-          cpus: Number(n8nCpusInput.value),
-          memoryMb: Number(n8nMemoryInput.value),
-        },
-      }),
-    });
-    await Promise.all([loadN8nApplication(), loadTaskHistory()]);
-  } catch (error) {
-    n8nStatus.textContent = error.message;
-    installN8nButton.disabled = false;
-  }
-});
 installPostgresqlButton.addEventListener("click", async () => {
   if (!confirm("PostgreSQL se instalará con almacenamiento persistente, una contraseña aleatoria como secreto Swarm y acceso solo por la red privada de Swarm. No se publicarán puertos del VPS. Las credenciales estarán disponibles una vez durante 30 minutos. ¿Continuar?")) return;
   installPostgresqlButton.disabled = true;
@@ -4357,28 +4592,39 @@ registryForm.addEventListener("submit", async (event) => {
 });
 manualApplicationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  manualApplicationLogs.textContent = "";
+  manualApplicationLogs.hidden = true;
   manualApplicationSubmit.disabled = true;
   manualApplicationStatus.textContent = "Validando configuración y solicitando el despliegue…";
+  appendManualApplicationLog("Validando configuración y solicitando el despliegue…");
   try {
     const form = new FormData(manualApplicationForm);
+    const environmentValues = parseManualEnvironment(form.get("environment"), "Variables no secretas");
+    const body = {
+      id: form.get("id").trim(),
+      version: form.get("version").trim(),
+      name: form.get("name").trim(),
+      description: form.get("description").trim(),
+      category: form.get("category").trim(),
+      image: form.get("image").trim(),
+      port: Number(form.get("port")),
+      cpus: Number(form.get("cpus")),
+      memoryMb: Number(form.get("memoryMb")),
+      volumeTarget: form.get("volumeTarget").trim() || undefined,
+      zoneId: form.get("zoneId"),
+      subdomain: form.get("subdomain").trim(),
+      environmentValues,
+      secretValues: parseManualEnvironment(form.get("secrets"), "Secretos"),
+    };
+    if (form.get("template") === "n8n") {
+      environmentValues.GENERIC_TIMEZONE = form.get("timezone").trim();
+      body.webhookZoneId = form.get("webhookZoneId");
+      body.webhookSubdomain = form.get("webhookSubdomain").trim();
+    }
     const result = await request("/api/applications", {
       method: "POST",
-      body: JSON.stringify({
-        id: form.get("id").trim(),
-        version: form.get("version").trim(),
-        name: form.get("name").trim(),
-        description: form.get("description").trim(),
-        category: form.get("category").trim(),
-        image: form.get("image").trim(),
-        port: Number(form.get("port")),
-        volumeTarget: form.get("volumeTarget").trim() || undefined,
-        domain: form.get("domain").trim(),
-        serverNodeId: form.get("serverNodeId"),
-        environmentValues: parseManualEnvironment(form.get("environment"), "Variables no secretas"),
-        secretValues: parseManualEnvironment(form.get("secrets"), "Secretos"),
-      }),
+      body: JSON.stringify(body),
     });
-    manualApplicationForm.querySelector('[name="secrets"]').value = "";
     manualApplicationStatus.textContent = result.message
       ?? `${form.get("name").trim()} registrada; preparando el despliegue…`;
     await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
@@ -4386,7 +4632,7 @@ manualApplicationForm.addEventListener("submit", async (event) => {
   } catch (error) {
     manualApplicationForm.querySelector('[name="secrets"]').value = "";
     manualApplicationStatus.textContent = error.message;
-    manualApplicationSubmit.disabled = false;
+    updateManualApplicationAvailability();
   }
 });
 revealPostgresqlCredentialsButton.addEventListener("click", revealPostgresqlCredentials);

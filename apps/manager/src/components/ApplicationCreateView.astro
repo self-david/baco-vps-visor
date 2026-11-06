@@ -1,0 +1,99 @@
+<section id="application-create-view" class="hidden" hidden aria-labelledby="application-create-title">
+  <header class="project-detail-header">
+    <a class="project-back-link" href="/#tab-apps">← Aplicaciones</a>
+    <div class="project-detail-title-row">
+      <div>
+        <p class="eyebrow">NUEVA INSTANCIA</p>
+        <h2 id="application-create-title">Agregar aplicación</h2>
+        <p class="muted">Cada instalación crea un servicio y almacenamiento independientes en el VPS principal del Swarm.</p>
+      </div>
+    </div>
+  </header>
+  <section class="card application-card" aria-labelledby="application-create-form-title">
+    <div class="card-heading">
+      <div>
+        <p class="eyebrow">CONFIGURACIÓN</p>
+        <h3 id="application-create-form-title">Detalles de la instancia</h3>
+      </div>
+      <span class="badge roadmap-badge">Swarm</span>
+    </div>
+    <form id="manual-application-form" class="form-stack">
+      <label htmlFor="manual-app-template">Tipo de aplicación</label>
+      <select id="manual-app-template" name="template">
+        <option value="custom">Aplicación personalizada</option>
+        <option value="n8n">n8n</option>
+      </select>
+      <label htmlFor="manual-app-name">Nombre de la instancia</label>
+      <input id="manual-app-name" name="name" type="text" maxLength="100" required />
+      <div id="manual-app-metadata-fields" class="application-form-fields">
+        <label htmlFor="manual-app-id">Identificador de la aplicación</label>
+        <input id="manual-app-id" name="id" type="text" pattern="[a-z][a-z0-9\x2d]{0,62}" maxLength="63" required />
+        <label htmlFor="manual-app-version">Versión</label>
+        <input id="manual-app-version" name="version" type="text" pattern="latest|[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+(-[A-Za-z0-9.]+)*)?" maxLength="100" required />
+        <label htmlFor="manual-app-category">Categoría</label>
+        <input id="manual-app-category" name="category" type="text" maxLength="100" required />
+        <label htmlFor="manual-app-description">Descripción</label>
+        <input id="manual-app-description" name="description" type="text" maxLength="500" required />
+      </div>
+      <label htmlFor="manual-app-image">Imagen Docker</label>
+      <input id="manual-app-image" name="image" type="text" maxLength="512" placeholder="n8nio/n8n:latest" required />
+      <div id="manual-app-fixed-fields" class="application-form-fields">
+        <label htmlFor="manual-app-port">Puerto interno</label>
+        <input id="manual-app-port" name="port" type="number" min="1" max="65535" step="1" required />
+      </div>
+      <div class="application-domain-row">
+        <div class="application-domain-field">
+          <label htmlFor="manual-app-subdomain">Subdominio principal</label>
+          <input id="manual-app-subdomain" name="subdomain" type="text" maxLength="253" placeholder="automatizacion" pattern="[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?)*" required />
+        </div>
+        <div class="application-domain-field">
+          <label htmlFor="manual-app-zone">Dominio principal conectado</label>
+          <select id="manual-app-zone" name="zoneId" required>
+            <option value="">Consultando dominios conectados…</option>
+          </select>
+        </div>
+      </div>
+      <p id="manual-app-hostname-preview" class="muted" aria-live="polite">Elige un dominio conectado y escribe el subdominio.</p>
+      <div id="manual-app-webhook-domain-fields" hidden>
+        <div class="application-domain-row">
+          <div class="application-domain-field">
+            <label htmlFor="manual-app-webhook-subdomain">Subdominio de webhooks</label>
+            <input id="manual-app-webhook-subdomain" name="webhookSubdomain" type="text" maxLength="253" placeholder="hooks" pattern="[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\x2d]{0,61}[A-Za-z0-9])?)*" />
+          </div>
+          <div class="application-domain-field">
+            <label htmlFor="manual-app-webhook-zone">Dominio de webhooks conectado</label>
+            <select id="manual-app-webhook-zone" name="webhookZoneId">
+              <option value="">Selecciona un dominio conectado</option>
+            </select>
+          </div>
+        </div>
+        <p id="manual-app-webhook-hostname-preview" class="muted" aria-live="polite">Elige un dominio conectado y escribe el subdominio.</p>
+      </div>
+      <div id="manual-app-fixed-volume-field" class="application-form-fields">
+        <label htmlFor="manual-app-volume">Ruta persistente (opcional)</label>
+        <input id="manual-app-volume" name="volumeTarget" type="text" maxLength="255" placeholder="/var/lib/app" />
+      </div>
+      <details id="manual-app-advanced-fields" class="application-form-advanced">
+        <summary>Configuración avanzada</summary>
+        <div class="application-form-fields">
+          <label htmlFor="manual-app-cpus">Límite de CPU</label>
+          <input id="manual-app-cpus" name="cpus" type="number" min="0.25" max="8" step="0.25" value="1" required />
+          <label htmlFor="manual-app-memory">Memoria (MB)</label>
+          <input id="manual-app-memory" name="memoryMb" type="number" min="256" max="16384" step="256" value="1536" required />
+          <label id="manual-app-timezone-label" htmlFor="manual-app-timezone" hidden>Zona horaria IANA</label>
+          <input id="manual-app-timezone" name="timezone" type="text" maxLength="100" value="UTC" hidden />
+          <label id="manual-app-environment-label" htmlFor="manual-app-environment">Variables no secretas (una por línea: NOMBRE=valor)</label>
+          <textarea id="manual-app-environment" name="environment" rows="3" maxLength="24576"></textarea>
+          <div id="manual-app-secrets-fields" class="application-form-fields">
+            <label id="manual-app-secrets-label" htmlFor="manual-app-secrets">Secretos Swarm (una por línea: NOMBRE=valor)</label>
+            <textarea id="manual-app-secrets" name="secrets" rows="3" maxLength="24576" autoComplete="new-password"></textarea>
+          </div>
+        </div>
+      </details>
+      <p class="muted">Los secretos se cifran en Swarm y no se guardan en la base de datos. n8n genera automáticamente su clave de cifrado; puedes añadir variables y secretos propios. Cada instancia tiene un servicio y volumen propios; no se publican puertos del host.</p>
+      <p id="manual-app-status" class="application-status" role="status" aria-live="polite"></p>
+      <pre id="manual-app-deployment-logs" class="application-deployment-logs" aria-live="polite" hidden></pre>
+      <button id="manual-app-submit" class="button" type="submit">Agregar y desplegar</button>
+    </form>
+  </section>
+</section>

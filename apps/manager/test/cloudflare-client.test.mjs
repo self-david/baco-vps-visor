@@ -125,6 +125,71 @@ test("updates only the stored record and rejects an untracked DNS record", async
   }), { code: "CLOUDFLARE_RECORD_EXISTS" });
 });
 
+test("deletes only the tracked Cloudflare A record and refuses modified records", async () => {
+  const calls = [];
+  let proxied = false;
+  const client = createCloudflareClient({
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (String(url).includes("/dns_records?")) {
+        return Response.json({
+          success: true,
+          result: [{
+            id: "managed-record",
+            type: "A",
+            name: domainInput.hostname,
+            content: "203.0.113.10",
+            proxied,
+          }],
+        });
+      }
+      return Response.json({ success: true, result: { id: "managed-record" } });
+    },
+  });
+  const token = "test-cloudflare-api-key-value-123456789";
+  assert.deepEqual(await client.deleteARecord(token, {
+    zoneId: "b".repeat(32),
+    hostname: domainInput.hostname,
+    proxied: false,
+    recordId: "managed-record",
+  }), { deleted: true });
+  assert.equal(calls[1].options.method, "DELETE");
+
+  proxied = true;
+  await assert.rejects(client.deleteARecord(token, {
+    zoneId: "b".repeat(32),
+    hostname: domainInput.hostname,
+    proxied: false,
+    recordId: "managed-record",
+  }), { code: "CLOUDFLARE_RECORD_EXISTS" });
+});
+
+test("explains the DNS permission required when Cloudflare rejects record deletion", async () => {
+  const client = createCloudflareClient({
+    fetchImpl: async (url) => String(url).includes("/dns_records?")
+      ? Response.json({
+        success: true,
+        result: [{
+          id: "managed-record",
+          type: "A",
+          name: domainInput.hostname,
+          content: "203.0.113.10",
+          proxied: false,
+        }],
+      })
+      : Response.json({
+        success: false,
+        errors: [{ code: 10000, message: "Permission denied." }],
+      }, { status: 403 }),
+  });
+  await assert.rejects(client.deleteARecord("test-cloudflare-api-key-value-123456789", {
+    zoneId: "b".repeat(32),
+    hostname: domainInput.hostname,
+    proxied: false,
+    recordId: "managed-record",
+  }), /Zone → DNS → Edit/);
+});
+
 test("creates Cloudflare Tunnels, retrieves connector tokens, and configures ingress", async () => {
   const calls = [];
   const accountId = "a".repeat(32);

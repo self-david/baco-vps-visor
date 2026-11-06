@@ -1,6 +1,8 @@
 const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
 const projectDetailView = document.querySelector("#project-detail-view");
+const applicationDetailView = document.querySelector("#application-detail-view");
+const applicationCreateView = document.querySelector("#application-create-view");
 const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
 const logoutButton = document.querySelector("#logout");
@@ -20,10 +22,16 @@ async function request(path, options = {}) {
 
 function setAuthenticated(authenticated) {
   const isProjectRoute = /^\/projects\/[0-9a-f-]{36}$/i.test(window.location.pathname);
+  const isApplicationDetailRoute = /^\/applications\/[0-9a-f-]{36}$/i.test(window.location.pathname);
+  const isApplicationCreateRoute = window.location.pathname === "/applications/new";
   loginView.classList.toggle("hidden", authenticated);
-  dashboardView.classList.toggle("hidden", !authenticated || isProjectRoute);
+  dashboardView.classList.toggle("hidden", !authenticated || isProjectRoute || isApplicationDetailRoute || isApplicationCreateRoute);
   projectDetailView.classList.toggle("hidden", !authenticated || !isProjectRoute);
   projectDetailView.hidden = !authenticated || !isProjectRoute;
+  applicationDetailView.classList.toggle("hidden", !authenticated || !isApplicationDetailRoute);
+  applicationDetailView.hidden = !authenticated || !isApplicationDetailRoute;
+  applicationCreateView.classList.toggle("hidden", !authenticated || !isApplicationCreateRoute);
+  applicationCreateView.hidden = !authenticated || !isApplicationCreateRoute;
   logoutButton.classList.toggle("hidden", !authenticated);
   window.managerAuthenticated = authenticated;
   window.dispatchEvent(new CustomEvent("vps-manager:auth", {

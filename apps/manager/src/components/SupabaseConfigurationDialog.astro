@@ -12,6 +12,16 @@
         <input id="supabase-instance-name" name="name" type="text" maxlength="100" required>
         <label for="supabase-server-node">VPS destino (nodo activo del Swarm)</label>
         <select id="supabase-server-node" name="serverNodeId" required></select>
+        <fieldset class="application-fieldset">
+          <legend>Servicios del stack</legend>
+          <p class="muted">Los componentes base son obligatorios. Los demás se pueden apagar para reducir consumo; Vector necesita Logflare.</p>
+          <div id="supabase-service-selection" class="application-service-selection"></div>
+          <label class="checkbox-label" for="supabase-expose-database-ports">
+            <input id="supabase-expose-database-ports" name="exposeDatabasePorts" type="checkbox">
+            Publicar las conexiones de base de datos (puertos 5432 y 6543) en el VPS
+          </label>
+          <p class="muted">El acceso público a la base requiere una contraseña fuerte. Abre esos puertos solo si los necesitas y restringe el acceso mediante el firewall del VPS.</p>
+        </fieldset>
         <label for="supabase-api-domain">Dominio HTTPS de API</label>
         <input id="supabase-api-domain" name="apiDomain" type="text" placeholder="api.ejemplo.com" autocomplete="off" required>
         <label for="supabase-studio-domain">Dominio HTTPS de Studio</label>

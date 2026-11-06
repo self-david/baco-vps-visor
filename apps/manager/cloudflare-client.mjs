@@ -152,7 +152,9 @@ export function createCloudflareClient({
           .join("; ")
         : "";
       const message = response.status === 401 || response.status === 403
-        ? "Cloudflare rechazó el API Token. Comprueba que sea válido y tenga permiso Account → Cloudflare Tunnel → Edit."
+        ? path.includes("/dns_records")
+          ? "Cloudflare rechazó el API Token. Comprueba que sea válido y tenga permiso Zone → DNS → Edit."
+          : "Cloudflare rechazó el API Token. Comprueba que sea válido y tenga permiso Account → Cloudflare Tunnel → Edit."
         : "Cloudflare rechazó la operación.";
       const error = new Error(details ? `${message} Motivo de Cloudflare: ${details}` : message);
       error.code = response.status === 401 || response.status === 403
@@ -319,6 +321,41 @@ export function createCloudflareClient({
     return validateRecord(result);
   }
 
+  async function deleteARecord(token, { zoneId, hostname, proxied, recordId }) {
+    if (!/^[a-f0-9]{32}$/i.test(zoneId ?? "")
+      || !hostnamePattern.test(hostname ?? "")
+      || typeof proxied !== "boolean"
+      || typeof recordId !== "string" || recordId.length < 1 || recordId.length > 128) {
+      throw new TypeError("La zona, el hostname o el registro A de Cloudflare no son válidos.");
+    }
+    const records = await request(
+      token,
+      `/zones/${encodeURIComponent(zoneId)}/dns_records?name=${encodeURIComponent(hostname)}&per_page=100`,
+    );
+    if (!Array.isArray(records)) throw new Error("Cloudflare devolvió una lista DNS inválida.");
+    const recordsForHost = records.filter((record) => record.name === hostname);
+    const record = recordsForHost.find((candidate) => candidate.id === recordId);
+    if (!record) {
+      if (recordsForHost.length > 0) {
+        const conflict = new Error("El registro DNS del panel ya no coincide con el registro administrado.");
+        conflict.code = "CLOUDFLARE_RECORD_EXISTS";
+        throw conflict;
+      }
+      return { deleted: false };
+    }
+    if (record.type !== "A" || record.proxied !== proxied) {
+      const conflict = new Error("El registro A de Cloudflare cambió o ya no coincide con el registro administrado; no se eliminará.");
+      conflict.code = "CLOUDFLARE_RECORD_EXISTS";
+      throw conflict;
+    }
+    await request(
+      token,
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      { method: "DELETE" },
+    );
+    return { deleted: true };
+  }
+
   async function upsertTunnelCname(token, { zoneId, hostname, tunnelId, existingRecordId }) {
     if (!/^[a-f0-9]{32}$/i.test(zoneId ?? "")
       || !hostnamePattern.test(hostname ?? "")
@@ -382,6 +419,7 @@ export function createCloudflareClient({
     getTunnelToken,
     updateTunnelConfiguration,
     upsertARecord,
+    deleteARecord,
     upsertTunnelCname,
     deleteTunnelCname,
   };

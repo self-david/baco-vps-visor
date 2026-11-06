@@ -32,8 +32,9 @@ test("validates n8n version, timezone, and resource limits with safe defaults", 
   });
 });
 
-test("rejects unpinned versions, invalid timezones, and unsafe n8n resource limits", () => {
-  assert.throws(() => validateN8nInstanceConfiguration({ version: "latest" }), /versión estable fijada/);
+test("accepts the default latest tag and rejects invalid timezones and unsafe n8n resource limits", () => {
+  assert.equal(validateN8nInstanceConfiguration({ version: "latest" }).version, "latest");
+  assert.throws(() => validateN8nInstanceConfiguration({ version: "not-a-tag" }), /latest o una versión estable/);
   assert.throws(() => validateN8nInstanceConfiguration({ timezone: "Mars/Olympus" }), /zona horaria IANA/);
   assert.throws(() => validateN8nInstanceConfiguration({ cpus: 0 }), /límite de CPU/);
   assert.throws(() => validateN8nInstanceConfiguration({ memoryMb: 128 }), /memoria de n8n/);
@@ -60,10 +61,37 @@ test("validates and normalizes a complete Supabase instance configuration", () =
   assert.deepEqual(configuration.additionalRedirectUrls, ["https://app.example.net/auth/callback"]);
   assert.equal(configuration.smtp.host, "smtp.example.net");
   assert.equal(configuration.smtp.senderName, "Supabase");
+  assert.deepEqual(configuration.enabledServices, getSupabaseDefaultConfiguration().enabledServices);
+  assert.equal(configuration.exposeDatabasePorts, true);
   assert.deepEqual(configuration.oauthProviders, {
     github: { enabled: true, clientId: "client-id" },
   });
   assert.deepEqual(configuration.resourceLimits.db, { cpus: 2, memoryMb: 4096 });
+  assert.deepEqual(configuration.resourceLimits.analytics, { cpus: 1, memoryMb: 1024 });
+});
+
+test("validates the selected Supabase services and their required dependencies", () => {
+  const defaults = getSupabaseDefaultConfiguration();
+  assert.deepEqual(defaults.enabledServices, [
+    "db", "studio", "api-gw", "auth", "rest", "realtime", "storage",
+    "imgproxy", "meta", "functions", "supavisor", "analytics", "vector",
+  ]);
+  assert.deepEqual(validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "vector"),
+    exposeDatabasePorts: false,
+  })).enabledServices, defaults.enabledServices.filter((service) => service !== "vector"));
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "db"),
+  })), /servicios base son obligatorios/);
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "analytics"),
+  })), /Vector requiere Analytics/);
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: ["db", "db", "studio", "api-gw", "auth", "rest", "meta"],
+  })), /servicios Supabase válidos/);
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    exposeDatabasePorts: "true",
+  })), /debe ser booleano/);
 });
 
 test("rejects invalid public domains, redirects, and resource ranges", () => {

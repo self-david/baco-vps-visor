@@ -3,6 +3,8 @@ import OverviewPanel from "../components/OverviewPanel.astro";
 import DockerPanel from "../components/DockerPanel.astro";
 import ProjectsPanel from "../components/ProjectsPanel.astro";
 import ProjectDetailView from "../components/ProjectDetailView.astro";
+import ApplicationDetailView from "../components/ApplicationDetailView.astro";
+import ApplicationCreateView from "../components/ApplicationCreateView.astro";
 import ApplicationsPanel from "../components/ApplicationsPanel.astro";
 import MonitoringPanel from "../components/MonitoringPanel.astro";
 import DomainsPanel from "../components/DomainsPanel.astro";
@@ -47,6 +49,8 @@ import "../styles/tailwind.css";
         <p class="footnote">Vista de consulta con reinicio y escalado controlados de servicios administrados por VPS Manager.</p>
       </section>
       <ProjectDetailView />
+      <ApplicationDetailView />
+      <ApplicationCreateView />
     </main>
 
     <DashboardDialogs />

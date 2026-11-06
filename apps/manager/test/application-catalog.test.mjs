@@ -163,7 +163,7 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /Guardar y continuar/);
   assert.match(page, /<ProjectDetailView \/>/);
   assert.ok(page.indexOf("</section>\n      <ProjectDetailView />") > page.indexOf('id="dashboard-view"'));
-  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject\)/);
+  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject \|\| showingApplicationDetail \|\| showingApplicationCreate\)/);
   const login = await readFile(new URL("../public/login.js", import.meta.url), "utf8");
   assert.match(login, /projectDetailView\.classList\.toggle\("hidden", !authenticated \|\| !isProjectRoute\)/);
   assert.match(projectDetailView, /data-project-tab="deploy">Implementaciones/);
@@ -284,11 +284,12 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /manage\.href = `\/projects\/\$\{encodeURIComponent\(project\.id\)\}`/);
   assert.match(renderer, /button-danger/);
   assert.match(renderer, /deleteProjectAndResources/);
-  assert.match(renderer, /Los registros DNS de esos dominios se conservarán/);
+  assert.match(renderer, /se eliminarán sus registros DNS administrados en Cloudflare/);
+  assert.match(renderer, /Quitar y borrar DNS/);
   assert.match(renderer, /Reintentar deploy/);
   assert.doesNotMatch(renderer, /project-registry-guidance/);
   assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
-  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject\)/);
+  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject \|\| showingApplicationDetail \|\| showingApplicationCreate\)/);
   assert.match(application, /function renderAssignedDomains\(domains\)/);
   assert.match(application, /Conectado correctamente\./);
   assert.match(application, /Falló la conexión\. Motivo:/);
@@ -373,6 +374,9 @@ test("project domains refresh health, offer route repair, and explain internal p
   assert.match(server, /projectHealthMatch = url\.pathname\.match/);
   assert.match(domainsPanel, /asignar el dominio raíz o crear subdominios para tus proyectos/);
   assert.match(domainsPanel, /id="domains-ingress-ip-form"/);
+  assert.match(server, /cloudflareClient\.deleteARecord\(token/);
+  assert.match(server, /cloudflareClient\.deleteTunnelCname\(token/);
+  assert.match(server, /await deleteProjectDomain\(domainId\)/);
 });
 
 test("login bootstrap is independent from dashboard initialization", async () => {
@@ -446,6 +450,108 @@ test("manager serves browser ES modules with a JavaScript content type", async (
   assert.match(server, /"\.mjs":\s*"text\/javascript; charset=utf-8"/);
 });
 
+test("application creation has a dedicated route and supports the n8n template", async () => {
+  const [server, database, serviceOperations, component, detailComponent, applicationScript, loginScript, serviceAgent, migration020] = await Promise.all([
+    readFile(new URL("../server.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../db.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../service-operations.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ApplicationCreateView.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ApplicationDetailView.astro", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/login.js", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../database/migrations/020_multiple_application_instances.sql", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(server, /decodedPath === "\/applications\/new"/);
+  assert.match(server, /\\\/applications\\\/\[0-9a-f\]/);
+  assert.match(detailComponent, /id="application-detail-view"/);
+  assert.match(detailComponent, /Set up owner account/);
+  assert.match(detailComponent, /no necesitas iniciar sesión ni tener credenciales previas/);
+  assert.match(detailComponent, /No hay correo ni contraseña predeterminados/);
+  assert.match(detailComponent, /id="application-detail-delete"/);
+  assert.match(detailComponent, /application-detail-login-guide/);
+  assert.match(detailComponent, /application-detail-users-guide/);
+  assert.match(detailComponent, /Settings<\/strong> y luego a <strong>Users/);
+  assert.match(detailComponent, /Invite user/);
+  assert.match(detailComponent, /Sin SMTP/);
+  assert.match(applicationScript, /usersGuide\.hidden = instance\.applicationId !== "n8n-instance" \|\| instance\.status !== "installed"/);
+  assert.match(loginScript, /isApplicationDetailRoute/);
+  assert.match(component, /id="manual-application-form"/);
+  assert.match(component, /value="n8n"/);
+  assert.match(component, /name="cpus"/);
+  assert.match(component, /name="memoryMb"/);
+  assert.match(component, /name="zoneId"/);
+  assert.match(component, /name="subdomain"/);
+  assert.match(component, /name="webhookZoneId"/);
+  assert.match(component, /name="webhookSubdomain"/);
+  assert.match(component, /id="manual-app-metadata-fields"/);
+  assert.match(component, /id="manual-app-advanced-fields"/);
+  assert.match(component, /class="application-domain-row"/);
+  assert.ok(component.indexOf('name="subdomain"') < component.indexOf('name="zoneId"'));
+  assert.ok(component.indexOf('name="webhookSubdomain"') < component.indexOf('name="webhookZoneId"'));
+  assert.match(component, /id="manual-app-deployment-logs"/);
+  assert.match(applicationScript, /manual-app-metadata-fields"\)\.hidden = isN8n/);
+  assert.match(applicationScript, /getApplicationVersionFromImage\(fields\.image\.value\)/);
+  assert.match(applicationScript, /appendManualApplicationLog\(operation\.message\)/);
+  assert.match(applicationScript, /request\("\/api\/system\/service-operations"\)/);
+  assert.doesNotMatch(component, /name="domain"|manual-app-server/);
+  assert.match(applicationScript, /window\.location\.pathname === "\/applications\/new"/);
+  assert.match(applicationScript, /manualApplicationTemplate\.value = "n8n"/);
+  assert.match(applicationScript, /application\.id !== "n8n-instance"/);
+  assert.match(applicationScript, /renderManualApplicationZones\(domainData\.zones\)/);
+  assert.match(applicationScript, /renderN8nInstances/);
+  assert.match(applicationScript, /renderApplicationDetail\(n8nInstances\)/);
+  assert.match(applicationScript, /\/applications\/\$\{encodeURIComponent\(instance\.id\)\}/);
+  assert.match(applicationScript, /¿Eliminar la instancia \$\{instanceName\}\?/);
+  assert.match(applicationScript, /workflows, credenciales e historial de ejecuciones/);
+  assert.match(applicationScript, /method: "DELETE"/);
+  assert.match(server, /applicationInstanceMatch = url\.pathname\.match/);
+  assert.match(server, /requestApplicationRemoval\(/);
+  assert.match(server, /updateTunnelConfiguration\(/);
+  assert.match(server, /deleteManualApplicationInstance\(instanceId\)/);
+  assert.match(serviceOperations, /async function requestApplicationRemoval\(/);
+  assert.match(serviceOperations, /operation: "remove-application"/);
+  assert.match(serviceAgent, /request\.get\("operation"\) == "remove-application"/);
+  assert.match(serviceAgent, /docker service rm "\$\{application_service\}"/);
+  assert.match(serviceAgent, /docker secret rm "\$\{secret_name\}"/);
+  assert.match(serviceAgent, /docker volume rm "\$\{application_volume\}"/);
+  assert.match(database, /DELETE FROM application_instances[\s\S]*application_id = 'n8n-instance' AND status <> 'installing'/);
+  assert.match(server, /requestBody\.zoneId/);
+  assert.match(server, /delete applicationBody\.webhookZoneId/);
+  assert.match(server, /delete applicationBody\.webhookSubdomain/);
+  assert.match(server, /WEBHOOK_URL: `https:\/\/\$\{webhookHostname\}\/`/);
+  assert.match(server, /getApplicationInstanceDomains\(\)/);
+  assert.match(server, /serverNodeId: managerNode\.ID/);
+  assert.match(server, /task: \{ id: taskId \}/);
+  assert.match(serviceAgent, /service_create_error_file/);
+  assert.match(serviceAgent, /json\.dump\(status, status_file, ensure_ascii=True\)/);
+  assert.match(serviceAgent, /write_status "running" "Creando el servicio Swarm/);
+  const applicationCreateArgs = serviceAgent.slice(
+    serviceAgent.indexOf("application_router_args=("),
+    serviceAgent.indexOf('service_create_error_file="${temporary_directory}/service-create-error.log"'),
+  );
+  const applicationEnvironmentArgs = serviceAgent.slice(
+    serviceAgent.indexOf("application_environment_args=()"),
+    serviceAgent.indexOf("application_service=\"vps-manager-app-"),
+  );
+  assert.match(applicationCreateArgs, /--label traefik\.enable=true/);
+  assert.doesNotMatch(applicationCreateArgs, /--label-add/);
+  assert.match(applicationEnvironmentArgs, /application_environment_args\+=\(--env "\$\{environment_entry\}"\)/);
+  assert.doesNotMatch(applicationEnvironmentArgs, /--env-add/);
+  assert.match(migration020, /DROP CONSTRAINT application_instances_server_key/);
+  assert.match(server, /application_instances_server_key/);
+  assert.match(server, /application_instance_domains_hostname_lower_key/);
+});
+
+test("Swarm application secret names remain below Docker's name limit", async () => {
+  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
+
+  assert.ok(serviceAgent.includes('secret_name_hash="${secret_name_hash%% *}"'));
+  assert.ok(serviceAgent.includes('secret_name="vpm_${application_instance_id//-/}_${secret_name_hash:0:16}"'));
+  assert.match(serviceAgent, /No se pudo guardar un secreto Swarm de la aplicación: \$\{secret_error/);
+});
+
 test("n8n uses a validated versioned image and declares managed persistence and HTTPS", async () => {
   const n8n = applicationCatalog.find((application) => application.id === "n8n");
   const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
@@ -507,4 +613,25 @@ test("project domain routes are activated automatically without redeploying", as
   assert.match(projectDeploymentAgent, /update-project-routes/);
   assert.match(projectDeploymentAgent, /vps-manager\.project-domains-hash=\$\{domains_hash\}/);
   assert.match(projectDeploymentAgent, /Rutas del proyecto actualizadas automáticamente sin reiniciar el contenedor/);
+});
+
+test("Supabase exposes the complete selectable service set with required core services", async () => {
+  const [migration, dialog, application] = await Promise.all([
+    readFile(new URL("../database/migrations/022_supabase_service_selection.sql", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/SupabaseConfigurationDialog.astro", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+  ]);
+
+  for (const service of [
+    "db", "studio", "api-gw", "auth", "rest", "realtime", "storage",
+    "imgproxy", "meta", "functions", "supavisor", "analytics", "vector",
+  ]) {
+    assert.match(migration, new RegExp(`"${service}"`));
+  }
+  assert.match(migration, /"required":\["db","studio","api-gw","auth","rest","meta"\]/);
+  assert.match(migration, /"dependencies":\{"vector":\["analytics"\]\}/);
+  assert.match(dialog, /id="supabase-service-selection"/);
+  assert.match(dialog, /name="exposeDatabasePorts"/);
+  assert.match(application, /name = "enabledServices"/);
+  assert.match(application, /requiredDependencies\.some/);
 });

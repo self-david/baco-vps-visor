@@ -12,7 +12,10 @@ const resourceServices = [
   "meta",
   "functions",
   "supavisor",
+  "analytics",
+  "vector",
 ];
+const requiredServices = ["db", "studio", "api-gw", "auth", "rest", "meta"];
 const supabaseDefaults = {
   db: { cpus: 2, memoryMb: 4096 },
   studio: { cpus: 1, memoryMb: 1024 },
@@ -25,6 +28,8 @@ const supabaseDefaults = {
   meta: { cpus: 0.25, memoryMb: 256 },
   functions: { cpus: 1, memoryMb: 2048 },
   supavisor: { cpus: 1, memoryMb: 1024 },
+  analytics: { cpus: 1, memoryMb: 1024 },
+  vector: { cpus: 0.5, memoryMb: 512 },
 };
 
 function isPublicHttpsUrl(value) {
@@ -42,6 +47,8 @@ function isPublicHttpsUrl(value) {
 
 export function getSupabaseDefaultConfiguration() {
   return {
+    enabledServices: [...resourceServices],
+    exposeDatabasePorts: true,
     additionalRedirectUrls: [],
     organizationName: "Default Organization",
     projectName: "Default Project",
@@ -78,8 +85,8 @@ export function validateN8nInstanceConfiguration(input) {
   }
   const configuration = { ...defaults, ...input };
   if (typeof configuration.version !== "string"
-    || !/^\d+\.\d+\.\d+$/.test(configuration.version)) {
-    throw new TypeError("La versión de n8n debe ser una versión estable fijada como X.Y.Z.");
+    || (!/^\d+\.\d+\.\d+$/.test(configuration.version) && configuration.version !== "latest")) {
+    throw new TypeError("La versión de n8n debe ser latest o una versión estable X.Y.Z.");
   }
   let validTimezone = false;
   if (typeof configuration.timezone === "string" && configuration.timezone.length <= 100) {
@@ -127,12 +134,32 @@ export function validateSupabaseInstanceConfiguration(input) {
     throw new TypeError("Configura dominios públicos distintos para API y Studio y una URL HTTPS pública para el sitio.");
   }
 
+  const enabledServices = input.enabledServices === undefined
+    ? defaults.enabledServices
+    : input.enabledServices;
+  if (!Array.isArray(enabledServices)
+    || enabledServices.some((service) => typeof service !== "string" || !resourceServices.includes(service))
+    || new Set(enabledServices).size !== enabledServices.length
+    || requiredServices.some((service) => !enabledServices.includes(service))
+    || (enabledServices.includes("vector") && !enabledServices.includes("analytics"))) {
+    throw new TypeError("Selecciona servicios Supabase válidos; los servicios base son obligatorios y Vector requiere Analytics.");
+  }
+  const resourceLimits = input.resourceLimits === undefined ? {} : input.resourceLimits;
+  if (!resourceLimits || typeof resourceLimits !== "object" || Array.isArray(resourceLimits)) {
+    throw new TypeError("Los límites de recursos deben declarar todos los servicios de Supabase.");
+  }
+
   const configuration = {
     ...defaults,
     ...input,
+    enabledServices: [...enabledServices],
     apiDomain,
     studioDomain,
     siteUrl,
+    resourceLimits: {
+      ...defaults.resourceLimits,
+      ...resourceLimits,
+    },
   };
   if (!Array.isArray(configuration.additionalRedirectUrls)
     || configuration.additionalRedirectUrls.length > 50
@@ -155,6 +182,7 @@ export function validateSupabaseInstanceConfiguration(input) {
     "enableAnonymousUsers",
     "enableImageTransformation",
     "functionsVerifyJwt",
+    "exposeDatabasePorts",
   ]) {
     if (typeof configuration[field] !== "boolean") {
       throw new TypeError(`El campo ${field} debe ser booleano.`);

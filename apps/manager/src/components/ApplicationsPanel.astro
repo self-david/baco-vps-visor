@@ -2,6 +2,14 @@
 import ApplicationCatalog from "./ApplicationCatalog.jsx";
 ---
 <section id="tab-apps" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-apps" tabindex="0" hidden>
+            <header class="panel-heading">
+              <div>
+                <p class="eyebrow">CATÁLOGO E INSTANCIAS</p>
+                <h2>Aplicaciones</h2>
+                <p class="muted">Administra instalaciones independientes en tus nodos Swarm.</p>
+              </div>
+              <a class="button" href="/applications/new">Agregar nueva aplicación</a>
+            </header>
             <ApplicationCatalog />
             <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
               <section class="card roadmap-card">

@@ -22,6 +22,7 @@ const allowedOperations = new Set([
   "update-project-routes",
   "remove-project",
   "deploy-application",
+  "remove-application",
   "enroll-swarm-node",
 ]);
 const activeStates = new Set(["queued", "running"]);
@@ -179,7 +180,9 @@ function validateStatus(status) {
               ? (!applicationIdPattern.test(status.applicationId ?? "")
                 || !requestIdPattern.test(status.instanceId ?? "")
                 || (status.state === "succeeded" && !serviceIdPattern.test(status.serviceId ?? "")))
-            : status.operation === "enroll-swarm-node"
+              : status.operation === "remove-application"
+                ? (status.applicationId !== "n8n-instance" || !requestIdPattern.test(status.instanceId ?? ""))
+              : status.operation === "enroll-swarm-node"
               ? (() => {
                 try {
                   validateSwarmNodeRequest({
@@ -198,6 +201,7 @@ function validateStatus(status) {
               })()
             : status.operation !== "configure-gitea-token"
               && status.operation !== "update-project-routes"
+              && status.operation !== "remove-application"
               && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
@@ -324,6 +328,9 @@ export function createServiceOperationAgent({
                   : queuedRequest.operation === "deploy-application"
                     ? applicationIdPattern.test(queuedRequest.applicationId ?? "")
                       && requestIdPattern.test(queuedRequest.instanceId ?? "")
+                  : queuedRequest.operation === "remove-application"
+                    ? queuedRequest.applicationId === "n8n-instance"
+                      && requestIdPattern.test(queuedRequest.instanceId ?? "")
                   : queuedRequest.operation === "enroll-swarm-node"
                     ? (() => {
                       try {
@@ -376,6 +383,8 @@ export function createServiceOperationAgent({
               ? ["id", "operation", "projectId"]
               : queuedRequest.operation === "deploy-application"
                 ? ["id", "operation", "applicationId", "instanceId"]
+              : queuedRequest.operation === "remove-application"
+                ? ["id", "operation", "applicationId", "instanceId"]
               : queuedRequest.operation === "enroll-swarm-node"
                 ? ["id", "operation", "address", "sshUser", "sshPort", "hostFingerprint", "privateCidr", "managerAddress", "role"]
         : queuedRequest.operation === "scale-service"
@@ -421,6 +430,8 @@ export function createServiceOperationAgent({
                     ? { projectId: queuedRequest.projectId }
                     : queuedRequest.operation === "deploy-application"
                       ? { applicationId: queuedRequest.applicationId, instanceId: queuedRequest.instanceId }
+                    : queuedRequest.operation === "remove-application"
+                      ? { applicationId: queuedRequest.applicationId, instanceId: queuedRequest.instanceId }
                     : queuedRequest.operation === "enroll-swarm-node"
                       ? {
                         nodeAddress: queuedRequest.address,
@@ -454,6 +465,8 @@ export function createServiceOperationAgent({
                     ? "Retiro aceptado; esperando al agente Swarm del VPS."
                     : queuedRequest.operation === "deploy-application"
                       ? `Despliegue de ${queuedRequest.applicationId} aceptado; esperando al agente del VPS.`
+                    : queuedRequest.operation === "remove-application"
+                      ? `Eliminación de ${queuedRequest.applicationId} aceptada; esperando al agente del VPS.`
                     : queuedRequest.operation === "enroll-swarm-node"
                       ? `Alta de nodo ${queuedRequest.address} aceptada; esperando al agente host.`
             : queuedRequest.operation === "stop-container"
@@ -955,6 +968,53 @@ export function createServiceOperationAgent({
     };
   }
 
+  async function requestApplicationRemoval(applicationId, instanceId, requestId) {
+    if (applicationId !== "n8n-instance"
+      || !requestIdPattern.test(instanceId ?? "")
+      || !requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("Manual application removal request fields are invalid.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "remove-application"
+        || currentStatus.applicationId !== applicationId
+        || currentStatus.instanceId !== instanceId) {
+        throw new Error("The task identifier already belongs to a different application operation.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const requestData = { id: requestId, operation: "remove-application", applicationId, instanceId };
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "remove-application",
+      state: "queued",
+      applicationId,
+      instanceId,
+      message: `Retiro de ${applicationId} aceptado; esperando al agente del VPS.`,
+    };
+  }
+
   async function stageNodeCredentials(requestId, privateKey) {
     if (!requestIdPattern.test(requestId ?? "")
       || typeof privateKey !== "string"
@@ -1345,6 +1405,7 @@ export function createServiceOperationAgent({
     stageApplicationDeployment,
     removeApplicationDeployment,
     requestApplicationDeploy,
+    requestApplicationRemoval,
     requestProjectUndeploy: (projectId, requestId = createId()) =>
       requestProjectServiceOperation("remove-project", projectId, undefined, requestId),
     stageNodeCredentials,

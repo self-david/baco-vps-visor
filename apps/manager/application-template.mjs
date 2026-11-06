@@ -7,6 +7,8 @@ const templateFields = new Set([
   "image",
   "port",
   "volumeTarget",
+  "cpus",
+  "memoryMb",
   "environment",
 ]);
 const environmentFields = new Set([
@@ -44,7 +46,8 @@ export function validateApplicationTemplate(input) {
   if (typeof input.id !== "string" || !idPattern.test(input.id)) {
     throw new TypeError("Application template id is invalid.");
   }
-  if (typeof input.version !== "string" || !versionPattern.test(input.version)) {
+  if (typeof input.version !== "string"
+    || (!versionPattern.test(input.version) && !(input.id === "n8n-instance" && input.version === "latest"))) {
     throw new TypeError("Application template version must use semantic versioning.");
   }
   assertText(input.name, "Application template name", 100);
@@ -62,6 +65,15 @@ export function validateApplicationTemplate(input) {
       || !/^\/(?:[A-Za-z0-9._-]+\/?)*$/.test(input.volumeTarget)
       || input.volumeTarget.includes(".."))) {
     throw new TypeError("Application template volume target is invalid.");
+  }
+  if (input.cpus !== undefined
+    && (typeof input.cpus !== "number" || !Number.isFinite(input.cpus)
+      || input.cpus < 0.25 || input.cpus > 8)) {
+    throw new RangeError("Application CPU limit must be between 0.25 and 8.");
+  }
+  if (input.memoryMb !== undefined
+    && (!Number.isInteger(input.memoryMb) || input.memoryMb < 256 || input.memoryMb > 16384)) {
+    throw new RangeError("Application memory limit must be between 256 and 16384 MB.");
   }
   if (!Array.isArray(input.environment) || input.environment.length > 128) {
     throw new TypeError("Application template environment declarations are invalid.");
@@ -117,6 +129,8 @@ export function validateManualApplicationInput(input) {
     image: input.image,
     port: input.port,
     volumeTarget: input.volumeTarget || undefined,
+    cpus: input.cpus,
+    memoryMb: input.memoryMb,
     environment: [],
   });
   if (!isPublicHostname(input.domain)) {
@@ -152,6 +166,8 @@ export function validateManualApplicationInput(input) {
   return {
     ...template,
     volumeTarget: template.volumeTarget ?? "",
+    cpus: template.cpus ?? 1,
+    memoryMb: template.memoryMb ?? 1024,
     domain: input.domain.toLowerCase(),
     serverNodeId: input.serverNodeId.toLowerCase(),
     environmentValues,

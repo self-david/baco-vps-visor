@@ -71,12 +71,31 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .application-fieldset { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid #34435b; border-radius: 8px; }
 .application-fieldset legend { padding: 0 6px; color: #9eb8ff; font-size: .88rem; font-weight: 650; }
 .application-fieldset input[type="number"] { width: 100%; }
+.application-service-selection { display: grid; gap: 8px; }
+.application-service-selection .checkbox-label { align-items: flex-start; }
+.application-service-selection input:disabled { opacity: .65; }
 .form-stack { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #263247; }
 .form-stack h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
 .form-stack label { color: #c4cede; font-size: .84rem; }
 .form-stack input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
 .form-stack textarea, .form-stack select { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #34435b; border-radius: 8px; color: #e1e9f5; background: #101722; }
 .form-stack .checkbox-label input { width: auto; padding: 0; }
+.application-form-fields { display: contents; }
+.application-form-fields[hidden] { display: none; }
+.application-form-advanced { display: grid; grid-column: 1 / -1; gap: 10px; }
+.application-form-advanced summary { color: #9eb8ff; cursor: pointer; }
+.application-form-advanced .application-form-fields { display: grid; gap: 10px; }
+.application-domain-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.application-detail-domains { display: grid; gap: 12px; margin-top: 16px; }
+.application-detail-domain { display: grid; gap: 4px; min-width: 0; }
+.application-detail-domain strong { color: #c4cede; font-size: .82rem; }
+.application-detail-domain a { overflow-wrap: anywhere; }
+.application-login-steps { display: grid; gap: 12px; padding-left: 22px; color: #c4cede; font-size: .88rem; line-height: 1.6; }
+.application-login-steps strong { color: #e1e9f5; }
+.application-card .application-login-steps + .muted { line-height: 1.5; }
+.application-domain-field { display: grid; gap: 10px; min-width: 0; }
+.application-deployment-logs { max-height: 320px; overflow: auto; margin: 0; padding: 14px; border: 1px solid #34435b; border-radius: 8px; color: #c4cede; background: #0a1019; font: .82rem/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .application-domain-row { grid-template-columns: minmax(0, 1fr); } }
 .checkbox-label { display: flex; align-items: flex-start; gap: 8px; }
 .form-stack p { margin: 0; font-size: .82rem; line-height: 1.5; }
 .form-stack a { color: #9eb8ff; overflow-wrap: anywhere; }

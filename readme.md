@@ -413,7 +413,7 @@ El instalador debe verificar los requisitos antes de realizar modificaciones.
 - Desplegar PostgreSQL interno en una red overlay cifrada, sin publicarlo.
 - Configurar autenticación inicial y comunicación interna.
 
-n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. n8n usa una instancia Swarm de una réplica en el manager, SQLite y un volumen persistente administrado; su clave de cifrado se genera durante la instalación y se guarda como secreto Swarm. Para instalarlo, conecta primero una zona raíz en Dominios y luego elige el dominio y subdominio directamente en la ficha de n8n; el panel crea su registro DNS y Traefik publica el acceso HTTPS sin puertos del servicio en el host. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter, Redis y las capacidades genéricas de despliegue de aplicaciones siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
+n8n y PostgreSQL se pueden instalar opcionalmente desde el catálogo de Aplicaciones. El botón «Agregar nueva aplicación» abre una página independiente para crear instancias personalizadas; la plantilla n8n permite varias instancias con servicio y volumen persistentes, usa `n8nio/n8n:latest` por defecto y permite configurar imagen, dominio del editor, dominio separado para webhooks, zona horaria y límites de recursos. El panel crea los registros DNS de ambos dominios y los dirige al mismo servicio HTTPS. Las aplicaciones se alojan en el manager de Swarm, sin selector de VPS; la clave de cifrado de n8n se genera y se guarda como secreto Swarm. En una instancia nueva, el primer usuario crea su correo y contraseña en la pantalla «Set up owner account» de n8n; VPS Manager no preasigna ni almacena esas credenciales. La vista de instancia explica el primer acceso y la invitación de usuarios. Desde esa vista también se puede eliminar una instancia; la confirmación advierte que se borrarán de forma irreversible el servicio, el volumen con sus workflows y credenciales, los secretos Swarm y los DNS asociados. PostgreSQL de catálogo usa un volumen persistente en el manager y una contraseña aleatoria como secreto Swarm; permanece en la red privada de Swarm sin publicar el puerto 5432. Sus credenciales se pueden revelar una sola vez durante los 30 minutos posteriores a la instalación. Prometheus, cAdvisor, Node Exporter y Redis siguen pendientes. El PostgreSQL interno del panel es independiente de esta aplicación de catálogo.
 
 ### Etapa 6: finalización
 
@@ -823,6 +823,14 @@ El sistema debe poder:
 - Mantener sus volúmenes persistentes.
 
 No se debe considerar una aplicación multicontenedor como un único contenedor.
+
+La configuración de Supabase contempla los componentes de la distribución self-hosted:
+Studio, API Gateway, Auth, REST, Realtime, Storage, imgproxy, postgres-meta,
+Edge Functions, PostgreSQL, Supavisor, Logflare y Vector. El panel requiere los
+servicios base; Realtime, Storage, imgproxy, Edge Functions, Supavisor y el par
+Logflare/Vector se pueden seleccionar por instalación. Vector requiere Logflare.
+El acceso TCP a la base y al pooler está activado inicialmente (puertos 5432 y
+6543); si se habilita, esos puertos deben limitarse mediante el firewall del VPS.
 
 ## 6.5. Instalaciones personalizadas
 

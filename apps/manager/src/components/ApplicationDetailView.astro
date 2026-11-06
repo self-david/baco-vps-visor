@@ -1,0 +1,46 @@
+<section id="application-detail-view" class="hidden" hidden aria-labelledby="application-detail-title">
+  <header class="project-detail-header">
+    <a class="project-back-link" href="/#tab-apps">← Aplicaciones</a>
+    <div class="project-detail-title-row">
+      <div>
+        <p class="eyebrow">INSTANCIA</p>
+        <h2 id="application-detail-title">Cargando aplicación…</h2>
+        <p id="application-detail-summary" class="muted"></p>
+      </div>
+      <div class="project-header-actions">
+        <span id="application-detail-state" class="badge"></span>
+        <a id="application-detail-open" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Abrir aplicación</a>
+        <button id="application-detail-delete" class="button button-danger" type="button" hidden>Eliminar instancia</button>
+      </div>
+    </div>
+  </header>
+  <p id="application-detail-status" class="operation-status" role="status" aria-live="polite"></p>
+  <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
+    <section class="card application-card" aria-labelledby="application-detail-domains-title">
+      <p class="eyebrow">ACCESO</p>
+      <h3 id="application-detail-domains-title">Dominios de la instancia</h3>
+      <div id="application-detail-domains" class="application-detail-domains"></div>
+    </section>
+    <section id="application-detail-login-guide" class="card application-card" aria-labelledby="application-login-guide-title" hidden>
+      <p class="eyebrow">PRIMER ACCESO A N8N</p>
+      <h3 id="application-login-guide-title">Cómo iniciar sesión</h3>
+      <ol class="application-login-steps">
+        <li>Abre el dominio principal. Si esta instancia aún no tiene propietario, n8n muestra <strong>Set up owner account</strong>; no necesitas iniciar sesión ni tener credenciales previas.</li>
+        <li>En ese formulario crea las credenciales de la primera cuenta: escribe el correo que quieras usar, tu nombre y apellido, y elige una contraseña segura de al menos 8 caracteres, con una mayúscula y un número. Pulsa <strong>Next</strong> para crear la cuenta propietaria.</li>
+        <li>Solo después de crearla podrás iniciar sesión con ese correo y contraseña. Si n8n muestra directamente el formulario de inicio de sesión, ya existe un propietario en esta instancia.</li>
+      </ol>
+      <p class="muted">No hay correo ni contraseña predeterminados: tú los creas en el formulario inicial. VPS Manager no almacena la contraseña. El dominio de webhooks es para las URL de tus automatizaciones; usa el dominio principal para abrir el editor.</p>
+    </section>
+    <section id="application-detail-users-guide" class="card application-card" aria-labelledby="application-users-guide-title" hidden>
+      <p class="eyebrow">CONFIGURACIÓN DE N8N</p>
+      <h3 id="application-users-guide-title">Crear y administrar usuarios</h3>
+      <ol class="application-login-steps">
+        <li>Inicia sesión con la cuenta propietaria creada durante el primer acceso.</li>
+        <li>En n8n, abre el menú de usuario en la esquina inferior izquierda, entra a <strong>Settings</strong> y luego a <strong>Users</strong>.</li>
+        <li>Pulsa <strong>Invite</strong>, escribe el correo de la persona y selecciona <strong>Invite user</strong>. Desde esa página también puedes revisar y eliminar usuarios.</li>
+      </ol>
+      <p class="muted">Configura SMTP en n8n para enviar invitaciones y permitir recuperación de contraseña por correo. Sin SMTP, n8n permite copiar y compartir manualmente el enlace de invitación, pero no enviar correos ni restablecer contraseñas.</p>
+      <a href="https://docs.n8n.io/deploy/host-n8n/configure-n8n/user-management/" target="_blank" rel="noopener noreferrer">Guía oficial de gestión de usuarios de n8n</a>
+    </section>
+  </div>
+</section>

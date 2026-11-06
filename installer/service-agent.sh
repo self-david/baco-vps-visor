@@ -386,6 +386,22 @@ elif request.get("operation") == "deploy-application":
     replicas = "-"
     application_id = request["applicationId"]
     application_instance_id = request["instanceId"].lower()
+elif request.get("operation") == "remove-application":
+    if set(request) != {"id", "operation", "applicationId", "instanceId"}:
+        raise SystemExit("Invalid manual application removal request fields.")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(request["applicationId"])):
+        raise SystemExit("Invalid manual application identifier.")
+    if not re.fullmatch(
+        r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}",
+        str(request["instanceId"]),
+    ):
+        raise SystemExit("Invalid manual application instance identifier.")
+    if request["applicationId"] != "n8n-instance":
+        raise SystemExit("Only managed n8n instances can be removed by this operation.")
+    service_id = "-"
+    replicas = "-"
+    application_id = request["applicationId"]
+    application_instance_id = request["instanceId"].lower()
 elif request.get("operation") == "enroll-swarm-node":
     if set(request) != {
         "id", "operation", "address", "sshUser", "sshPort",
@@ -550,13 +566,46 @@ PY
     printf '{"id":"%s","operation":"%s","state":"%s","projectId":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${project_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
   elif [[ "${operation}" == "deploy-application" ]]; then
-    if [[ "${state}" == "succeeded" ]]; then
-      printf '{"id":"%s","operation":"%s","state":"%s","applicationId":"%s","instanceId":"%s","serviceId":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${application_id}" "${application_instance_id}" "${service_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
-    else
-      printf '{"id":"%s","operation":"%s","state":"%s","applicationId":"%s","instanceId":"%s","updatedAt":"%s","message":"%s"}\n' \
-        "${request_id}" "${operation}" "${state}" "${application_id}" "${application_instance_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
-    fi
+    python3 - "${temporary_file}" "${request_id}" "${state}" "${application_id}" \
+      "${application_instance_id}" "${service_id:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" <<'PY'
+import json
+import sys
+
+status_path, request_id, state, application_id, instance_id, service_id, updated_at, message = sys.argv[1:]
+status = {
+    "id": request_id,
+    "operation": "deploy-application",
+    "state": state,
+    "applicationId": application_id,
+    "instanceId": instance_id,
+    "updatedAt": updated_at,
+    "message": message,
+}
+if state == "succeeded":
+    status["serviceId"] = service_id
+with open(status_path, "w", encoding="utf-8") as status_file:
+    json.dump(status, status_file, ensure_ascii=True)
+    status_file.write("\n")
+PY
+  elif [[ "${operation}" == "remove-application" ]]; then
+    python3 - "${temporary_file}" "${request_id}" "${state}" "${application_id}" \
+      "${application_instance_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" <<'PY'
+import json
+import sys
+
+status_path, request_id, state, application_id, instance_id, updated_at, message = sys.argv[1:]
+with open(status_path, "w", encoding="utf-8") as status_file:
+    json.dump({
+        "id": request_id,
+        "operation": "remove-application",
+        "state": state,
+        "applicationId": application_id,
+        "instanceId": instance_id,
+        "updatedAt": updated_at,
+        "message": message,
+    }, status_file, ensure_ascii=True)
+    status_file.write("\n")
+PY
   elif [[ "${operation}" == "enroll-swarm-node" ]]; then
     if [[ "${state}" == "succeeded" ]]; then
       printf '{"id":"%s","operation":"%s","state":"%s","nodeAddress":"%s","sshUser":"%s","sshPort":%s,"hostFingerprint":"%s","privateCidr":"%s","managerAddress":"%s","role":"%s","nodeId":"%s","updatedAt":"%s","message":"%s"}\n' \
@@ -611,6 +660,8 @@ elif [[ "${operation}" == "remove-project" ]]; then
   write_status "running" "Validando el retiro del servicio del proyecto."
 elif [[ "${operation}" == "deploy-application" ]]; then
   write_status "running" "Validando la configuración de la aplicación manual."
+elif [[ "${operation}" == "remove-application" ]]; then
+  write_status "running" "Validando los recursos administrados de la instancia para eliminarlos."
 elif [[ "${operation}" == "enroll-swarm-node" ]]; then
   write_status "running" "Validando red privada, UFW y acceso SSH del VPS destino."
 elif [[ "${operation}" == "scale-service" ]]; then
@@ -1609,10 +1660,15 @@ finally:
         os.close(descriptor)
 expected_fields = {
     "taskId", "applicationId", "instanceId", "applicationName", "image",
-    "port", "domain", "serverNodeId", "volumeTarget", "environment", "secrets",
+    "port", "cpus", "memoryMb", "domain", "serverNodeId", "volumeTarget",
+    "environment", "secrets",
 }
-if not isinstance(configuration, dict) or set(configuration) != expected_fields \
-    or configuration["taskId"] != task_id \
+if not isinstance(configuration, dict) or set(configuration) not in (
+    expected_fields, expected_fields | {"additionalDomains"},
+):
+    raise SystemExit("Invalid staged manual application configuration.")
+configuration.setdefault("additionalDomains", [])
+if configuration["taskId"] != task_id \
     or configuration["applicationId"] != expected_application_id \
     or configuration["instanceId"] != expected_instance_id \
     or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", configuration["applicationId"]) \
@@ -1622,10 +1678,21 @@ if not isinstance(configuration, dict) or set(configuration) != expected_fields 
     or not isinstance(configuration["image"], str) \
     or not re.fullmatch(r"(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9]\d{0,4})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})", configuration["image"]) \
     or not isinstance(configuration["port"], int) or isinstance(configuration["port"], bool) or not 1 <= configuration["port"] <= 65535 \
+    or isinstance(configuration["cpus"], bool) or not isinstance(configuration["cpus"], (int, float)) or not 0.25 <= configuration["cpus"] <= 8 \
+    or not isinstance(configuration["memoryMb"], int) or isinstance(configuration["memoryMb"], bool) or not 256 <= configuration["memoryMb"] <= 16384 \
     or not isinstance(configuration["domain"], str) \
     or not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", configuration["domain"], re.IGNORECASE) \
     or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", configuration["domain"]) \
     or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", configuration["domain"], re.IGNORECASE) \
+    or not isinstance(configuration["additionalDomains"], list) \
+    or len(configuration["additionalDomains"]) > 4 \
+    or any(not isinstance(hostname, str)
+        or not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", hostname, re.IGNORECASE)
+        or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", hostname)
+        or re.search(r"\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$", hostname, re.IGNORECASE)
+        for hostname in configuration["additionalDomains"]) \
+    or len({configuration["domain"].lower(), *(hostname.lower() for hostname in configuration["additionalDomains"])}) \
+        != len(configuration["additionalDomains"]) + 1 \
     or not re.fullmatch(r"[a-zA-Z0-9]{25,64}", configuration["serverNodeId"]) \
     or not isinstance(configuration["volumeTarget"], str) \
     or (configuration["volumeTarget"] and (
@@ -1656,7 +1723,10 @@ with open(os.path.join(output_directory, "metadata.json"), "w", encoding="utf-8"
         "applicationName": configuration["applicationName"],
         "image": configuration["image"],
         "port": configuration["port"],
+        "cpus": configuration["cpus"],
+        "memoryMb": configuration["memoryMb"],
         "domain": configuration["domain"].lower(),
+        "domains": [configuration["domain"].lower(), *(hostname.lower() for hostname in configuration["additionalDomains"])],
         "serverNodeId": configuration["serverNodeId"].lower(),
         "volumeTarget": configuration["volumeTarget"],
     }, metadata_file)
@@ -1671,34 +1741,39 @@ PY
     write_status "failed" "La configuración de la aplicación manual no pasó la validación segura."
     exit 1
   fi
-  read -r application_name application_image application_port application_domain application_node_id application_volume_target < <(
+  read -r application_name application_image application_port application_cpus application_memory_mb application_domain application_node_id application_volume_target < <(
     python3 - "${temporary_directory}/metadata.json" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as metadata_file:
     metadata = json.load(metadata_file)
 print("\t".join(str(metadata[key]) for key in (
-    "applicationName", "image", "port", "domain", "serverNodeId", "volumeTarget",
+    "applicationName", "image", "port", "cpus", "memoryMb", "domain", "serverNodeId", "volumeTarget",
 )))
 PY
   )
   mapfile -d '' -t application_environment_entries < "${temporary_directory}/environment.bin"
   mapfile -d '' -t application_secret_entries < "${temporary_directory}/secrets.bin"
+  write_status "running" "Configuración validada; preparando secretos y servicio de la aplicación."
   application_secret_args=()
   for ((index = 0; index < ${#application_secret_entries[@]}; index += 2)); do
     secret_variable="${application_secret_entries[$index]}"
     secret_value="${application_secret_entries[$((index + 1))]}"
-    secret_name="vps_manager_app_${application_instance_id//-/}_${secret_variable,,}"
+    secret_name_hash="$(printf '%s' "${secret_variable}" | sha256sum)"
+    secret_name_hash="${secret_name_hash%% *}"
+    secret_name="vpm_${application_instance_id//-/}_${secret_name_hash:0:16}"
     if docker secret inspect "${secret_name}" >/dev/null 2>&1; then
       write_status "failed" "El identificador de un secreto de la aplicación ya está en uso."
       exit 1
     fi
+    secret_error_file="${temporary_directory}/secret-create-error.log"
     if ! printf '%s' "${secret_value}" | docker secret create \
       --label vps-manager.managed=true \
       --label vps-manager.component=application-secret \
       --label "vps-manager.application-instance=${application_instance_id}" \
-      "${secret_name}" - >/dev/null; then
-      write_status "failed" "No se pudo guardar un secreto Swarm de la aplicación."
+      "${secret_name}" - >/dev/null 2>"${secret_error_file}"; then
+      secret_error="$(cat "${secret_error_file}")"
+      write_status "failed" "No se pudo guardar un secreto Swarm de la aplicación: ${secret_error:-Docker rechazó el secreto sin detallar el motivo.}"
       exit 1
     fi
     application_secret_names+=("${secret_name}")
@@ -1707,38 +1782,56 @@ PY
   done
   application_environment_args=()
   for environment_entry in "${application_environment_entries[@]}"; do
-    application_environment_args+=(--env-add "${environment_entry}")
+    application_environment_args+=(--env "${environment_entry}")
   done
   application_service="vps-manager-app-${application_instance_id//-/}"
   application_router="${application_service}"
   application_test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' /opt/vps-manager/install.env | head -n 1)"
+  mapfile -t application_hostnames < <(
+    python3 - "${temporary_directory}/metadata.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as metadata_file:
+    metadata = json.load(metadata_file)
+print("\n".join(metadata["domains"]))
+PY
+  )
+  application_host_rule=""
+  for application_hostname in "${application_hostnames[@]}"; do
+    [[ -n "${application_host_rule}" ]] && application_host_rule+=" || "
+    application_host_rule+="Host(\`${application_hostname}\`)"
+  done
   application_router_args=(
-    --label-add traefik.enable=true
-    --label-add traefik.swarm.network=vps-manager-proxy
-    --label-add "traefik.http.routers.${application_router}.rule=Host(\`${application_domain}\`)"
-    --label-add "traefik.http.routers.${application_router}.entrypoints=websecure"
-    --label-add "traefik.http.routers.${application_router}.service=${application_router}"
-    --label-add "traefik.http.routers.${application_router}.tls=true"
-    --label-add "traefik.http.services.${application_router}.loadbalancer.server.port=${application_port}"
+    --label traefik.enable=true
+    --label traefik.swarm.network=vps-manager-proxy
+    --label "traefik.http.routers.${application_router}.rule=${application_host_rule}"
+    --label "traefik.http.routers.${application_router}.entrypoints=websecure"
+    --label "traefik.http.routers.${application_router}.service=${application_router}"
+    --label "traefik.http.routers.${application_router}.tls=true"
+    --label "traefik.http.services.${application_router}.loadbalancer.server.port=${application_port}"
   )
   if [[ "${application_test_mode}" == "true" ]]; then
     application_http_router="${application_router}-http"
     application_router_args+=(
-      --label-add "traefik.http.routers.${application_http_router}.rule=Host(\`${application_domain}\`)"
-      --label-add "traefik.http.routers.${application_http_router}.entrypoints=web"
-      --label-add "traefik.http.routers.${application_http_router}.service=${application_http_router}"
-      --label-add "traefik.http.services.${application_http_router}.loadbalancer.server.port=${application_port}"
+      --label "traefik.http.routers.${application_http_router}.rule=${application_host_rule}"
+      --label "traefik.http.routers.${application_http_router}.entrypoints=web"
+      --label "traefik.http.routers.${application_http_router}.service=${application_http_router}"
+      --label "traefik.http.services.${application_http_router}.loadbalancer.server.port=${application_port}"
     )
   else
-    application_router_args+=(--label-add "traefik.http.routers.${application_router}.tls.certresolver=vpsmanager")
+    application_router_args+=(--label "traefik.http.routers.${application_router}.tls.certresolver=vpsmanager")
   fi
   application_volume_args=()
   if [[ -n "${application_volume_target}" ]]; then
     application_volume_args+=(--mount "type=volume,source=${application_service}-data,target=${application_volume_target}")
   fi
+  write_status "running" "Creando el servicio Swarm con la imagen ${application_image}; esperando a que la tarea inicie."
+  service_create_error_file="${temporary_directory}/service-create-error.log"
   if ! docker service create --detach=false \
     --name "${application_service}" \
     --replicas 1 \
+    --limit-cpu "${application_cpus}" \
+    --limit-memory "${application_memory_mb}M" \
     --restart-condition any \
     --constraint "node.id==${application_node_id}" \
     --network vps-manager-proxy \
@@ -1750,8 +1843,9 @@ PY
     "${application_volume_args[@]}" \
     "${application_environment_args[@]}" \
     "${application_secret_args[@]}" \
-    "${application_image}" >/dev/null; then
-    write_status "failed" "Swarm no pudo iniciar el servicio de la aplicación."
+    "${application_image}" >/dev/null 2>"${service_create_error_file}"; then
+    service_create_error="$(tail -c 4000 "${service_create_error_file}" | tr '\r\n' '  ' | sed 's/[[:space:]]\+/ /g')"
+    write_status "failed" "Swarm no pudo iniciar el servicio de la aplicación.${service_create_error:+ Detalle: ${service_create_error}}"
     exit 1
   fi
   preserve_application_secrets=true
@@ -1760,7 +1854,94 @@ PY
     write_status "failed" "Swarm creó la aplicación, pero no se pudo validar el identificador de servicio."
     exit 1
   fi
-  write_status "succeeded" "Aplicación desplegada en el VPS seleccionado; HTTPS se gestiona mediante Traefik."
+  write_status "succeeded" "Aplicación desplegada en el VPS principal de Swarm; HTTPS se gestiona mediante Traefik."
+  exit 0
+fi
+
+if [[ "${operation}" == "remove-application" ]]; then
+  application_service="vps-manager-app-${application_instance_id//-/}"
+  if ! application_service_names="$(docker service ls --format '{{.Name}}')"; then
+    write_status "failed" "No se pudo consultar la lista de servicios Swarm."
+    exit 1
+  fi
+  if grep -Fxq -- "${application_service}" <<< "${application_service_names}"; then
+    if ! application_info="$(docker service inspect \
+      --format '{{.ID}} {{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "vps-manager.application-instance"}}' \
+      "${application_service}")"; then
+      write_status "failed" "No se pudo inspeccionar el servicio de la instancia."
+      exit 1
+    fi
+    IFS=' ' read -r _ managed_label component_label inspected_instance_id <<< "${application_info}"
+    if [[ "${managed_label}" != "true" || "${component_label}" != "application" \
+      || "${inspected_instance_id}" != "${application_instance_id}" ]]; then
+      write_status "failed" "El servicio reservado no pertenece a esta instancia administrada."
+      exit 1
+    fi
+    if ! docker service rm "${application_service}" >/dev/null; then
+      write_status "failed" "Docker no pudo retirar el servicio de la instancia."
+      exit 1
+    fi
+  fi
+
+  if ! application_secret_names="$(docker secret ls \
+    --filter "label=vps-manager.application-instance=${application_instance_id}" \
+    --format '{{.Name}}')"; then
+    write_status "failed" "No se pudieron consultar los secretos Swarm de la instancia."
+    exit 1
+  fi
+  while IFS= read -r secret_name; do
+    [[ -n "${secret_name}" ]] || continue
+    if ! secret_info="$(docker secret inspect \
+      --format '{{index .Spec.Labels "vps-manager.managed"}} {{index .Spec.Labels "vps-manager.component"}} {{index .Spec.Labels "vps-manager.application-instance"}}' \
+      "${secret_name}")"; then
+      write_status "failed" "No se pudo inspeccionar un secreto Swarm de la instancia."
+      exit 1
+    fi
+    IFS=' ' read -r secret_managed_label secret_component_label secret_instance_id <<< "${secret_info}"
+    if [[ "${secret_managed_label}" != "true" || "${secret_component_label}" != "application-secret"
+      || "${secret_instance_id}" != "${application_instance_id}" ]]; then
+      write_status "failed" "Se encontró un secreto sin etiquetas de propiedad válidas; se detuvo la eliminación."
+      exit 1
+    fi
+    secret_removed=false
+    for attempt in {1..30}; do
+      if docker secret rm "${secret_name}" >/dev/null 2>&1; then
+        secret_removed=true
+        break
+      fi
+      sleep 0.5
+    done
+    if [[ "${secret_removed}" != "true" ]]; then
+      write_status "failed" "No se pudo retirar un secreto Swarm de la instancia."
+      exit 1
+    fi
+  done <<< "${application_secret_names}"
+
+  application_volume="${application_service}-data"
+  if ! application_volume_names="$(docker volume ls --format '{{.Name}}')"; then
+    write_status "failed" "No se pudo consultar el almacenamiento Docker."
+    exit 1
+  fi
+  if grep -Fxq -- "${application_volume}" <<< "${application_volume_names}"; then
+    if ! volume_driver="$(docker volume inspect --format '{{.Driver}}' "${application_volume}")" \
+      || [[ "${volume_driver}" != "local" ]]; then
+      write_status "failed" "El volumen de almacenamiento no coincide con un volumen local administrado."
+      exit 1
+    fi
+    volume_removed=false
+    for attempt in {1..30}; do
+      if docker volume rm "${application_volume}" >/dev/null 2>&1; then
+        volume_removed=true
+        break
+      fi
+      sleep 0.5
+    done
+    if [[ "${volume_removed}" != "true" ]]; then
+      write_status "failed" "No se pudo eliminar el volumen persistente de la instancia."
+      exit 1
+    fi
+  fi
+  write_status "succeeded" "Servicio, secretos Swarm y volumen persistente de la instancia eliminados."
   exit 0
 fi
 

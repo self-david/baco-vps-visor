@@ -676,7 +676,7 @@ export function createManualApplicationDeployHandler(agent, {
           if (operation.state === "succeeded") {
             await updateDeployment(instanceId, task.id, { status: "installed", serviceId: operation.serviceId });
             return {
-              message: `${applicationName} se desplegó en Swarm con una instancia en el VPS seleccionado.`,
+              message: `${applicationName} se desplegó en el VPS principal de Swarm.`,
               serviceId: operation.serviceId,
             };
           }

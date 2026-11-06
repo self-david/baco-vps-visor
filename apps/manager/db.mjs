@@ -929,6 +929,42 @@ export async function getApplicationInstances(applicationId) {
   return result.rows.map(mapApplicationInstance);
 }
 
+export async function getApplicationInstanceDomains() {
+  const result = await pool.query(`
+    SELECT domains.id, domains.application_instance_id, domains.provider, domains.zone_name,
+      domains.domain_zone_id, domains.zone_id, domains.hostname, domains.port, domains.proxied,
+      domains.dns_record_id, domains.created_at, instances.application_id, instances.name
+    FROM application_instance_domains AS domains
+    JOIN application_instances AS instances ON instances.id = domains.application_instance_id
+    ORDER BY lower(domains.hostname), domains.id
+  `);
+  return result.rows.map((row) => ({
+    id: row.id,
+    applicationInstanceId: row.application_instance_id,
+    applicationId: row.application_id,
+    applicationName: row.name,
+    provider: row.provider,
+    zone: row.zone_name,
+    domainZoneId: row.domain_zone_id,
+    zoneId: row.zone_id,
+    hostname: row.hostname,
+    port: row.port,
+    proxied: row.proxied,
+    dnsRecordId: row.dns_record_id,
+    createdAt: row.created_at.toISOString(),
+  }));
+}
+
+export async function updateApplicationInstanceDomainDnsRecord(id, { dnsRecordId, proxied }) {
+  const result = await pool.query(`
+    UPDATE application_instance_domains
+    SET dns_record_id = $2, proxied = $3
+    WHERE id = $1
+    RETURNING id
+  `, [id, dnsRecordId, proxied]);
+  return result.rowCount === 1;
+}
+
 export async function createManualApplication({ application, instance, task }) {
   const client = await pool.connect();
   try {
@@ -938,6 +974,15 @@ export async function createManualApplication({ application, instance, task }) {
         id, name, category, description, version, enabled, configuration_schema, service_manifest
       )
       VALUES ($1, $2, $3, $4, $5, true, $6::jsonb, $7::jsonb)
+      ON CONFLICT (id) DO UPDATE
+      SET name = EXCLUDED.name,
+          category = EXCLUDED.category,
+          description = EXCLUDED.description,
+          version = EXCLUDED.version,
+          enabled = true,
+          configuration_schema = EXCLUDED.configuration_schema,
+          service_manifest = EXCLUDED.service_manifest,
+          updated_at = now()
       RETURNING id, name, category, description, version, enabled,
         configuration_schema, service_manifest, updated_at
     `, [
@@ -954,6 +999,8 @@ export async function createManualApplication({ application, instance, task }) {
         manual: true,
         image: application.image,
         port: application.port,
+        cpus: application.cpus,
+        memoryMb: application.memoryMb,
         volumeTarget: application.volumeTarget || null,
         domain: instance.domain,
       }),
@@ -974,13 +1021,39 @@ export async function createManualApplication({ application, instance, task }) {
       application.name,
       JSON.stringify({
         domain: instance.domain,
+        domains: instance.domains.map((domain) => domain.hostname),
+        version: application.version,
+        image: application.image,
         port: application.port,
+        additionalDomains: instance.domains
+          .map((domain) => domain.hostname)
+          .filter((hostname) => hostname !== instance.domain),
+        cpus: application.cpus,
+        memoryMb: application.memoryMb,
         volumeTarget: application.volumeTarget || null,
         environment: instance.environmentValues,
         secretNames: Object.keys(instance.secretValues).sort(),
       }),
       task.id,
     ]);
+    for (const domain of instance.domains) {
+      await client.query(`
+        INSERT INTO application_instance_domains (
+          application_instance_id, provider, zone_name, domain_zone_id, zone_id,
+          hostname, port, proxied, dns_record_id
+        )
+        VALUES ($1, 'cloudflare', $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        instance.id,
+        domain.zone,
+        domain.domainZoneId,
+        domain.zoneId,
+        domain.hostname,
+        application.port,
+        domain.proxied,
+        domain.dnsRecordId,
+      ]);
+    }
     await client.query("COMMIT");
     return {
       application: mapApplicationCatalog(catalog.rows[0]),
@@ -1001,6 +1074,15 @@ export async function updateManualApplicationDeployment(instanceId, taskId, { st
     WHERE id = $1 AND deployment_task_id = $2
     RETURNING id
   `, [instanceId, taskId, status, serviceId]);
+  return result.rowCount === 1;
+}
+
+export async function deleteManualApplicationInstance(instanceId) {
+  const result = await pool.query(`
+    DELETE FROM application_instances
+    WHERE id = $1 AND application_id = 'n8n-instance' AND status <> 'installing'
+    RETURNING id
+  `, [instanceId]);
   return result.rowCount === 1;
 }
 
@@ -1062,12 +1144,13 @@ export async function saveApplicationInstanceConfiguration(instance) {
         throw conflict;
       }
     }
-    const result = await client.query(`
+    const result = instance.applicationId === "supabase"
+      ? await client.query(`
       INSERT INTO application_instances (
         application_id, server_node_id, server_hostname, name, configuration, status
       )
       VALUES ($1, $2, $3, $4, $5::jsonb, 'configured')
-      ON CONFLICT (application_id, server_node_id) DO UPDATE
+      ON CONFLICT (application_id, server_node_id) WHERE application_id = 'supabase' DO UPDATE
       SET server_hostname = EXCLUDED.server_hostname,
           name = EXCLUDED.name,
           configuration = EXCLUDED.configuration,
@@ -1084,7 +1167,21 @@ export async function saveApplicationInstanceConfiguration(instance) {
       instance.serverHostname,
       instance.name,
       JSON.stringify(instance.configuration),
-    ]);
+      ])
+      : await client.query(`
+        INSERT INTO application_instances (
+          application_id, server_node_id, server_hostname, name, configuration, status
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, 'configured')
+        RETURNING id, application_id, server_node_id, server_hostname, name,
+          configuration, status, created_at, updated_at
+      `, [
+        instance.applicationId,
+        instance.serverNodeId,
+        instance.serverHostname,
+        instance.name,
+        JSON.stringify(instance.configuration),
+      ]);
     const saved = mapApplicationInstance(result.rows[0]);
     await insertAuditEvent(client, {
       action: "application.instance.configuration.saved",
