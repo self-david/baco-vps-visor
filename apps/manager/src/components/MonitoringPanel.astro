@@ -70,6 +70,12 @@
                 <p id="metric-alerts-status" class="muted" aria-live="polite"></p>
                 <ul id="metric-alerts" class="metric-alert-list" aria-live="polite"></ul>
               </section>
+              <section class="card builder-cache-card" aria-labelledby="builder-cache-title">
+                <h3 id="builder-cache-title">Caché de compilación</h3>
+                <p class="muted">Libera la caché BuildKit que no está en uso. No elimina imágenes, contenedores, volúmenes ni datos de aplicaciones.</p>
+                <button id="prune-builder-cache" class="button" type="button">Limpiar caché ahora</button>
+                <p id="builder-cache-status" class="operation-status builder-cache-status" aria-live="polite">Aún no se ha solicitado una limpieza.</p>
+              </section>
               <section class="card roadmap-card">
                 <div class="card-heading"><h3>Monitoreo ampliado</h3><span class="badge roadmap-badge">Próximamente</span></div>
                 <p class="muted">El roadmap contempla Prometheus, cAdvisor, Node Exporter y canales configurables para notificaciones de alertas.</p>

@@ -113,7 +113,7 @@ import {
   saveApplicationInstanceConfiguration,
   createManualApplication,
   updateManualApplicationDeployment,
-  deleteManualApplicationInstance,
+  deleteManagedApplicationInstance,
   createManualApplicationDeployTask,
   createRegistryConfigureTask,
   createCloudflareTunnelConfigureTask,
@@ -654,19 +654,28 @@ async function getProjectServiceDisplayNames(services) {
 }
 
 async function getContainerMetrics(containers) {
-  const [inventory, services, hostInfo] = await Promise.all([
+  const [inventory, services, hostInfo, supabaseInstances] = await Promise.all([
     containers ?? dockerGet("/containers/json?all=1"),
     dockerGet("/services"),
     dockerGet("/info"),
+    getApplicationInstances("supabase"),
   ]);
   const serviceDisplayNames = await getProjectServiceDisplayNames(services);
+  const supabaseInstanceNames = new Map(
+    supabaseInstances.map((instance) => [instance.id.toLowerCase(), instance.name]),
+  );
   const runningContainers = inventory.filter((container) => container.State === "running");
   const metrics = await collectContainerMetrics(
     runningContainers.map((container) => {
       const serviceId = container.Labels?.["com.docker.swarm.service.id"];
+      const instanceId = container.Labels?.["vps-manager.instance-id"]?.toLowerCase();
+      const supabaseInstanceName = container.Labels?.["vps-manager.application"] === "supabase"
+        ? supabaseInstanceNames.get(instanceId)
+        : undefined;
       return {
         ...container,
-        group: (serviceDisplayNames.get(serviceId)
+        group: ((supabaseInstanceName ? `Supabase · ${supabaseInstanceName}` : undefined)
+          ?? serviceDisplayNames.get(serviceId)
           ?? container.Labels?.["com.docker.stack.namespace"]
           ?? container.Labels?.["com.docker.compose.project"]
           ?? (container.Names?.[0] ?? "").replace(/^\//, ""))
@@ -4617,6 +4626,74 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const supabaseInstanceCredentialsMatch = request.method === "POST"
+    && url.pathname.match(/^\/api\/applications\/([a-f0-9-]{36})\/supabase-credentials$/i);
+  if (supabaseInstanceCredentialsMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    const instanceId = supabaseInstanceCredentialsMatch[1];
+    try {
+      const instance = (await getApplicationInstances()).find((candidate) =>
+        candidate.id.toLowerCase() === instanceId.toLowerCase());
+      if (!instance || instance.applicationId !== "supabase") {
+        respondJson(response, 404, { error: "No se encontró la instancia de Supabase." });
+        return;
+      }
+      let credentials;
+      if (await serviceOperationAgent.hasSupabaseInstanceCredentials(instance.id)) {
+        credentials = await serviceOperationAgent.readSupabaseInstanceCredentials(instance.id);
+      } else if (instance.deploymentTaskId
+        && await serviceOperationAgent.hasSupabaseCredentials(instance.deploymentTaskId)) {
+        credentials = await serviceOperationAgent.readSupabaseCredentials(
+          instance.deploymentTaskId,
+          instance.id,
+        );
+        await serviceOperationAgent.saveSupabaseInstanceCredentials(instance.id, {
+          ...credentials,
+          taskId: instance.deploymentTaskId,
+          instanceId: instance.id,
+        });
+        await serviceOperationAgent.consumeSupabaseCredentials(instance.deploymentTaskId).catch((error) => {
+          if (error?.code !== "CREDENTIALS_UNAVAILABLE") throw error;
+        });
+      } else {
+        respondJson(response, 410, {
+          error: "No hay credenciales guardadas para esta instalación. Vuelve a desplegar Supabase para generarlas.",
+        });
+        return;
+      }
+
+      try {
+        await recordAuditEvent({
+          action: "application.supabase.credentials.revealed",
+          resourceType: "application",
+          resourceId: instance.id,
+          details: { taskId: instance.deploymentTaskId, source: "instance-detail" },
+        });
+      } catch (error) {
+        console.error("Supabase credentials were revealed, but the audit event could not be saved:", error);
+      }
+      respondJson(response, 200, { credentials }, {
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+      });
+    } catch (error) {
+      if (error?.code === "CREDENTIALS_UNAVAILABLE") {
+        respondJson(response, 410, { error: error.message });
+        return;
+      }
+      console.error("Could not retrieve Supabase instance credentials:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar las credenciales de Supabase." });
+    }
+    return;
+  }
+
   const giteaCredentialsMatch = request.method === "GET"
     && url.pathname.match(/^\/api\/system\/applications\/gitea\/credentials\/([a-f0-9-]{36})$/i);
   if (giteaCredentialsMatch) {
@@ -4694,6 +4771,49 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       console.error("Service operation status request failed:", error);
       respondJson(response, 503, { error: "No se pudo consultar el estado de la operación." });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/system/builder-cache-prune") {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method === "GET") {
+      const requestId = url.searchParams.get("id") ?? undefined;
+      try {
+        respondJson(response, 200, {
+          operation: await serviceOperationAgent.getBuilderCachePruneStatus(requestId),
+        });
+      } catch (error) {
+        if (error instanceof TypeError) {
+          respondJson(response, 400, { error: error.message });
+          return;
+        }
+        console.error("Builder cache cleanup status request failed:", error);
+        respondJson(response, 503, { error: "No se pudo consultar el estado de limpieza de caché." });
+      }
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET, POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const operation = await serviceOperationAgent.requestBuilderCachePrune();
+      respondJson(response, 202, { operation });
+    } catch (error) {
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not queue Docker builder cache cleanup:", error);
+      respondJson(response, 503, { error: "No se pudo solicitar la limpieza de caché de Docker." });
     }
     return;
   }
@@ -5022,6 +5142,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     const instanceId = applicationInstanceMatch[1].toLowerCase();
+    let deletionStage = "la validación inicial";
     try {
       const instance = (await getApplicationInstances())
         .find((candidate) => candidate.id.toLowerCase() === instanceId);
@@ -5029,8 +5150,8 @@ const server = createServer(async (request, response) => {
         respondJson(response, 404, { error: "No se encontró la instancia." });
         return;
       }
-      if (instance.applicationId !== "n8n-instance") {
-        respondJson(response, 409, { error: "Esta operación solo está disponible para instancias de n8n." });
+      if (!["n8n-instance", "supabase"].includes(instance.applicationId)) {
+        respondJson(response, 409, { error: "Esta operación solo está disponible para instancias administradas de n8n y Supabase." });
         return;
       }
       if (instance.status === "installing") {
@@ -5038,6 +5159,7 @@ const server = createServer(async (request, response) => {
         return;
       }
 
+      deletionStage = "la validación de los dominios en Cloudflare";
       const instanceDomains = (await getApplicationInstanceDomains())
         .filter((domain) => domain.applicationInstanceId === instanceId);
       const domainTargets = [];
@@ -5055,10 +5177,33 @@ const server = createServer(async (request, response) => {
         domainTargets.push({ domain, token });
       }
 
+      deletionStage = "la obtención de acceso al túnel de Cloudflare";
       const tunnel = await getCloudflareTunnelSettings();
       const tunnelToken = tunnel
         ? await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId)
         : null;
+
+      deletionStage = "el retiro de los servicios y volúmenes en el VPS";
+      const removalRequestId = randomUUID();
+      await serviceOperationAgent.requestApplicationRemoval(
+        instance.applicationId,
+        instanceId,
+        removalRequestId,
+      );
+      let removalStatus;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        removalStatus = await serviceOperationAgent.getStatus();
+        if (removalStatus?.id === removalRequestId && removalStatus.state === "succeeded") break;
+        if (removalStatus?.id === removalRequestId && removalStatus.state === "failed") {
+          throw new RequestError(503, removalStatus.message || "El agente no pudo eliminar los recursos de la instancia.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      if (removalStatus?.id !== removalRequestId || removalStatus.state !== "succeeded") {
+        throw new RequestError(504, "El agente del VPS todavía no confirmó la eliminación. Actualiza el estado antes de reintentar.");
+      }
+
+      deletionStage = "la eliminación de los registros DNS de Cloudflare";
       for (const { domain, token } of domainTargets) {
         if (tunnel) {
           await cloudflareClient.deleteTunnelCname(token, {
@@ -5078,6 +5223,7 @@ const server = createServer(async (request, response) => {
       }
 
       if (tunnel) {
+        deletionStage = "la actualización de las rutas del túnel de Cloudflare";
         const [projectDomains, applicationDomains] = await Promise.all([
           getProjectDomains(),
           getApplicationInstanceDomains(),
@@ -5099,26 +5245,8 @@ const server = createServer(async (request, response) => {
         );
       }
 
-      const removalRequestId = randomUUID();
-      await serviceOperationAgent.requestApplicationRemoval(
-        instance.applicationId,
-        instanceId,
-        removalRequestId,
-      );
-      let removalStatus;
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        removalStatus = await serviceOperationAgent.getStatus();
-        if (removalStatus?.id === removalRequestId && removalStatus.state === "succeeded") break;
-        if (removalStatus?.id === removalRequestId && removalStatus.state === "failed") {
-          throw new RequestError(503, removalStatus.message || "El agente no pudo eliminar los recursos de la instancia.");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      if (removalStatus?.id !== removalRequestId || removalStatus.state !== "succeeded") {
-        throw new RequestError(504, "El agente del VPS todavía no confirmó la eliminación. Actualiza el estado antes de reintentar.");
-      }
-
-      if (!await deleteManualApplicationInstance(instanceId)) {
+      deletionStage = "la eliminación del registro de la instancia";
+      if (!await deleteManagedApplicationInstance(instanceId)) {
         throw new RequestError(409, "La instancia cambió durante la eliminación; actualiza el panel y vuelve a comprobar su estado.");
       }
       respondJson(response, 200, { deleted: true });
@@ -5136,7 +5264,12 @@ const server = createServer(async (request, response) => {
         return;
       }
       console.error("Could not delete application instance:", error);
-      respondJson(response, 503, { error: "No se pudo completar la eliminación de la instancia. Revisa el estado de Docker y Cloudflare antes de reintentar." });
+      const detail = error instanceof Error
+        ? error.message.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300)
+        : "Error desconocido.";
+      respondJson(response, 503, {
+        error: `No se pudo completar la eliminación durante ${deletionStage}: ${detail}`,
+      });
     }
     return;
   }
@@ -5148,26 +5281,30 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET") {
       try {
-        const [catalog, instances, nodes, projects, containers] = await Promise.all([
+        const [catalog, instances, nodes, containers] = await Promise.all([
           getApplicationCatalog(),
           getApplicationInstances(),
           dockerGet("/nodes"),
-          getProjects(),
           dockerGet("/containers/json?all=true"),
         ]);
         const instancesWithRuntime = await Promise.all(instances.map(async (instance) => {
           if (instance.applicationId !== "supabase") return instance;
+          const [persistentCredentialsAvailable, temporaryCredentialsAvailable] = await Promise.all([
+            serviceOperationAgent.hasSupabaseInstanceCredentials(instance.id),
+            instance.deploymentTaskId
+              ? serviceOperationAgent.hasSupabaseCredentials(instance.deploymentTaskId)
+              : false,
+          ]);
           return {
             ...instance,
             runtimeServices: getSupabaseRuntimeServices(instance, containers),
-            credentialsAvailable: await serviceOperationAgent.hasSupabaseCredentials(instance.deploymentTaskId),
+            credentialsAvailable: persistentCredentialsAvailable || temporaryCredentialsAvailable,
           };
         }));
         respondJson(response, 200, {
           catalog,
           instances: instancesWithRuntime,
           servers: nodes.map(mapSwarmNode),
-          projects: await getProjectDeploymentState(projects),
         });
       } catch (error) {
         console.error("Application catalog request failed:", error);
@@ -5437,13 +5574,19 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)
-        || Object.keys(body).sort().join(",") !== ["configuration", "name", "serverNodeId"].sort().join(",")
+        || ![
+          ["configuration", "name", "serverNodeId"].sort().join(","),
+          ["configuration", "instanceId", "name", "serverNodeId"].sort().join(","),
+        ].includes(Object.keys(body).sort().join(","))
         || typeof body.serverNodeId !== "string"
         || !/^[a-z0-9]{25,64}$/i.test(body.serverNodeId)
+        || (body.instanceId !== undefined
+          && (typeof body.instanceId !== "string"
+            || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.instanceId)))
         || typeof body.name !== "string"
         || body.name.trim().length < 1 || body.name.trim().length > 100
         || /[\u0000-\u001f\u007f]/.test(body.name)) {
-        respondJson(response, 400, { error: "Completa un servidor Swarm y un nombre de instalación válidos." });
+        respondJson(response, 400, { error: "Completa una instancia, un servidor Swarm y un nombre de instalación válidos." });
         return;
       }
       const configuration = validateSupabaseInstanceConfiguration(body.configuration);
@@ -5453,38 +5596,180 @@ const server = createServer(async (request, response) => {
         respondJson(response, 409, { error: "Selecciona un VPS activo y listo del Swarm." });
         return;
       }
-      const [domains, applicationDomains, registry] = await Promise.all([
+      const [domains, applicationDomains, registry, domainZones, tunnel, ingressIp, supabaseInstances] = await Promise.all([
         getProjectDomains(),
         getApplicationInstanceDomains(),
         serviceOperationAgent.getRegistryConfiguration(),
+        getDomainZones(),
+        getCloudflareTunnelSettings(),
+        getIngressIp(),
+        getApplicationInstances("supabase"),
       ]);
+      const currentInstance = body.instanceId
+        ? supabaseInstances.find((instance) =>
+          instance.id.toLowerCase() === body.instanceId.toLowerCase())
+        : null;
+      if (body.instanceId && !currentInstance) {
+        throw new RequestError(404, "No se encontró la instancia Supabase que quieres editar.");
+      }
+      if (currentInstance && currentInstance.serverNodeId.toLowerCase() !== node.ID.toLowerCase()) {
+        throw new RequestError(409, "No se puede cambiar de VPS una instancia Supabase existente.");
+      }
+      const currentInstanceDomains = currentInstance
+        ? applicationDomains.filter((domain) => domain.applicationInstanceId === currentInstance.id)
+        : [];
+      const currentDomainIds = new Set(currentInstanceDomains.map((domain) => domain.id));
       const reservedDomains = new Set([
         managerDomain,
         managerDomain ? `git.${managerDomain}` : "",
+        tunnel?.managerHostname ?? "",
         registry?.domain ?? "",
         ...domains.map((domain) => domain.hostname),
-        ...applicationDomains.map((domain) => domain.hostname),
+        ...applicationDomains
+          .filter((domain) => !currentDomainIds.has(domain.id))
+          .map((domain) => domain.hostname),
       ].filter(Boolean).map((domain) => domain.toLowerCase()));
       const requestedDomains = [configuration.apiDomain, configuration.studioDomain];
+      if (currentInstance && requestedDomains.some((domain, index) =>
+        domain.toLowerCase() !== [currentInstance.configuration.apiDomain, currentInstance.configuration.studioDomain][index]?.toLowerCase())) {
+        throw new RequestError(409, "No se pueden cambiar los dominios de una instancia Supabase existente; crea otra instancia para usar dominios distintos.");
+      }
       if (requestedDomains.some((domain) => reservedDomains.has(domain))
         || requestedDomains[0] === requestedDomains[1]) {
         respondJson(response, 409, { error: "Los dominios de API y Studio deben ser distintos y no estar reservados ni conectados en el panel." });
         return;
       }
-      const instance = await saveApplicationInstanceConfiguration({
-        applicationId: "supabase",
-        serverNodeId: node.ID,
-        serverHostname: node.Description?.Hostname ?? "desconocido",
-        name: body.name.trim(),
-        configuration,
-      });
-      respondJson(response, 200, {
-        instance,
-        message: `Se guardó la configuración de Supabase para ${instance.serverHostname}. Los secretos se generarán y entregarán al desplegar la instancia.`,
-      });
+      if (!tunnel && !ingressIp) {
+        respondJson(response, 409, { error: "Configura primero Cloudflare Tunnel o la IPv4 pública del VPS para publicar los dominios de Supabase." });
+        return;
+      }
+      const domainTargets = [];
+      for (const hostname of requestedDomains) {
+        const matchingZones = domainZones
+          .filter((domainZone) => domainZone.connectionStatus === "connected"
+            && (hostname === domainZone.zone.toLowerCase()
+              || hostname.endsWith(`.${domainZone.zone.toLowerCase()}`)))
+          .sort((left, right) => right.zone.length - left.zone.length);
+        let target;
+        for (const domainZone of matchingZones) {
+          if (!await hasCloudflareToken(serviceOperationsDirectory, domainZone.credentialId)) continue;
+          const token = await getCloudflareToken(serviceOperationsDirectory, domainZone.credentialId);
+          const verifiedZone = await cloudflareClient.verifyZone(token, domainZone.zone);
+          if (verifiedZone.id !== domainZone.zoneId) {
+            throw new RequestError(409, `La zona Cloudflare de ${hostname} cambió; vuelve a conectarla.`);
+          }
+          target = { hostname, domainZone, token };
+          break;
+        }
+        if (!target) {
+          throw new RequestError(409, `Conecta en Cloudflare una zona que contenga ${hostname} y tenga sus credenciales disponibles.`);
+        }
+        domainTargets.push(target);
+      }
+      const savedDomains = [];
+      const newlyCreatedRecords = [];
+      let tunnelHostsUpdated = false;
+      try {
+        for (const target of domainTargets) {
+          const previousDomain = currentInstanceDomains.find((domain) =>
+            domain.hostname.toLowerCase() === target.hostname.toLowerCase());
+          const dnsRecord = tunnel
+            ? await cloudflareClient.upsertTunnelCname(target.token, {
+              zoneId: target.domainZone.zoneId,
+              hostname: target.hostname,
+              tunnelId: tunnel.tunnelId,
+              existingRecordId: previousDomain?.dnsRecordId,
+            })
+            : await cloudflareClient.upsertARecord(target.token, {
+              zoneId: target.domainZone.zoneId,
+              hostname: target.hostname,
+              address: ingressIp,
+              proxied: target.domainZone.proxied,
+              existingRecordId: previousDomain?.dnsRecordId,
+            });
+          if (dnsRecord.id !== previousDomain?.dnsRecordId) {
+            newlyCreatedRecords.push({ ...target, recordId: dnsRecord.id });
+          }
+          savedDomains.push({
+            hostname: target.hostname,
+            zone: target.domainZone.zone,
+            domainZoneId: target.domainZone.id,
+            zoneId: target.domainZone.zoneId,
+            port: target.hostname === configuration.apiDomain ? 8000 : 3000,
+            proxied: tunnel ? true : target.domainZone.proxied,
+            dnsRecordId: dnsRecord.id,
+          });
+        }
+        if (tunnel) {
+          await updateCloudflareTunnelHosts(tunnel, [
+            ...domains.map((domain) => domain.hostname),
+            ...applicationDomains.map((domain) => domain.hostname),
+            ...savedDomains.map((domain) => domain.hostname),
+          ]);
+          tunnelHostsUpdated = true;
+        }
+        const instance = await saveApplicationInstanceConfiguration({
+          ...(currentInstance ? { id: currentInstance.id } : {}),
+          applicationId: "supabase",
+          serverNodeId: node.ID,
+          serverHostname: node.Description?.Hostname ?? "desconocido",
+          name: body.name.trim(),
+          configuration,
+          domains: savedDomains,
+        });
+        respondJson(response, 200, {
+          instance,
+          message: `Se guardó la configuración de Supabase para ${instance.serverHostname}; DNS y rutas HTTPS de API y Studio quedaron configurados. Los secretos se generarán al desplegar.`,
+        });
+      } catch (error) {
+        const cleanupErrors = [];
+        for (const record of newlyCreatedRecords.reverse()) {
+          try {
+            if (tunnel) {
+              await cloudflareClient.deleteTunnelCname(record.token, {
+                zoneId: record.domainZone.zoneId,
+                hostname: record.hostname,
+                tunnelId: tunnel.tunnelId,
+                recordId: record.recordId,
+              });
+            } else {
+              await cloudflareClient.deleteARecord(record.token, {
+                zoneId: record.domainZone.zoneId,
+                hostname: record.hostname,
+                proxied: record.domainZone.proxied,
+                recordId: record.recordId,
+              });
+            }
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
+        if (tunnel && tunnelHostsUpdated) {
+          try {
+            await updateCloudflareTunnelHosts(tunnel, [
+              ...domains.map((domain) => domain.hostname),
+              ...applicationDomains.map((domain) => domain.hostname),
+            ]);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
+        if (cleanupErrors.length) {
+          console.error("Could not roll back Supabase domain provisioning:", cleanupErrors);
+        }
+        throw error;
+      }
     } catch (error) {
+      if (error instanceof RequestError) {
+        respondJson(response, error.statusCode, { error: error.message });
+        return;
+      }
       if (error?.code === "23505" || error?.code === "APPLICATION_DOMAIN_CONFLICT") {
         respondJson(response, 409, { error: "Uno de los dominios ya está asignado a otra instancia Supabase." });
+        return;
+      }
+      if (error?.code === "APPLICATION_INSTANCE_NOT_EDITABLE") {
+        respondJson(response, 409, { error: "La instancia Supabase no existe o está desplegándose y no se puede editar." });
         return;
       }
       if (error instanceof TypeError || error instanceof RangeError) {
@@ -5492,7 +5777,12 @@ const server = createServer(async (request, response) => {
         return;
       }
       console.error("Could not save Supabase configuration:", error);
-      respondJson(response, 503, { error: "No se pudo guardar la configuración de Supabase." });
+      const detail = error instanceof Error
+        ? error.message.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300)
+        : "Error desconocido.";
+      respondJson(response, 503, {
+        error: `No se pudo guardar la configuración de Supabase: ${detail}`,
+      });
     }
     return;
   }

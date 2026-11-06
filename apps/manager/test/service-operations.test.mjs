@@ -216,8 +216,18 @@ test("reveals Supabase access credentials once and only accepts public HTTPS URL
       anonKey: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.signature",
       serviceRoleKey: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature",
     };
+    credentials.anonKey = "a.b.c";
+    credentials.serviceRoleKey = "d.e.f";
     await writeFile(credentialsPath, JSON.stringify(credentials));
     assert.equal(await fixture.agent.hasSupabaseCredentials(requestId), true);
+    assert.equal(
+      (await fixture.agent.readSupabaseCredentials(requestId, secondRequestId)).anonKey,
+      credentials.anonKey,
+    );
+    await assert.rejects(
+      fixture.agent.readSupabaseCredentials(requestId, requestId),
+      /invalid format/,
+    );
     assert.deepEqual(await fixture.agent.consumeSupabaseCredentials(requestId), {
       studioUrl: credentials.studioUrl,
       apiUrl: credentials.apiUrl,
@@ -231,6 +241,50 @@ test("reveals Supabase access credentials once and only accepts public HTTPS URL
     await assert.rejects(fixture.agent.consumeSupabaseCredentials(requestId), {
       code: "CREDENTIALS_UNAVAILABLE",
     });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("keeps Supabase instance credentials available for authenticated detail views", async () => {
+  const fixture = await createFixture();
+  const credentials = {
+    taskId: requestId,
+    instanceId: secondRequestId,
+    apiUrl: "https://api.example.net",
+    studioUrl: "https://studio.example.net",
+    dashboardUsername: "supabase",
+    dashboardPassword: "a".repeat(32),
+    postgresPassword: "b".repeat(32),
+    anonKey: "a.b.c",
+    serviceRoleKey: "d.e.f",
+  };
+  const accessCredentials = {
+    studioUrl: credentials.studioUrl,
+    apiUrl: credentials.apiUrl,
+    dashboardUsername: credentials.dashboardUsername,
+    dashboardPassword: credentials.dashboardPassword,
+    postgresPassword: credentials.postgresPassword,
+    anonKey: credentials.anonKey,
+    serviceRoleKey: credentials.serviceRoleKey,
+  };
+  try {
+    assert.equal(await fixture.agent.hasSupabaseInstanceCredentials(secondRequestId), false);
+    await fixture.agent.saveSupabaseInstanceCredentials(secondRequestId, credentials);
+    assert.equal(await fixture.agent.hasSupabaseInstanceCredentials(secondRequestId), true);
+    assert.deepEqual(await fixture.agent.readSupabaseInstanceCredentials(secondRequestId), accessCredentials);
+    assert.deepEqual(await fixture.agent.readSupabaseInstanceCredentials(secondRequestId), accessCredentials);
+    await assert.rejects(
+      fixture.agent.readSupabaseInstanceCredentials(requestId),
+      { code: "CREDENTIALS_UNAVAILABLE" },
+    );
+    await assert.rejects(
+      fixture.agent.saveSupabaseInstanceCredentials(secondRequestId, {
+        ...credentials,
+        apiUrl: "http://api.example.net",
+      }),
+      /invalid format/,
+    );
   } finally {
     await fixture.cleanup();
   }
@@ -258,6 +312,57 @@ test("queues a fixed service restart request without accepting command input", a
       serviceId,
     });
     assert.equal((await fixture.agent.getStatus()).state, "queued");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("queues fixed BuildKit cache pruning and exposes the host cleanup result", async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await fixture.agent.requestBuilderCachePrune(requestId);
+    assert.deepEqual(result, {
+      id: requestId,
+      operation: "prune-builder-cache",
+      state: "queued",
+      message: "Limpieza de caché de compilación aceptada; esperando al agente del VPS.",
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "prune-builder-cache",
+    });
+    assert.deepEqual(await fixture.agent.getStatus(), {
+      id: requestId,
+      state: "queued",
+      operation: "prune-builder-cache",
+      replicas: undefined,
+      message: "Limpieza de caché de compilación aceptada; esperando al agente del VPS.",
+    });
+    await assert.rejects(fixture.agent.requestBuilderCachePrune(secondRequestId), {
+      code: "OPERATION_IN_PROGRESS",
+    });
+    await assert.rejects(fixture.agent.requestBuilderCachePrune("invalid"), /identificador.*no es válido/);
+
+    const completed = {
+      id: requestId,
+      operation: "prune-builder-cache",
+      state: "succeeded",
+      updatedAt: new Date().toISOString(),
+      message: "Caché BuildKit sin uso: 12 objeto(s) eliminados; 3.1GB liberados.",
+    };
+    await writeFile(join(fixture.directory, "builder-cache-prune-status.json"), JSON.stringify(completed));
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: secondRequestId,
+      operation: "restart-service",
+      state: "succeeded",
+      serviceId,
+      updatedAt: new Date().toISOString(),
+      message: "Another service operation completed.",
+    }));
+    assert.deepEqual(await fixture.agent.getBuilderCachePruneStatus(requestId), completed);
+    assert.equal(await fixture.agent.getBuilderCachePruneStatus(secondRequestId), null);
+    await assert.rejects(fixture.agent.getBuilderCachePruneStatus("invalid"), /identificador.*no es válido/);
   } finally {
     await fixture.cleanup();
   }
@@ -720,6 +825,38 @@ test("requests removal of a managed n8n instance through the host agent", async 
       message: "Instancia eliminada.",
     }));
     assert.equal((await fixture.agent.getStatus()).operation, "remove-application");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("accepts Supabase removal requests and statuses from the host agent", async () => {
+  const fixture = await createFixture();
+  const instanceId = "9a7f51bd-13bf-4c7a-9b03-9ba000000003";
+  try {
+    const removal = await fixture.agent.requestApplicationRemoval("supabase", instanceId, requestId);
+    assert.equal(removal.state, "queued");
+    assert.equal(removal.applicationId, "supabase");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "remove-application",
+      applicationId: "supabase",
+      instanceId,
+    });
+    assert.equal((await fixture.agent.getStatus()).state, "queued");
+
+    await rm(join(fixture.directory, "request.json"));
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "remove-application",
+      state: "failed",
+      applicationId: "supabase",
+      instanceId,
+      updatedAt: "2026-11-06T21:00:00Z",
+      message: "Docker Compose no pudo retirar Supabase y sus volúmenes persistentes.",
+    }));
+    assert.equal((await fixture.agent.getStatus()).message,
+      "Docker Compose no pudo retirar Supabase y sus volúmenes persistentes.");
   } finally {
     await fixture.cleanup();
   }

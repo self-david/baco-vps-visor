@@ -1077,10 +1077,12 @@ export async function updateManualApplicationDeployment(instanceId, taskId, { st
   return result.rowCount === 1;
 }
 
-export async function deleteManualApplicationInstance(instanceId) {
+export async function deleteManagedApplicationInstance(instanceId) {
   const result = await pool.query(`
     DELETE FROM application_instances
-    WHERE id = $1 AND application_id = 'n8n-instance' AND status <> 'installing'
+    WHERE id = $1
+      AND application_id IN ('n8n-instance', 'supabase')
+      AND status <> 'installing'
     RETURNING id
   `, [instanceId]);
   return result.rowCount === 1;
@@ -1138,15 +1140,15 @@ export async function saveApplicationInstanceConfiguration(instance) {
       const conflictingDomain = await client.query(`
         SELECT id FROM application_instances
         WHERE application_id = 'supabase'
-          AND server_node_id <> $1
+          AND ($2::uuid IS NULL OR id <> $2::uuid)
           AND (
-            lower(configuration->>'apiDomain') = ANY($2::text[])
-            OR lower(configuration->>'studioDomain') = ANY($2::text[])
+            lower(configuration->>'apiDomain') = ANY($1::text[])
+            OR lower(configuration->>'studioDomain') = ANY($1::text[])
           )
         LIMIT 1
       `, [
-        instance.serverNodeId,
         [instance.configuration.apiDomain, instance.configuration.studioDomain].map((domain) => domain.toLowerCase()),
+        instance.id ?? null,
       ]);
       if (conflictingDomain.rowCount > 0) {
         const conflict = new Error("One of the requested Supabase domains is already assigned.");
@@ -1154,32 +1156,51 @@ export async function saveApplicationInstanceConfiguration(instance) {
         throw conflict;
       }
     }
-    const result = instance.applicationId === "supabase"
-      ? await client.query(`
+    let result;
+    if (instance.applicationId === "supabase" && instance.id) {
+      result = await client.query(`
+        UPDATE application_instances
+        SET server_node_id = $2,
+            server_hostname = $3,
+            name = $4,
+            status = CASE
+              WHEN status = 'installed' AND configuration = $5::jsonb THEN 'installed'
+              ELSE 'configured'
+            END,
+            configuration = $5::jsonb,
+            updated_at = now()
+        WHERE id = $1 AND application_id = 'supabase' AND status <> 'installing'
+        RETURNING id, application_id, server_node_id, server_hostname, name,
+          configuration, status, service_id, deployment_task_id, created_at, updated_at
+      `, [
+        instance.id,
+        instance.serverNodeId,
+        instance.serverHostname,
+        instance.name,
+        JSON.stringify(instance.configuration),
+      ]);
+      if (result.rowCount !== 1) {
+        const conflict = new Error("The Supabase instance is missing or currently deploying.");
+        conflict.code = "APPLICATION_INSTANCE_NOT_EDITABLE";
+        throw conflict;
+      }
+    } else if (instance.applicationId === "supabase") {
+      result = await client.query(`
       INSERT INTO application_instances (
         application_id, server_node_id, server_hostname, name, configuration, status
       )
       VALUES ($1, $2, $3, $4, $5::jsonb, 'configured')
-      ON CONFLICT (application_id, server_node_id) WHERE application_id = 'supabase' DO UPDATE
-      SET server_hostname = EXCLUDED.server_hostname,
-          name = EXCLUDED.name,
-          configuration = EXCLUDED.configuration,
-          status = CASE
-            WHEN application_instances.status = 'installed'
-              AND application_instances.configuration = EXCLUDED.configuration THEN 'installed'
-            ELSE 'configured'
-          END,
-          updated_at = now()
       RETURNING id, application_id, server_node_id, server_hostname, name,
-        configuration, status, created_at, updated_at
-    `, [
-      instance.applicationId,
-      instance.serverNodeId,
-      instance.serverHostname,
-      instance.name,
-      JSON.stringify(instance.configuration),
-      ])
-      : await client.query(`
+        configuration, status, service_id, deployment_task_id, created_at, updated_at
+      `, [
+        instance.applicationId,
+        instance.serverNodeId,
+        instance.serverHostname,
+        instance.name,
+        JSON.stringify(instance.configuration),
+      ]);
+    } else {
+      result = await client.query(`
         INSERT INTO application_instances (
           application_id, server_node_id, server_hostname, name, configuration, status
         )
@@ -1193,7 +1214,35 @@ export async function saveApplicationInstanceConfiguration(instance) {
         instance.name,
         JSON.stringify(instance.configuration),
       ]);
+    }
     const saved = mapApplicationInstance(result.rows[0]);
+    if (instance.applicationId === "supabase" && Array.isArray(instance.domains)) {
+      for (const domain of instance.domains) {
+        await client.query(`
+          INSERT INTO application_instance_domains (
+            application_instance_id, provider, zone_name, domain_zone_id, zone_id,
+            hostname, port, proxied, dns_record_id
+          )
+          VALUES ($1, 'cloudflare', $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (application_instance_id, hostname) DO UPDATE
+          SET zone_name = EXCLUDED.zone_name,
+              domain_zone_id = EXCLUDED.domain_zone_id,
+              zone_id = EXCLUDED.zone_id,
+              port = EXCLUDED.port,
+              proxied = EXCLUDED.proxied,
+              dns_record_id = EXCLUDED.dns_record_id
+        `, [
+          saved.id,
+          domain.zone,
+          domain.domainZoneId,
+          domain.zoneId,
+          domain.hostname,
+          domain.port,
+          domain.proxied,
+          domain.dnsRecordId,
+        ]);
+      }
+    }
     await insertAuditEvent(client, {
       action: "application.instance.configuration.saved",
       resourceType: "application_instance",

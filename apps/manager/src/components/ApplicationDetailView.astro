@@ -18,8 +18,38 @@
   <div class="grid grid-cols-1 gap-[18px] min-[721px]:grid-cols-2">
     <section class="card application-card" aria-labelledby="application-detail-domains-title">
       <p class="eyebrow">ACCESO</p>
-      <h3 id="application-detail-domains-title">Dominios de la instancia</h3>
+      <h3 id="application-detail-domains-title">Dominios y acceso</h3>
       <div id="application-detail-domains" class="application-detail-domains"></div>
+    </section>
+    <section id="application-detail-supabase" class="card application-card" aria-labelledby="application-detail-supabase-title" hidden>
+      <p class="eyebrow">SUPABASE SELF-HOSTED</p>
+      <h3 id="application-detail-supabase-title">Endpoints y conexión</h3>
+      <dl id="application-detail-supabase-urls" class="application-detail-credentials"></dl>
+    </section>
+    <section id="application-detail-supabase-services-panel" class="card application-card" aria-labelledby="application-detail-supabase-services-title" hidden>
+      <p class="eyebrow">ESTADO DEL STACK</p>
+      <h3 id="application-detail-supabase-services-title">Servicios de Supabase</h3>
+      <p id="application-detail-supabase-service-summary" class="muted"></p>
+      <div id="application-detail-supabase-services" class="application-detail-services"></div>
+    </section>
+    <section id="application-detail-supabase-configuration-panel" class="card application-card" aria-labelledby="application-detail-supabase-configuration-title" hidden>
+      <p class="eyebrow">CONFIGURACIÓN APLICADA</p>
+      <h3 id="application-detail-supabase-configuration-title">Proyecto y límites</h3>
+      <dl id="application-detail-supabase-configuration" class="application-detail-credentials"></dl>
+      <h4>Límites por servicio</h4>
+      <div id="application-detail-supabase-limits" class="application-detail-services"></div>
+    </section>
+    <section id="application-detail-supabase-credentials-panel" class="card application-card" aria-labelledby="application-detail-supabase-credentials-title" hidden>
+      <p class="eyebrow">ACCESO PROTEGIDO</p>
+      <h3 id="application-detail-supabase-credentials-title">Claves y contraseñas</h3>
+      <p class="muted">Las credenciales solo se solicitan al pulsar el botón y requieren una sesión autenticada. La clave service_role tiene acceso administrativo completo y no debe publicarse en aplicaciones cliente.</p>
+      <p id="application-detail-supabase-credentials-status" class="operation-status" role="status" aria-live="polite"></p>
+      <div class="application-form-actions">
+        <button id="application-detail-supabase-reveal" class="button" type="button">Mostrar credenciales</button>
+        <button id="application-detail-supabase-hide" class="button secondary" type="button" hidden>Ocultar</button>
+        <button id="application-detail-supabase-copy" class="button secondary" type="button" hidden>Copiar credenciales</button>
+      </div>
+      <dl id="application-detail-supabase-credentials" class="application-detail-credentials" hidden></dl>
     </section>
     <section id="application-detail-login-guide" class="card application-card" aria-labelledby="application-login-guide-title" hidden>
       <p class="eyebrow">PRIMER ACCESO A N8N</p>

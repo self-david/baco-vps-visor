@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS application_instances_supabase_server_key;

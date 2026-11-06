@@ -3,6 +3,8 @@ const applicationDetailView = document.querySelector("#application-detail-view")
 const applicationCreateView = document.querySelector("#application-create-view");
 const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
+const pruneBuilderCacheButton = document.querySelector("#prune-builder-cache");
+const builderCacheStatus = document.querySelector("#builder-cache-status");
 const statusMessage = document.querySelector("#status-message");
 const metricsStatus = document.querySelector("#metrics-status");
 const metricsTotal = document.querySelector("#metrics-total");
@@ -76,18 +78,21 @@ const postgresqlStatus = document.querySelector("#postgresql-status");
 const installPostgresqlButton = document.querySelector("#install-postgresql");
 const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
 const postgresqlCredentialsDialog = document.querySelector("#postgresql-credentials-dialog");
-const supabaseCredentialsDialog = document.querySelector("#supabase-credentials-dialog");
 const supabaseStatus = document.querySelector("#supabase-status");
 const supabaseInstancesList = document.querySelector("#supabase-instances");
 const configureSupabaseButton = document.querySelector("#configure-supabase");
 const refreshSupabaseStateButton = document.querySelector("#refresh-supabase-state");
-const supabaseConfigurationDialog = document.querySelector("#supabase-configuration-dialog");
 const supabaseConfigurationForm = document.querySelector("#supabase-configuration-form");
 const supabaseConfigurationStatus = document.querySelector("#supabase-configuration-status");
 const supabaseServerNodeSelect = document.querySelector("#supabase-server-node");
 const saveSupabaseConfigurationButton = document.querySelector("#save-supabase-configuration");
+const deploySupabaseConfigurationButton = document.querySelector("#deploy-supabase-configuration");
+const supabaseServiceFilter = document.querySelector("#supabase-service-filter");
 const manualApplicationForm = document.querySelector("#manual-application-form");
 const manualApplicationTemplate = document.querySelector("#manual-app-template");
+const applicationCreateDescription = document.querySelector("#application-create-description");
+const manualApplicationCard = document.querySelector("#manual-application-card");
+const supabaseCreateForm = document.querySelector("#supabase-create-form");
 const manualApplicationStatus = document.querySelector("#manual-app-status");
 const manualApplicationLogs = document.querySelector("#manual-app-deployment-logs");
 const manualApplicationSubmit = document.querySelector("#manual-app-submit");
@@ -204,6 +209,7 @@ let projects = [];
 const projectDeployAfterBuild = new Set();
 let domainData = { zones: [], domains: [] };
 let manualApplicationServers = [];
+let applicationTemplateDefinitions = new Map();
 let giteaCanManageProjects = false;
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
@@ -222,9 +228,13 @@ let webUpdatePending = false;
 let lastWebUpdateState;
 let serviceOperationPollTimer;
 let serviceOperationPending = false;
+let builderCachePrunePollTimer;
+let builderCachePrunePending = false;
+let builderCachePruneOperationId;
 let registryConfigurationPollTimer;
 let nodeEnrollmentPollTimer;
 let supabaseApplicationData;
+let revealedSupabaseCredentials = null;
 let giteaLocalOnly = false;
 let giteaNeedsLocalUpgrade = false;
 let giteaNeedsDomainMigration = false;
@@ -294,6 +304,10 @@ function handleAuthenticationChange(authenticated) {
     if (serviceOperationPollTimer !== undefined) clearTimeout(serviceOperationPollTimer);
     serviceOperationPollTimer = undefined;
     serviceOperationPending = false;
+    if (builderCachePrunePollTimer !== undefined) clearTimeout(builderCachePrunePollTimer);
+    builderCachePrunePollTimer = undefined;
+    builderCachePrunePending = false;
+    pruneBuilderCacheButton.disabled = false;
   }
 }
 
@@ -1395,6 +1409,71 @@ async function loadContainerMetrics() {
   }
 }
 
+function scheduleBuilderCachePrunePoll() {
+  if (builderCachePrunePollTimer !== undefined
+    || !builderCachePrunePending
+    || dashboardView.classList.contains("hidden")) return;
+  builderCachePrunePollTimer = setTimeout(() => {
+    builderCachePrunePollTimer = undefined;
+    void loadBuilderCachePruneStatus(builderCachePruneOperationId);
+  }, 2000);
+}
+
+async function loadBuilderCachePruneStatus(operationId) {
+  try {
+    const query = operationId ? `?id=${encodeURIComponent(operationId)}` : "";
+    const { operation } = await request(`/api/system/builder-cache-prune${query}`);
+    if (!operation) {
+      if (builderCachePrunePending) {
+        builderCacheStatus.dataset.state = "queued";
+        builderCacheStatus.textContent = "Solicitud recibida; esperando al agente del VPS…";
+        scheduleBuilderCachePrunePoll();
+      } else {
+        delete builderCacheStatus.dataset.state;
+        builderCacheStatus.textContent = "Aún no se ha solicitado una limpieza.";
+      }
+      return;
+    }
+
+    builderCachePruneOperationId = operation.id;
+    builderCacheStatus.dataset.state = operation.state;
+    builderCacheStatus.textContent = operation.message;
+    builderCachePrunePending = operation.state === "queued" || operation.state === "running";
+    pruneBuilderCacheButton.disabled = builderCachePrunePending;
+    if (builderCachePrunePending) {
+      scheduleBuilderCachePrunePoll();
+    } else if (builderCachePrunePollTimer !== undefined) {
+      clearTimeout(builderCachePrunePollTimer);
+      builderCachePrunePollTimer = undefined;
+    }
+  } catch (error) {
+    builderCacheStatus.dataset.state = "failed";
+    builderCacheStatus.textContent = error.message;
+    if (builderCachePrunePending) scheduleBuilderCachePrunePoll();
+    else pruneBuilderCacheButton.disabled = false;
+  }
+}
+
+async function startBuilderCachePrune() {
+  if (builderCachePrunePending) return;
+  pruneBuilderCacheButton.disabled = true;
+  builderCacheStatus.dataset.state = "queued";
+  builderCacheStatus.textContent = "Enviando la solicitud de limpieza…";
+  try {
+    const { operation } = await request("/api/system/builder-cache-prune", { method: "POST" });
+    builderCachePruneOperationId = operation.id;
+    builderCachePrunePending = true;
+    builderCacheStatus.dataset.state = operation.state;
+    builderCacheStatus.textContent = operation.message;
+    scheduleBuilderCachePrunePoll();
+  } catch (error) {
+    builderCachePrunePending = false;
+    builderCacheStatus.dataset.state = "failed";
+    builderCacheStatus.textContent = error.message;
+    pruneBuilderCacheButton.disabled = false;
+  }
+}
+
 async function loadDiagnostics() {
   refreshDiagnosticsButton.disabled = true;
   diagnosticsStatus.textContent = "Ejecutando comprobaciones…";
@@ -1930,6 +2009,7 @@ function renderProjectRoute() {
   applicationDetailView.hidden = !showingApplicationDetail;
   applicationCreateView.classList.toggle("hidden", !showingApplicationCreate);
   applicationCreateView.hidden = !showingApplicationCreate;
+  if (!showingApplicationDetail) clearSupabaseCredentialDisplay();
 
   if (!showingProject) {
     currentProjectEdit = null;
@@ -3416,29 +3496,31 @@ function getApplicationVersionFromImage(image) {
   return tag && (/^\d+\.\d+\.\d+$/.test(tag) || tag === "latest") ? tag : "latest";
 }
 
+function getApplicationTemplateDefinition(templateId = manualApplicationTemplate.value) {
+  return applicationTemplateDefinitions.get(templateId);
+}
+
 function applyManualApplicationTemplate() {
-  const isN8n = manualApplicationTemplate.value === "n8n";
+  const definition = getApplicationTemplateDefinition();
+  const isN8n = definition?.kind === "n8n";
+  const isSupabase = definition?.kind === "supabase";
+  const defaults = definition?.defaults ?? {};
   const fields = Object.fromEntries(
     ["name", "id", "version", "category", "description", "image", "port", "volumeTarget", "cpus", "memoryMb"]
       .map((name) => [name, manualApplicationForm.elements.namedItem(name)]),
   );
-  if (isN8n) {
-    fields.name.value ||= "n8n";
-    fields.id.value = "n8n-instance";
-    fields.category.value = "Automatización";
-    fields.description.value = "Automatización de flujos de trabajo.";
-    if (!fields.image.value.startsWith("n8nio/n8n:")) fields.image.value = "n8nio/n8n:latest";
-    fields.version.value = getApplicationVersionFromImage(fields.image.value);
-    fields.port.value = "5678";
-    fields.volumeTarget.value = "/home/node/.n8n";
-    fields.cpus.value ||= "1";
-    fields.memoryMb.value ||= "1536";
-    manualApplicationForm.elements.timezone.value ||= "UTC";
+  for (const [name, value] of Object.entries(defaults)) {
+    const field = fields[name] ?? manualApplicationForm.elements.namedItem(name);
+    if (field && value !== undefined) field.value = String(value);
   }
   if (!isN8n && fields.version.value === "latest") {
     fields.version.value = "1.0.0";
     fields.image.value = "";
   }
+  manualApplicationCard.hidden = isSupabase;
+  supabaseCreateForm.hidden = !isSupabase;
+  supabaseCreateForm.classList.toggle("hidden", !isSupabase);
+  manualApplicationForm.hidden = isSupabase;
   document.querySelector("#manual-app-metadata-fields").hidden = isN8n;
   document.querySelector("#manual-app-fixed-fields").hidden = isN8n;
   document.querySelector("#manual-app-fixed-volume-field").hidden = isN8n;
@@ -3457,22 +3539,86 @@ function applyManualApplicationTemplate() {
   manualApplicationWebhookFields.hidden = !isN8n;
   manualApplicationWebhookZoneSelect.required = isN8n;
   manualApplicationWebhookSubdomainInput.required = isN8n;
-  if (isN8n) timezone.value = "UTC";
-  document.querySelector("#application-create-title").textContent = isN8n
-    ? "Crear instancia de n8n"
-    : "Agregar aplicación";
+  manualApplicationSubmit.textContent = isN8n ? "Crear y desplegar n8n" : "Agregar y desplegar";
+  document.querySelector("#application-create-title").textContent = isSupabase
+    ? "Crear instancia de Supabase"
+    : isN8n
+      ? "Crear instancia de n8n"
+      : "Agregar aplicación";
   document.querySelector("#application-create-form-title").textContent = isN8n
     ? "Configurar instancia de n8n"
     : "Detalles de la instancia";
+  applicationCreateDescription.textContent = isSupabase
+    ? "Define en esta ventana los servicios, dominios y límites propios de esta instancia."
+    : "Configura la aplicación y sus opciones antes de desplegarla en el VPS.";
+}
+
+async function initializeApplicationCreateRoute() {
+  if (window.location.pathname !== "/applications/new") return;
+  try {
+    const response = await fetch("/application-templates.json", { cache: "no-cache" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const schema = await response.json();
+    if (schema.schemaVersion !== 1 || !Array.isArray(schema.templates)) {
+      throw new Error("el archivo de plantillas no tiene un formato compatible.");
+    }
+    if (schema.templates.some((template) =>
+      !template || typeof template.id !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(template.id)
+        || typeof template.label !== "string" || !template.label.trim()
+        || typeof template.kind !== "string"
+        || !template.defaults || typeof template.defaults !== "object" || Array.isArray(template.defaults))) {
+      throw new Error("cada plantilla debe declarar id, etiqueta, tipo y valores predeterminados.");
+    }
+    applicationTemplateDefinitions = new Map(
+      schema.templates.map((template) => [template.id, template]),
+    );
+    if (applicationTemplateDefinitions.size !== schema.templates.length
+      || !applicationTemplateDefinitions.has("custom")
+      || !applicationTemplateDefinitions.has("n8n")
+      || !applicationTemplateDefinitions.has("supabase")) {
+      throw new Error("el JSON debe incluir plantillas únicas para custom, n8n y Supabase.");
+    }
+    manualApplicationTemplate.replaceChildren(...schema.templates.map((template) =>
+      new Option(template.label, template.id)));
+    const requestedTemplate = new URLSearchParams(window.location.search).get("template");
+    manualApplicationTemplate.value = applicationTemplateDefinitions.has(requestedTemplate)
+      ? requestedTemplate
+      : "custom";
+    applyManualApplicationTemplate();
+    if (manualApplicationTemplate.value === "supabase") {
+      supabaseConfigurationStatus.textContent = "Consultando VPS y valores preconfigurados…";
+      initializeSupabaseCreateDefaults();
+    }
+  } catch (error) {
+    applicationCreateDescription.textContent = `No se pudieron cargar las plantillas JSON: ${error.message}`;
+    manualApplicationSubmit.disabled = true;
+    manualApplicationTemplate.disabled = true;
+    document.querySelector("#save-supabase-configuration").disabled = true;
+    document.querySelector("#deploy-supabase-configuration").disabled = true;
+  }
 }
 
 async function loadN8nApplication() {
   try {
     const { application } = await request("/api/system/applications/n8n");
+    const legacyActions = document.querySelector("#n8n-legacy-actions");
+    legacyActions.replaceChildren();
+    const legacyLink = createApplicationUrlLink(application.domain, "Abrir n8n");
+    if (application.installed && legacyLink) {
+      const label = document.createElement("span");
+      label.className = "application-instance-meta";
+      label.textContent = "Instancia heredada";
+      legacyActions.append(label, legacyLink);
+    }
+    legacyActions.hidden = !application.installed || !legacyLink;
+    n8nStatus.dataset.state = application.installed ? "success" : "info";
     n8nStatus.textContent = application.installed
-      ? `Hay una instalación heredada de n8n en ${application.domain}. Las nuevas instalaciones se crean como instancias independientes.`
+      ? application.domain
+        ? `Hay una instalación heredada de n8n en ${application.domain}. Las nuevas instalaciones se crean como instancias independientes.`
+        : "Hay una instalación heredada de n8n sin dominio configurado. Las nuevas instalaciones se crean como instancias independientes."
       : "Crea una instancia independiente de n8n desde el catálogo.";
   } catch (error) {
+    n8nStatus.dataset.state = "error";
     n8nStatus.textContent = error.message;
   }
 }
@@ -3488,6 +3634,8 @@ function schedulePostgresqlStatusPoll() {
 async function loadPostgresqlApplication() {
   try {
     const { application } = await request("/api/system/applications/postgresql");
+    const connection = document.querySelector("#postgresql-connection");
+    connection.textContent = `${application.host}:${application.port} · ${application.database} · usuario ${application.username} (solo red Swarm)`;
     installPostgresqlButton.classList.toggle("hidden", !application.available);
     installPostgresqlButton.disabled = application.installing;
     revealPostgresqlCredentialsButton.classList.toggle("hidden", !application.credentialsAvailable);
@@ -3497,12 +3645,22 @@ async function loadPostgresqlApplication() {
         : application.nameConflict
           ? "El nombre del servicio de PostgreSQL está ocupado por un servicio ajeno a VPS Manager."
           : "Instala PostgreSQL para habilitar una base de datos privada y persistente.");
+    postgresqlStatus.dataset.state = application.installing
+      ? "pending"
+      : application.nameConflict
+        ? "error"
+        : application.installed
+          ? "success"
+          : application.latestTask?.status === "failed"
+            ? "error"
+            : "info";
     if (application.installing) schedulePostgresqlStatusPoll();
     else if (postgresqlStatusPollTimer !== undefined) {
       clearTimeout(postgresqlStatusPollTimer);
       postgresqlStatusPollTimer = undefined;
     }
   } catch (error) {
+    postgresqlStatus.dataset.state = "error";
     postgresqlStatus.textContent = error.message;
     if (postgresqlStatusPollTimer !== undefined) {
       clearTimeout(postgresqlStatusPollTimer);
@@ -3544,9 +3702,11 @@ function renderSupabaseServiceSelection(entry, selectedServices) {
     const dependencyNames = dependencies[serviceId] ?? [];
     description.textContent = `${serviceId}${requiredServices.has(serviceId) ? " (obligatorio)" : ""} — ${service.image}`
       + (dependencyNames.length ? ` · requiere ${dependencyNames.join(", ")}` : "");
+    label.dataset.search = `${serviceId} ${service.image}`.toLocaleLowerCase();
     label.append(checkbox, description);
     container.append(label);
   }
+  applySupabaseServiceFilter();
   container.onchange = (event) => {
     const changed = event.target;
     if (!(changed instanceof HTMLInputElement) || changed.name !== "enabledServices") return;
@@ -3571,17 +3731,56 @@ function renderSupabaseServiceSelection(entry, selectedServices) {
     for (const checkbox of container.querySelectorAll('input[name="enabledServices"]')) {
       checkbox.checked = selected.has(checkbox.value);
     }
+    applySupabaseServiceFilter();
   };
 }
 
-function fillSupabaseConfigurationForm(serverNodeId) {
+function applySupabaseServiceFilter() {
+  const query = supabaseServiceFilter.value.trim().toLocaleLowerCase();
+  const labels = [...document.querySelectorAll("#supabase-service-selection > label")];
+  let visibleCount = 0;
+  for (const label of labels) {
+    label.hidden = query.length > 0 && !label.dataset.search.includes(query);
+    if (!label.hidden) visibleCount += 1;
+  }
+  updateSupabaseServiceFilterStatus(visibleCount, labels.length, query);
+}
+
+function updateSupabaseServiceFilterStatus(visibleCount, totalCount, query = supabaseServiceFilter.value.trim()) {
+  const selectedCount = document.querySelectorAll(
+    '#supabase-service-selection input[name="enabledServices"]:checked',
+  ).length;
+  const status = document.querySelector("#supabase-service-filter-status");
+  status.textContent = query && visibleCount === 0
+    ? "No hay servicios que coincidan con ese filtro."
+    : `${selectedCount} seleccionados · ${visibleCount ?? document.querySelectorAll("#supabase-service-selection > label").length}`
+      + `${totalCount === undefined ? "" : ` de ${totalCount}`} servicios visibles.`;
+}
+
+function fillSupabaseConfigurationForm(serverNodeId, instance = null) {
   const node = supabaseApplicationData?.servers.find((server) => server.id === serverNodeId);
   if (!node) return;
-  const instance = supabaseApplicationData.instances.find((item) => item.serverNodeId === serverNodeId);
-  const configuration = instance?.configuration
-    ?? getSupabaseDefaults(supabaseApplicationData.catalogEntry?.configurationSchema);
+  const templateDefaults = getApplicationTemplateDefinition("supabase")?.defaults ?? {};
+  const schemaDefaults = getSupabaseDefaults(supabaseApplicationData.catalogEntry?.configurationSchema);
+  const configuration = instance?.configuration ?? {
+    ...schemaDefaults,
+    ...templateDefaults,
+    resourceLimits: {
+      ...schemaDefaults.resourceLimits,
+      ...templateDefaults.resourceLimits,
+    },
+  };
+  const presetName = templateDefaults.name?.replace("{{hostname}}", node.hostname);
+  supabaseConfigurationForm.dataset.instanceId = instance?.id ?? "";
+  supabaseServerNodeSelect.disabled = Boolean(instance);
+  for (const fieldName of ["apiDomain", "studioDomain"]) {
+    supabaseConfigurationForm.elements.namedItem(fieldName).readOnly = Boolean(instance);
+  }
+  document.querySelector("#supabase-domains-readonly-note").hidden = !instance;
+  saveSupabaseConfigurationButton.textContent = instance ? "Guardar cambios" : "Guardar configuración";
+  deploySupabaseConfigurationButton.textContent = instance ? "Guardar y desplegar" : "Crear y desplegar";
   const values = {
-    name: instance?.name ?? `Supabase - ${node.hostname}`,
+    name: instance?.name ?? presetName ?? `Supabase - ${node.hostname}`,
     enabledServices: configuration.enabledServices
       ?? Object.keys(supabaseApplicationData.catalogEntry?.serviceManifest?.services ?? {}),
     exposeDatabasePorts: configuration.exposeDatabasePorts ?? true,
@@ -3615,13 +3814,54 @@ function fillSupabaseConfigurationForm(serverNodeId) {
     else field.value = value ?? "";
   }
   renderSupabaseServiceSelection(supabaseApplicationData.catalogEntry, values.enabledServices);
+  supabaseServiceFilter.value = "";
+  applySupabaseServiceFilter();
+  supabaseConfigurationForm.elements.serverNodeId.value = node.id;
   supabaseConfigurationStatus.textContent = instance
-    ? `Editando la configuración guardada para ${node.hostname}.`
-    : `Se creará la única instancia Supabase de ${node.hostname}.`;
+    ? `Editando la configuración guardada para ${node.hostname}. Los cambios se aplicarán al guardar y desplegar.`
+    : `Se creará una instancia Supabase independiente en ${node.hostname}.`;
   if (node.state !== "ready" || node.availability !== "active") {
     supabaseConfigurationStatus.textContent += " El VPS no está activo y listo; reactívalo para poder guardar cambios.";
   }
-  saveSupabaseConfigurationButton.disabled = node.state !== "ready" || node.availability !== "active";
+  const nodeUnavailable = node.state !== "ready" || node.availability !== "active";
+  const instanceInstalling = instance?.status === "installing";
+  saveSupabaseConfigurationButton.disabled = nodeUnavailable || instanceInstalling;
+  deploySupabaseConfigurationButton.disabled = nodeUnavailable || instanceInstalling;
+}
+
+function initializeSupabaseCreateDefaults() {
+  if (window.location.pathname !== "/applications/new"
+    || manualApplicationTemplate.value !== "supabase"
+    || !supabaseApplicationData) return;
+  const query = new URLSearchParams(window.location.search);
+  const requestedInstanceId = query.get("instanceId");
+  if (requestedInstanceId) {
+    const instance = supabaseApplicationData.instances.find((candidate) =>
+      candidate.id.toLowerCase() === requestedInstanceId.toLowerCase());
+    if (!instance) {
+      supabaseConfigurationStatus.textContent = "No se encontró la instancia de Supabase que quieres editar.";
+      saveSupabaseConfigurationButton.disabled = true;
+      deploySupabaseConfigurationButton.disabled = true;
+      return;
+    }
+    supabaseServerNodeSelect.value = instance.serverNodeId;
+    fillSupabaseConfigurationForm(instance.serverNodeId, instance);
+    return;
+  }
+  const requestedNode = query.get("serverNodeId");
+  if (requestedNode && [...supabaseServerNodeSelect.options].some((option) => option.value === requestedNode)) {
+    supabaseServerNodeSelect.value = requestedNode;
+  }
+  if (!supabaseServerNodeSelect.value && supabaseServerNodeSelect.options.length) {
+    supabaseServerNodeSelect.selectedIndex = 0;
+  }
+  if (supabaseServerNodeSelect.value) {
+    fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
+  } else {
+    supabaseConfigurationStatus.textContent = "No hay un VPS activo y listo para crear una instancia de Supabase.";
+    saveSupabaseConfigurationButton.disabled = true;
+    deploySupabaseConfigurationButton.disabled = true;
+  }
 }
 
 function renderSupabaseInstances(instances) {
@@ -3629,109 +3869,106 @@ function renderSupabaseInstances(instances) {
   if (instances.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "Todavía no hay configuraciones guardadas.";
+    empty.textContent = "Aún no hay instancias de Supabase.";
     supabaseInstancesList.append(empty);
     return;
   }
   for (const instance of instances) {
-    const row = document.createElement("div");
-    row.className = "resource";
+    const row = document.createElement("article");
+    row.className = "application-instance";
     const main = document.createElement("div");
-    main.className = "resource-main";
+    main.className = "application-instance-main";
     const name = document.createElement("div");
-    name.className = "resource-name";
+    name.className = "application-instance-name";
     name.textContent = instance.name;
     const detail = document.createElement("div");
-    detail.className = "resource-detail";
-    detail.textContent = `${instance.serverHostname} · ${instance.status} · API ${instance.configuration.apiDomain} · Studio ${instance.configuration.studioDomain}`;
+    detail.className = "application-instance-meta";
+    detail.textContent = `${instance.serverHostname} · ${instanceStatusLabel(instance.status)}`;
+    detail.dataset.state = instance.status === "installed"
+      ? "success"
+      : instance.status === "failed"
+        ? "error"
+        : "pending";
     const runtimeServices = instance.runtimeServices ?? [];
     const enabledServices = runtimeServices.filter((service) => service.enabled);
     const runningServices = enabledServices.filter((service) => service.running);
     const summary = document.createElement("div");
-    summary.className = "resource-detail";
-    summary.textContent = `${runningServices.length}/${enabledServices.length} servicios seleccionados corriendo`;
-    const serviceDetails = document.createElement("details");
-    serviceDetails.className = "application-settings";
-    const serviceSummary = document.createElement("summary");
-    const installedCount = enabledServices.filter((service) => service.installed).length;
-    serviceSummary.textContent = `Estado del stack · ${installedCount}/${enabledServices.length} instalados · ${runningServices.length} corriendo`;
-    serviceDetails.open = installedCount > 0;
-    const serviceStatus = document.createElement("p");
-    serviceStatus.className = "application-status";
-    serviceStatus.setAttribute("role", "status");
-    serviceStatus.setAttribute("aria-live", "polite");
-    const partiallyInstalled = installedCount > 0 && runningServices.length < enabledServices.length;
-    serviceStatus.dataset.state = partiallyInstalled
-      ? "warning"
-      : enabledServices.length > 0 && runningServices.length === enabledServices.length
-        ? "success"
-        : "pending";
-    serviceStatus.textContent = partiallyInstalled
-      ? `Aviso: ${enabledServices.length - runningServices.length} de ${enabledServices.length} servicios seleccionados no están corriendo.`
-      : `${runningServices.length} de ${enabledServices.length} servicios seleccionados están corriendo.`;
-    const serviceList = document.createElement("div");
-    serviceList.className = "supabase-runtime-services";
-    for (const service of runtimeServices) {
-      const serviceRow = document.createElement("div");
-      serviceRow.className = "supabase-runtime-service";
-      const serviceName = document.createElement("span");
-      serviceName.className = "supabase-runtime-name";
-      serviceName.textContent = service.id;
-      const serviceState = document.createElement("span");
-      serviceState.className = "supabase-runtime-state";
-      serviceState.dataset.state = !service.enabled
-        ? "disabled"
-        : service.running
-          ? "running"
-          : service.installed
-            ? "stopped"
-            : "missing";
-      serviceState.textContent = !service.enabled
-        ? "Desactivado"
-        : service.running
-          ? `Corriendo (${service.runningContainers}/${service.containers})`
-          : service.installed
-            ? `Instalado, detenido${service.status ? ` · ${service.status}` : ""}`
-            : "No instalado";
-      serviceRow.append(serviceName, serviceState);
-      serviceList.append(serviceRow);
+    summary.className = "application-instance-meta";
+    summary.textContent = `${runningServices.length} de ${enabledServices.length} servicios seleccionados en ejecución`;
+    summary.dataset.state = enabledServices.length > 0 && runningServices.length === enabledServices.length
+      ? "success"
+      : "warning";
+    const domainList = document.createElement("div");
+    domainList.className = "application-instance-domains";
+    for (const [label, hostname] of [
+      ["Studio", instance.configuration.studioDomain],
+      ["API", instance.configuration.apiDomain],
+    ]) {
+      if (typeof hostname !== "string" || !hostname) continue;
+      const domain = document.createElement("a");
+      domain.href = `https://${hostname}/`;
+      domain.target = "_blank";
+      domain.rel = "noopener noreferrer";
+      domain.textContent = `${label}: ${hostname}`;
+      domainList.append(domain);
     }
-    serviceDetails.append(serviceSummary, serviceList);
     const actions = document.createElement("div");
-    actions.className = "container-heading-actions application-actions";
+    actions.className = "application-instance-actions";
+    const details = document.createElement("a");
+    details.className = "button secondary";
+    details.href = `/applications/${encodeURIComponent(instance.id)}`;
+    details.textContent = "Detalles";
+    const openStudio = createApplicationUrlLink(instance.configuration.studioDomain, "Abrir Studio");
     const deploy = document.createElement("button");
-    deploy.className = "button resource-action";
+    deploy.className = "button secondary";
     deploy.type = "button";
     deploy.textContent = instance.status === "installing"
       ? "Desplegando…"
       : instance.status === "installed"
-        ? "Reaplicar configuración"
-        : "Instalar Supabase";
+        ? "Reaplicar"
+        : "Desplegar";
     deploy.disabled = instance.status === "installing";
     deploy.addEventListener("click", () => void deploySupabaseInstance(instance, deploy));
-    const edit = document.createElement("button");
-    edit.className = "button secondary resource-action";
-    edit.type = "button";
+    const edit = document.createElement("a");
+    edit.className = "button secondary";
+    edit.href = `/applications/new?template=supabase&serverNodeId=${encodeURIComponent(instance.serverNodeId)}&instanceId=${encodeURIComponent(instance.id)}`;
     edit.textContent = "Editar";
-    edit.addEventListener("click", () => {
-      supabaseServerNodeSelect.value = instance.serverNodeId;
-      fillSupabaseConfigurationForm(instance.serverNodeId);
-      supabaseConfigurationDialog.showModal();
-    });
-    actions.append(deploy, edit);
-    if (instance.credentialsAvailable && instance.deploymentTaskId) {
-      const revealCredentials = document.createElement("button");
-      revealCredentials.className = "button secondary resource-action";
-      revealCredentials.type = "button";
-      revealCredentials.textContent = "Mostrar credenciales una vez";
-      revealCredentials.addEventListener("click", () =>
-        void revealSupabaseCredentials(instance.deploymentTaskId, revealCredentials));
-      actions.append(revealCredentials);
-    }
-    main.append(name, detail, summary, serviceStatus, serviceDetails, actions);
+    const remove = document.createElement("button");
+    remove.className = "button button-danger";
+    remove.type = "button";
+    remove.textContent = "Eliminar";
+    remove.disabled = instance.status === "installing";
+    remove.addEventListener("click", () => void deleteApplicationInstance({
+      instance,
+      button: remove,
+      statusElement: supabaseStatus,
+    }));
+    if (openStudio) actions.append(openStudio);
+    actions.append(details, edit, deploy, remove);
+    main.append(name, detail, summary, domainList, actions);
     row.append(main);
     supabaseInstancesList.append(row);
   }
+}
+
+function createApplicationUrlLink(hostname, label) {
+  if (typeof hostname !== "string" || !hostname) return null;
+  const link = document.createElement("a");
+  link.className = "button";
+  link.href = `https://${hostname}/`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = label;
+  return link;
+}
+
+function instanceStatusLabel(status) {
+  return ({
+    configured: "Configurada",
+    installing: "Desplegando",
+    installed: "Instalada",
+    failed: "Fallida",
+  })[status] ?? status;
 }
 
 async function deploySupabaseInstance(instance, button) {
@@ -3752,29 +3989,33 @@ async function deploySupabaseInstance(instance, button) {
   }
 }
 
-async function pollSupabaseDeploymentTask(taskId, instanceName) {
+async function pollSupabaseDeploymentTask(taskId, instanceName, statusElement = supabaseStatus, instanceId = null) {
   try {
     const result = await request("/api/system/tasks");
     const task = result.tasks.find((candidate) => candidate.id === taskId);
     if (task?.status === "completed") {
+      if (instanceId) {
+        window.location.assign(`/applications/${encodeURIComponent(instanceId)}`);
+        return;
+      }
       await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-      supabaseStatus.textContent = task.result?.message
+      statusElement.textContent = task.result?.message
         ?? `${instanceName} se desplegó. Consulta el estado de cada servicio en la instalación.`;
       return;
     }
     if (task?.status === "failed") {
       await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-      supabaseStatus.textContent = `No se pudo desplegar ${instanceName}: ${task.error ?? "revisa la tarea para ver el detalle."}`;
+      statusElement.textContent = `No se pudo desplegar ${instanceName}: ${task.error ?? "revisa la tarea para ver el detalle."}`;
       return;
     }
     const { operation } = await request("/api/system/service-operations");
-    supabaseStatus.textContent = operation?.id === taskId && operation.message
+    statusElement.textContent = operation?.id === taskId && operation.message
       ? operation.message
       : `Desplegando ${instanceName} y esperando que los servicios estén disponibles…`;
-    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName), 2500);
+    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName, statusElement, instanceId), 2500);
   } catch (error) {
-    supabaseStatus.textContent = `No se pudo consultar el avance del despliegue: ${error.message}`;
-    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName), 5000);
+    statusElement.textContent = `No se pudo consultar el avance del despliegue: ${error.message}`;
+    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName, statusElement, instanceId), 5000);
   }
 }
 
@@ -3812,33 +4053,56 @@ function renderManualApplications(catalog, instances, servers) {
   } else {
     for (const instance of deployedInstances) {
       const application = definitionById.get(instance.applicationId);
-      const row = document.createElement("div");
-      row.className = "resource";
+      const row = document.createElement("article");
+      row.className = "application-instance";
       const main = document.createElement("div");
-      main.className = "resource-main";
+      main.className = "application-instance-main";
       const name = document.createElement("div");
-      name.className = "resource-name";
+      name.className = "application-instance-name";
       name.textContent = instance.name;
       const detail = document.createElement("div");
-      detail.className = "resource-detail";
+      detail.className = "application-instance-meta";
+      detail.dataset.state = instance.status === "installed"
+        ? "success"
+        : instance.status === "failed"
+          ? "error"
+          : "pending";
       const secretNames = instance.configuration.secretNames?.length
         ? ` · Secretos Swarm: ${instance.configuration.secretNames.join(", ")}`
         : "";
-      detail.textContent = `${instance.serverHostname} · ${instance.status} · ${instance.configuration.domain} · ${instance.configuration.image ?? application.serviceManifest.image}${secretNames}`;
+      detail.textContent = `${instance.serverHostname} · ${instanceStatusLabel(instance.status)} · ${instance.configuration.version ?? application.version} · ${instance.configuration.image ?? application.serviceManifest.image}${secretNames}`;
       main.append(name, detail);
+      if (instance.configuration.domain) {
+        const domain = document.createElement("a");
+        domain.className = "application-instance-domain";
+        domain.href = `https://${instance.configuration.domain}/`;
+        domain.textContent = instance.configuration.domain;
+        domain.target = "_blank";
+        domain.rel = "noopener noreferrer";
+        main.append(domain);
+      } else {
+        const domain = document.createElement("span");
+        domain.className = "application-instance-meta";
+        domain.textContent = "Dominio pendiente";
+        main.append(domain);
+      }
+      const actions = document.createElement("div");
+      actions.className = "application-instance-actions";
+      const detailsLink = document.createElement("a");
+      detailsLink.className = "button secondary";
+      detailsLink.href = `/applications/${encodeURIComponent(instance.id)}`;
+      detailsLink.textContent = "Detalles";
+      actions.append(detailsLink);
       row.append(main);
       if (instance.configuration.domain && instance.status === "installed") {
-        const open = document.createElement("a");
-        open.className = "button secondary resource-action";
-        open.href = `https://${instance.configuration.domain}/`;
-        open.target = "_blank";
-        open.rel = "noopener noreferrer";
-        open.textContent = "Abrir";
-        row.append(open);
+        const open = createApplicationUrlLink(instance.configuration.domain, "Abrir aplicación");
+        if (open) actions.prepend(open);
       }
+      row.append(actions);
       manualApplicationsList.append(row);
     }
   }
+  manualApplicationsStatus.dataset.state = deployedInstances.length > 0 ? "success" : "info";
   manualApplicationsStatus.textContent = `${definitions.length} aplicación${definitions.length === 1 ? "" : "es"} manual${definitions.length === 1 ? "" : "es"} en el catálogo; ${deployedInstances.length} instalación${deployedInstances.length === 1 ? "" : "es"}.`;
 }
 
@@ -3907,25 +4171,61 @@ function renderN8nInstances(instances) {
     return;
   }
   for (const instance of instances) {
-    const row = document.createElement("div");
-    row.className = "resource";
+    const row = document.createElement("article");
+    row.className = "application-instance";
     const main = document.createElement("div");
-    main.className = "resource-main";
+    main.className = "application-instance-main";
     const name = document.createElement("div");
-    name.className = "resource-name";
+    name.className = "application-instance-name";
     name.textContent = instance.name;
     const detail = document.createElement("div");
-    detail.className = "resource-detail";
-    detail.textContent = `${instance.serverHostname} · ${instance.status} · ${(instance.configuration.domains ?? [instance.configuration.domain]).join(" · ")}`;
+    detail.className = "application-instance-meta";
+    detail.dataset.state = instance.status === "installed"
+      ? "success"
+      : instance.status === "failed"
+        ? "error"
+        : "pending";
+    const version = instance.configuration.version ?? instance.configuration.image ?? "n8n";
+    detail.textContent = `${instance.serverHostname} · ${instanceStatusLabel(instance.status)} · ${version}`;
+    const hostname = instance.configuration.domain ?? instance.configuration.domains?.[0];
+    const domain = document.createElement("a");
+    domain.className = "application-instance-domain";
+    if (hostname) {
+      domain.href = `https://${hostname}/`;
+      domain.target = "_blank";
+      domain.rel = "noopener noreferrer";
+      domain.textContent = hostname;
+    } else {
+      domain.textContent = "Dominio pendiente";
+    }
     main.append(name, detail);
+    main.append(domain);
     row.append(main);
+    const actions = document.createElement("div");
+    actions.className = "application-instance-actions";
+    if (hostname && instance.status === "installed") {
+      const open = createApplicationUrlLink(hostname, "Abrir n8n");
+      if (open) actions.append(open);
+    }
     const details = document.createElement("a");
-    details.className = "button secondary resource-action";
+    details.className = "button secondary";
     details.href = `/applications/${encodeURIComponent(instance.id)}`;
-    details.textContent = "Ver";
-    row.append(details);
+    details.textContent = "Detalles";
+    actions.append(details);
+    row.append(actions);
     n8nInstancesList.append(row);
   }
+}
+
+function clearSupabaseCredentialDisplay() {
+  revealedSupabaseCredentials = null;
+  const credentials = document.querySelector("#application-detail-supabase-credentials");
+  if (!credentials) return;
+  credentials.replaceChildren();
+  credentials.hidden = true;
+  document.querySelector("#application-detail-supabase-reveal").hidden = false;
+  document.querySelector("#application-detail-supabase-hide").hidden = true;
+  document.querySelector("#application-detail-supabase-copy").hidden = true;
 }
 
 function renderApplicationDetail(instances) {
@@ -3942,11 +4242,30 @@ function renderApplicationDetail(instances) {
   const loginGuide = document.querySelector("#application-detail-login-guide");
   const usersGuide = document.querySelector("#application-detail-users-guide");
   const deleteButton = document.querySelector("#application-detail-delete");
+  const supabaseDetails = document.querySelector("#application-detail-supabase");
+  const supabaseServicesPanel = document.querySelector("#application-detail-supabase-services-panel");
+  const supabaseConfigurationPanel = document.querySelector("#application-detail-supabase-configuration-panel");
+  const supabaseServices = document.querySelector("#application-detail-supabase-services");
+  const supabaseCredentialsPanel = document.querySelector("#application-detail-supabase-credentials-panel");
+  const supabaseUrls = document.querySelector("#application-detail-supabase-urls");
+  const supabaseConfiguration = document.querySelector("#application-detail-supabase-configuration");
+  const supabaseLimits = document.querySelector("#application-detail-supabase-limits");
+  const supabaseCredentialsStatus = document.querySelector("#application-detail-supabase-credentials-status");
+  const supabaseRevealButton = document.querySelector("#application-detail-supabase-reveal");
+  clearSupabaseCredentialDisplay();
   domains.replaceChildren();
+  supabaseUrls.replaceChildren();
+  supabaseServices.replaceChildren();
+  supabaseConfiguration.replaceChildren();
+  supabaseLimits.replaceChildren();
   open.hidden = true;
   loginGuide.hidden = true;
   usersGuide.hidden = true;
   deleteButton.hidden = true;
+  supabaseDetails.hidden = true;
+  supabaseServicesPanel.hidden = true;
+  supabaseConfigurationPanel.hidden = true;
+  supabaseCredentialsPanel.hidden = true;
   if (!instance) {
     title.textContent = "Instancia no encontrada";
     summary.textContent = "";
@@ -3956,10 +4275,18 @@ function renderApplicationDetail(instances) {
   }
 
   const configuration = instance.configuration ?? {};
-  const instanceDomains = configuration.domains?.length
+  const isSupabase = instance.applicationId === "supabase";
+  const instanceDomains = isSupabase
+    ? [
+      { hostname: configuration.studioDomain, label: "Supabase Studio" },
+      { hostname: configuration.apiDomain, label: "Supabase API" },
+    ].filter((domain) => typeof domain.hostname === "string" && domain.hostname)
+    : configuration.domains?.length
     ? configuration.domains
     : configuration.domain ? [{ hostname: configuration.domain }] : [];
   const instanceStatusLabels = {
+    configured: "Configurada",
+    installing: "Desplegando",
     installed: "Instalada",
     failed: "Fallida",
     deploying: "Desplegando",
@@ -3968,11 +4295,15 @@ function renderApplicationDetail(instances) {
   title.textContent = instance.name;
   summary.textContent = `${instance.serverHostname} · ${configuration.image ?? instance.applicationId}`;
   state.textContent = instanceStatusLabels[instance.status] ?? instance.status;
-  deleteButton.hidden = instance.applicationId !== "n8n-instance" || instance.status === "installing";
+  deleteButton.hidden = !["n8n-instance", "supabase"].includes(instance.applicationId)
+    || instance.status === "installing";
   deleteButton.dataset.instanceId = instance.id;
   deleteButton.dataset.instanceName = instance.name;
+  deleteButton.dataset.applicationId = instance.applicationId;
   status.textContent = instance.status === "installed"
-    ? "Instancia lista. Usa el dominio principal para abrirla."
+    ? isSupabase
+      ? "Instancia lista. Consulta aquí los endpoints, servicios y credenciales de Supabase."
+      : "Instancia lista. Usa el dominio principal para abrirla."
     : instance.status === "failed"
       ? "El despliegue falló. Revisa la pestaña Tareas para consultar el detalle."
       : `Estado de la instancia: ${instanceStatusLabels[instance.status] ?? instance.status}.`;
@@ -3981,7 +4312,8 @@ function renderApplicationDetail(instances) {
     const item = document.createElement("div");
     item.className = "application-detail-domain";
     const label = document.createElement("strong");
-    label.textContent = index === 0 ? "Dominio principal" : "Dominio de webhooks";
+    label.textContent = domain.label
+      ?? (index === 0 ? "Dominio principal" : "Dominio de webhooks");
     const link = document.createElement("a");
     link.href = `https://${domain.hostname}/`;
     link.target = "_blank";
@@ -3996,6 +4328,141 @@ function renderApplicationDetail(instances) {
   }
   loginGuide.hidden = instance.applicationId !== "n8n-instance" || instance.status !== "installed";
   usersGuide.hidden = instance.applicationId !== "n8n-instance" || instance.status !== "installed";
+  if (isSupabase) {
+    supabaseDetails.hidden = false;
+    supabaseServicesPanel.hidden = false;
+    supabaseConfigurationPanel.hidden = false;
+    supabaseCredentialsPanel.hidden = false;
+    supabaseCredentialsStatus.textContent = instance.credentialsAvailable
+      ? "Credenciales disponibles. Se consultarán solo cuando pulses «Mostrar credenciales»."
+      : instance.status === "installing"
+        ? "Las credenciales aparecerán cuando el agente genere los secretos al iniciar el despliegue."
+        : instance.status === "installed"
+        ? "No hay credenciales protegidas guardadas para esta instalación."
+        : "Inicia el despliegue para generar y guardar las credenciales de esta instancia.";
+    supabaseRevealButton.disabled = !instance.credentialsAvailable;
+    supabaseRevealButton.dataset.instanceId = instance.id;
+    const addUrl = (labelText, value) => {
+      if (typeof value !== "string" || !value) return;
+      const label = document.createElement("dt");
+      label.textContent = labelText;
+      const valueElement = document.createElement("dd");
+      const link = document.createElement("a");
+      link.href = value;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = value;
+      valueElement.append(link);
+      supabaseUrls.append(label, valueElement);
+    };
+    addUrl("API de Supabase", configuration.apiDomain ? `https://${configuration.apiDomain}` : "");
+    addUrl("Supabase Studio", configuration.studioDomain ? `https://${configuration.studioDomain}` : "");
+    addUrl("URL del sitio", configuration.siteUrl);
+    const addConnection = (labelText, connectionText) => {
+      const label = document.createElement("dt");
+      label.textContent = labelText;
+      const value = document.createElement("dd");
+      const code = document.createElement("code");
+      code.textContent = connectionText;
+      value.append(code);
+      supabaseUrls.append(label, value);
+    };
+    addConnection("Base de datos privada (Swarm)", "db:5432");
+    if (configuration.enabledServices?.includes("supavisor")) {
+      addConnection("Pool de conexiones privado (Swarm)", "supavisor:6543");
+    }
+    if (configuration.exposeDatabasePorts) {
+      addConnection("Base de datos desde el VPS", `${instance.serverHostname}:5432`);
+      if (configuration.enabledServices?.includes("supavisor")) {
+        addConnection("Pool desde el VPS", `${instance.serverHostname}:6543`);
+      }
+    }
+
+    const services = instance.runtimeServices ?? [];
+    const selectedServices = services.filter((service) => service.enabled);
+    const runningServices = selectedServices.filter((service) => service.running);
+    document.querySelector("#application-detail-supabase-service-summary").textContent =
+      `${selectedServices.length} seleccionados · ${runningServices.length} corriendo · `
+      + `${selectedServices.filter((service) => service.installed).length} instalados`;
+    for (const service of services) {
+      const row = document.createElement("div");
+      row.className = "supabase-runtime-service";
+      const name = document.createElement("strong");
+      name.className = "supabase-runtime-name";
+      name.textContent = service.id;
+      const serviceState = document.createElement("span");
+      serviceState.className = "supabase-runtime-state";
+      if (!service.enabled) {
+        serviceState.dataset.state = "disabled";
+        serviceState.textContent = "Deshabilitado";
+      } else if (service.running) {
+        serviceState.dataset.state = "running";
+        serviceState.textContent = `Corriendo (${service.runningContainers}/${service.containers})`;
+      } else if (service.installed) {
+        serviceState.dataset.state = "stopped";
+        serviceState.textContent = `Instalado, detenido${service.status ? ` · ${service.status}` : ""}`;
+      } else {
+        serviceState.dataset.state = "missing";
+        serviceState.textContent = "No instalado";
+      }
+      row.append(name, serviceState);
+      supabaseServices.append(row);
+    }
+    const addConfigurationValue = (labelText, valueText) => {
+      const label = document.createElement("dt");
+      label.textContent = labelText;
+      const value = document.createElement("dd");
+      value.textContent = valueText;
+      supabaseConfiguration.append(label, value);
+    };
+    const yesNo = (value) => value ? "Sí" : "No";
+    addConfigurationValue("Organización", configuration.organizationName ?? "—");
+    addConfigurationValue("Proyecto", configuration.projectName ?? "—");
+    addConfigurationValue("Registro de usuarios", configuration.disableSignup ? "Deshabilitado" : "Habilitado");
+    addConfigurationValue("Registro por correo", yesNo(configuration.enableEmailSignup));
+    addConfigurationValue("Confirmación automática", yesNo(configuration.enableEmailAutoconfirm));
+    addConfigurationValue("Usuarios anónimos", yesNo(configuration.enableAnonymousUsers));
+    addConfigurationValue("Duración del JWT", `${configuration.jwtExpirySeconds ?? "—"} segundos`);
+    addConfigurationValue("Máximo de filas REST", String(configuration.maxRows ?? "—"));
+    addConfigurationValue(
+      "Tamaño máximo de archivo",
+      Number.isFinite(configuration.storageFileSizeLimitBytes)
+        ? `${(configuration.storageFileSizeLimitBytes / 1_048_576).toFixed(1)} MiB`
+        : "—",
+    );
+    addConfigurationValue("Región de almacenamiento", configuration.storageRegion ?? "—");
+    addConfigurationValue("Transformación de imágenes", yesNo(configuration.enableImageTransformation));
+    addConfigurationValue("Verificación JWT en Functions", yesNo(configuration.functionsVerifyJwt));
+    addConfigurationValue("Puertos de base de datos publicados", yesNo(configuration.exposeDatabasePorts));
+    addConfigurationValue(
+      "URLs adicionales de redirección",
+      Array.isArray(configuration.additionalRedirectUrls) && configuration.additionalRedirectUrls.length
+        ? configuration.additionalRedirectUrls.join("\n")
+        : "Ninguna configurada",
+    );
+    const enabledOAuthProviders = Object.entries(configuration.oauthProviders ?? {})
+      .filter(([, provider]) => provider?.enabled)
+      .map(([provider]) => provider);
+    addConfigurationValue("Proveedores OAuth habilitados", enabledOAuthProviders.join(", ") || "Ninguno");
+    const smtp = configuration.smtp;
+    addConfigurationValue(
+      "SMTP",
+      smtp ? `${smtp.host ?? "Host configurado"}${smtp.port ? ` · puerto ${smtp.port}` : ""}` : "No configurado",
+    );
+    for (const [serviceId, limit] of Object.entries(configuration.resourceLimits ?? {})) {
+      if (!limit || typeof limit !== "object") continue;
+      const row = document.createElement("div");
+      row.className = "supabase-runtime-service";
+      const name = document.createElement("strong");
+      name.className = "supabase-runtime-name";
+      name.textContent = serviceId;
+      const value = document.createElement("span");
+      value.className = "supabase-runtime-state";
+      value.textContent = `${limit.cpus ?? "—"} CPU · ${limit.memoryMb ?? "—"} MiB RAM`;
+      row.append(name, value);
+      supabaseLimits.append(row);
+    }
+  }
   if (instance.applicationId !== "n8n-instance" && instanceDomains.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -4008,23 +4475,6 @@ function renderSupabaseCatalog(catalog, servers, instances) {
   const entry = catalog.find((application) => application.id === "supabase");
   supabaseApplicationData = { catalogEntry: entry, catalog, servers, instances };
   const services = entry?.serviceManifest?.services ?? {};
-  const serviceList = document.querySelector("#supabase-services");
-  serviceList.replaceChildren();
-  for (const [name, service] of Object.entries(services)) {
-    const item = document.createElement("li");
-    item.textContent = `${name}: ${service.image}${service.port ? ` · puerto interno ${service.port}` : ""}`;
-    serviceList.append(item);
-  }
-  const schema = entry?.configurationSchema ?? {};
-  const settings = document.querySelector("#supabase-settings-summary");
-  settings.textContent = [
-    `Volúmenes persistentes: ${(schema.fields?.find((field) => field.key === "persistentVolumes")?.default
-      ? Object.entries(schema.fields.find((field) => field.key === "persistentVolumes").default)
-        .map(([name, path]) => `${name} → ${path}`).join(" · ")
-      : "definidos por catálogo")}`,
-    `Red: ${schema.network?.name ?? "vps-manager-proxy"} (${schema.network?.type ?? "overlay"})`,
-    `Secretos generados por VPS: ${(schema.fields?.find((field) => field.key === "secrets")?.values ?? []).join(", ")}`,
-  ].join("\n");
   const readyServers = servers.filter((server) => server.state === "ready" && server.availability === "active");
   supabaseServerNodeSelect.replaceChildren();
   for (const server of servers) {
@@ -4037,12 +4487,23 @@ function renderSupabaseCatalog(catalog, servers, instances) {
     supabaseServerNodeSelect.append(option);
   }
   configureSupabaseButton.disabled = !entry || readyServers.length === 0;
+  configureSupabaseButton.title = !entry
+    ? "Supabase no está disponible en el catálogo."
+    : readyServers.length === 0
+      ? "Necesitas al menos un nodo Swarm activo para instalar Supabase."
+      : "";
   refreshSupabaseStateButton.disabled = !entry;
   renderSupabaseInstances(instances);
+  initializeSupabaseCreateDefaults();
   const runtimeServices = instances.flatMap((instance) => instance.runtimeServices ?? []);
   const selectedServices = runtimeServices.filter((service) => service.enabled);
   const installedServices = selectedServices.filter((service) => service.installed);
   const runningServices = selectedServices.filter((service) => service.running);
+  supabaseStatus.dataset.state = instances.length === 0
+    ? "info"
+    : selectedServices.length > 0 && runningServices.length === selectedServices.length
+      ? "success"
+      : "warning";
   supabaseStatus.textContent = entry
     ? `${entry.name} ${entry.version}: ${Object.keys(services).length} servicios en el catálogo. `
       + (instances.length
@@ -4053,6 +4514,8 @@ function renderSupabaseCatalog(catalog, servers, instances) {
 }
 
 async function loadSupabaseApplications() {
+  supabaseStatus.dataset.state = "pending";
+  manualApplicationsStatus.dataset.state = "pending";
   supabaseStatus.textContent = "Consultando catálogo y servidores Swarm…";
   manualApplicationsStatus.textContent = "Consultando aplicaciones…";
   try {
@@ -4065,13 +4528,26 @@ async function loadSupabaseApplications() {
     renderManualApplications(result.catalog, result.instances, result.servers);
     const n8nInstances = result.instances.filter((instance) => instance.applicationId === "n8n-instance");
     renderN8nInstances(n8nInstances);
-    renderApplicationDetail(n8nInstances);
+    renderApplicationDetail(result.instances);
   } catch (error) {
     configureSupabaseButton.disabled = true;
+    configureSupabaseButton.title = "No se pudo consultar la disponibilidad. Actualiza el estado para reintentar.";
     refreshSupabaseStateButton.disabled = false;
+    supabaseStatus.dataset.state = "error";
     supabaseStatus.textContent = error.message;
     manualApplicationSubmit.disabled = true;
+    manualApplicationsStatus.dataset.state = "error";
     manualApplicationsStatus.textContent = error.message;
+    for (const [list, applicationName] of [
+      [manualApplicationsList, "las aplicaciones personalizadas"],
+      [n8nInstancesList, "las instancias de n8n"],
+      [supabaseInstancesList, "las instancias de Supabase"],
+    ]) {
+      const message = document.createElement("p");
+      message.className = "muted";
+      message.textContent = `No se pudieron cargar ${applicationName}. Usa “Actualizar estado” para reintentar.`;
+      list.replaceChildren(message);
+    }
     document.querySelector("#application-detail-status").textContent = error.message;
   }
 }
@@ -4108,7 +4584,14 @@ function getSupabaseConfigurationFormValues() {
     oauthProviders: parseSupabaseJsonField("oauthProviders", {}),
     resourceLimits: parseSupabaseJsonField("resourceLimits", {}),
   };
-  return { name: values.name.trim(), serverNodeId: values.serverNodeId, configuration };
+  return {
+    name: values.name.trim(),
+    serverNodeId: supabaseServerNodeSelect.value,
+    ...(supabaseConfigurationForm.dataset.instanceId
+      ? { instanceId: supabaseConfigurationForm.dataset.instanceId }
+      : {}),
+    configuration,
+  };
 }
 
 async function loadRegistryConfiguration() {
@@ -4187,7 +4670,7 @@ async function pollSwarmNodeEnrollment(taskId) {
   }
 }
 
-async function pollManualApplicationDeployment(taskId, applicationName) {
+async function pollManualApplicationDeployment(taskId, applicationName, instanceId) {
   try {
     const result = await request("/api/system/tasks");
     const task = result.tasks.find((candidate) => candidate.id === taskId);
@@ -4198,11 +4681,7 @@ async function pollManualApplicationDeployment(taskId, applicationName) {
       appendManualApplicationLog(`No se pudo consultar el avance del agente: ${error.message}`);
     }
     if (task?.status === "completed") {
-      const message = task.result?.message ?? `${applicationName} se desplegó correctamente.`;
-      manualApplicationStatus.textContent = message;
-      appendManualApplicationLog(message);
-      await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-      updateManualApplicationAvailability();
+      window.location.assign(`/applications/${encodeURIComponent(instanceId)}`);
       return;
     }
     if (task?.status === "failed") {
@@ -4214,11 +4693,12 @@ async function pollManualApplicationDeployment(taskId, applicationName) {
       return;
     }
     manualApplicationStatus.textContent = `Desplegando ${applicationName} en el VPS…`;
-    setTimeout(() => void pollManualApplicationDeployment(taskId, applicationName), 2500);
+    setTimeout(() => void pollManualApplicationDeployment(taskId, applicationName, instanceId), 2500);
   } catch (error) {
     manualApplicationStatus.textContent = `No se pudo consultar el despliegue: ${error.message}`;
     appendManualApplicationLog(`Error al consultar el despliegue: ${error.message}`);
     updateManualApplicationAvailability();
+    setTimeout(() => void pollManualApplicationDeployment(taskId, applicationName, instanceId), 5000);
   }
 }
 
@@ -4520,32 +5000,6 @@ async function revealPostgresqlCredentials() {
   }
 }
 
-async function revealSupabaseCredentials(taskId, button) {
-  button.disabled = true;
-  try {
-    const { credentials } = await request(
-      `/api/system/applications/supabase/credentials/${encodeURIComponent(taskId)}`,
-    );
-    const fields = {
-      "studio-url": credentials.studioUrl,
-      "api-url": credentials.apiUrl,
-      "dashboard-username": credentials.dashboardUsername,
-      "dashboard-password": credentials.dashboardPassword,
-      "postgres-password": credentials.postgresPassword,
-      "anon-key": credentials.anonKey,
-      "service-role-key": credentials.serviceRoleKey,
-    };
-    for (const [field, value] of Object.entries(fields)) {
-      document.querySelector(`#supabase-credential-${field}`).textContent = value;
-    }
-    supabaseCredentialsDialog.showModal();
-    await loadSupabaseApplications();
-  } catch (error) {
-    supabaseStatus.textContent = error.message;
-    button.disabled = false;
-  }
-}
-
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
@@ -4605,28 +5059,116 @@ async function loadResources() {
 }
 
 refreshButton.addEventListener("click", loadResources);
-document.querySelector("#application-detail-delete").addEventListener("click", async (event) => {
+document.querySelector("#application-detail-supabase-reveal").addEventListener("click", async (event) => {
   const button = event.currentTarget;
-  const { instanceId, instanceName } = button.dataset;
-  if (!instanceId || !confirm(
-    `¿Eliminar la instancia ${instanceName}? Se borrarán permanentemente el servicio, el volumen con todos los workflows, credenciales e historial de ejecuciones, los secretos Swarm y los registros DNS de sus dominios. Esta acción no se puede deshacer.`,
-  )) return;
+  const instanceId = button.dataset.instanceId;
+  if (!instanceId) return;
+  const status = document.querySelector("#application-detail-supabase-credentials-status");
   button.disabled = true;
-  button.textContent = "Eliminando…";
-  const status = document.querySelector("#application-detail-status");
-  status.textContent = "Eliminando servicio, datos persistentes, secretos y dominios DNS…";
+  status.textContent = "Consultando credenciales protegidas…";
   try {
-    await request(`/api/applications/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
-    window.location.assign("/#tab-apps");
+    const result = await request(
+      `/api/applications/${encodeURIComponent(instanceId)}/supabase-credentials`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    const currentInstanceId = window.location.pathname.match(/^\/applications\/([0-9a-f-]{36})$/i)?.[1];
+    if (currentInstanceId?.toLowerCase() !== instanceId.toLowerCase()) return;
+    const fields = [
+      ["Usuario de Studio", "dashboardUsername"],
+      ["Contraseña de Studio", "dashboardPassword"],
+      ["Contraseña PostgreSQL", "postgresPassword"],
+      ["Anon key (clave pública)", "anonKey"],
+      ["Service role key (administrativa)", "serviceRoleKey"],
+    ];
+    const values = fields.map(([label, key]) => [label, result.credentials?.[key]]);
+    if (values.some(([, value]) => typeof value !== "string" || !value)) {
+      throw new Error("La respuesta no contiene todas las credenciales de Supabase esperadas.");
+    }
+    revealedSupabaseCredentials = values;
+    const list = document.querySelector("#application-detail-supabase-credentials");
+    list.replaceChildren();
+    for (const [labelText, valueText] of values) {
+      const label = document.createElement("dt");
+      label.textContent = labelText;
+      const value = document.createElement("dd");
+      const code = document.createElement("code");
+      code.textContent = valueText;
+      value.append(code);
+      list.append(label, value);
+    }
+    list.hidden = false;
+    document.querySelector("#application-detail-supabase-reveal").hidden = true;
+    document.querySelector("#application-detail-supabase-hide").hidden = false;
+    document.querySelector("#application-detail-supabase-copy").hidden = false;
+    status.textContent = "Credenciales visibles. Ocúltalas cuando termines y guárdalas en un gestor seguro.";
   } catch (error) {
     status.textContent = error.message;
+  } finally {
     button.disabled = false;
-    button.textContent = "Eliminar instancia";
   }
 });
+document.querySelector("#application-detail-supabase-hide").addEventListener("click", () => {
+  clearSupabaseCredentialDisplay();
+  document.querySelector("#application-detail-supabase-credentials-status").textContent =
+    "Credenciales ocultas.";
+});
+document.querySelector("#application-detail-supabase-copy").addEventListener("click", async () => {
+  if (!revealedSupabaseCredentials) return;
+  const status = document.querySelector("#application-detail-supabase-credentials-status");
+  try {
+    await navigator.clipboard.writeText(revealedSupabaseCredentials
+      .map(([label, value]) => `${label}: ${value}`).join("\n"));
+    status.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
+  } catch (error) {
+    status.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
+  }
+});
+document.querySelector("#application-detail-delete").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const { instanceId, instanceName, applicationId } = button.dataset;
+  if (!instanceId || !applicationId) return;
+  await deleteApplicationInstance({
+    instance: { id: instanceId, name: instanceName, applicationId },
+    button,
+    statusElement: document.querySelector("#application-detail-status"),
+    returnToCatalog: true,
+  });
+});
+
+async function deleteApplicationInstance({
+  instance,
+  button,
+  statusElement,
+  returnToCatalog = false,
+}) {
+  const isSupabase = instance.applicationId === "supabase";
+  const dataDescription = isSupabase
+    ? "Se eliminarán los servicios, las bases de datos y archivos persistentes, las credenciales protegidas y los registros DNS de API y Studio."
+    : "Se eliminarán el servicio, el volumen con workflows, credenciales e historial, los secretos Swarm y los registros DNS.";
+  if (!confirm(`¿Eliminar la instancia ${instance.name}? ${dataDescription} Esta acción no se puede deshacer.`)) return;
+  button.disabled = true;
+  button.textContent = "Eliminando…";
+  statusElement.textContent = isSupabase
+    ? "Retirando el stack, los datos persistentes, las credenciales y los dominios DNS…"
+    : "Eliminando servicio, datos persistentes, secretos y dominios DNS…";
+  try {
+    await request(`/api/applications/${encodeURIComponent(instance.id)}`, { method: "DELETE" });
+    if (returnToCatalog) {
+      window.location.assign("/#tab-apps");
+      return;
+    }
+    await loadSupabaseApplications();
+  } catch (error) {
+    statusElement.textContent = error.message;
+    button.disabled = false;
+    button.textContent = returnToCatalog ? "Eliminar instancia" : "Eliminar";
+  }
+}
 configureSupabaseButton.addEventListener("click", () => {
-  fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
-  supabaseConfigurationDialog.showModal();
+  const serverNodeId = supabaseServerNodeSelect.value;
+  const query = new URLSearchParams({ template: "supabase" });
+  if (serverNodeId) query.set("serverNodeId", serverNodeId);
+  window.location.assign(`/applications/new?${query}`);
 });
 refreshSupabaseStateButton.addEventListener("click", async () => {
   refreshSupabaseStateButton.disabled = true;
@@ -4634,49 +5176,84 @@ refreshSupabaseStateButton.addEventListener("click", async () => {
   await loadSupabaseApplications();
 });
 supabaseServerNodeSelect.addEventListener("change", () => fillSupabaseConfigurationForm(supabaseServerNodeSelect.value));
-document.querySelector("#close-supabase-configuration").addEventListener("click", () => supabaseConfigurationDialog.close());
+supabaseServiceFilter.addEventListener("input", applySupabaseServiceFilter);
 supabaseConfigurationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const action = event.submitter?.value === "deploy" ? "deploy" : "save";
+  let deploymentStarted = false;
   saveSupabaseConfigurationButton.disabled = true;
-  supabaseConfigurationStatus.textContent = "Guardando configuración de Supabase…";
+  deploySupabaseConfigurationButton.disabled = true;
+  supabaseConfigurationStatus.textContent = action === "deploy"
+    ? "Guardando la configuración y preparando Supabase…"
+    : "Guardando configuración de Supabase…";
   try {
     const body = getSupabaseConfigurationFormValues();
     const result = await request("/api/applications/supabase/instances", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    supabaseConfigurationDialog.close();
-    supabaseStatus.textContent = result.message;
+    const instance = result.instance;
+    if (!instance?.id) {
+      throw new Error("La configuración se guardó, pero el servidor no devolvió el identificador de instancia.");
+    }
+    const query = new URLSearchParams(window.location.search);
+    query.set("template", "supabase");
+    query.set("serverNodeId", instance.serverNodeId);
+    query.set("instanceId", instance.id);
+    window.history.replaceState(null, "", `${window.location.pathname}?${query}`);
+    fillSupabaseConfigurationForm(instance.serverNodeId, instance);
     await loadSupabaseApplications();
+    supabaseConfigurationStatus.textContent = result.message;
+    if (action === "deploy") {
+      const deployment = await request(
+        `/api/applications/supabase/instances/${encodeURIComponent(instance.id)}/deploy`,
+        { method: "POST" },
+      );
+      if (!deployment.task?.id) throw new Error("El servidor no devolvió el identificador de tarea de despliegue.");
+      supabaseConfigurationStatus.textContent = deployment.message;
+      deploymentStarted = true;
+      deploySupabaseConfigurationButton.disabled = true;
+      void pollSupabaseDeploymentTask(
+        deployment.task.id,
+        instance.name,
+        supabaseConfigurationStatus,
+        instance.id,
+      );
+      return;
+    }
   } catch (error) {
     supabaseConfigurationStatus.textContent = error.message;
   } finally {
     const selectedServer = supabaseApplicationData?.servers.find((server) => server.id === supabaseServerNodeSelect.value);
-    saveSupabaseConfigurationButton.disabled = !selectedServer
+    const nodeUnavailable = !selectedServer
       || selectedServer.state !== "ready"
       || selectedServer.availability !== "active";
+    const instanceInstalling = supabaseApplicationData.instances.some((instance) =>
+      instance.id === supabaseConfigurationForm.dataset.instanceId && instance.status === "installing");
+    saveSupabaseConfigurationButton.disabled = deploymentStarted || nodeUnavailable || instanceInstalling;
+    deploySupabaseConfigurationButton.disabled = deploymentStarted || nodeUnavailable || instanceInstalling;
   }
 });
 refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
+pruneBuilderCacheButton.addEventListener("click", startBuilderCachePrune);
 manualApplicationZoneSelect.addEventListener("change", updateManualApplicationHostnamePreview);
 manualApplicationSubdomainInput.addEventListener("input", updateManualApplicationHostnamePreview);
 manualApplicationWebhookZoneSelect.addEventListener("change", updateManualApplicationWebhookHostnamePreview);
 manualApplicationWebhookSubdomainInput.addEventListener("input", updateManualApplicationWebhookHostnamePreview);
-manualApplicationTemplate.addEventListener("change", applyManualApplicationTemplate);
+manualApplicationTemplate.addEventListener("change", () => {
+  applyManualApplicationTemplate();
+  if (manualApplicationTemplate.value === "supabase") initializeSupabaseCreateDefaults();
+});
 manualApplicationForm.elements.image.addEventListener("input", () => {
-  if (manualApplicationTemplate.value === "n8n") {
+  if (getApplicationTemplateDefinition()?.kind === "n8n") {
     manualApplicationForm.elements.version.value = getApplicationVersionFromImage(
       manualApplicationForm.elements.image.value.trim(),
     );
   }
 });
-if (window.location.pathname === "/applications/new") {
-  const requestedTemplate = new URLSearchParams(window.location.search).get("template");
-  if (requestedTemplate === "n8n") manualApplicationTemplate.value = "n8n";
-  applyManualApplicationTemplate();
-}
+void initializeApplicationCreateRoute();
 for (const button of document.querySelectorAll("[data-metrics-view]")) {
   button.addEventListener("click", () => {
     metricsView = button.dataset.metricsView;
@@ -4689,6 +5266,7 @@ for (const button of document.querySelectorAll("[data-metrics-view]")) {
 window.addEventListener("dashboardtabchange", (event) => {
   if (event.detail?.tabId === "monitoring" && window.managerAuthenticated) {
     void loadContainerMetrics();
+    void loadBuilderCachePruneStatus(builderCachePruneOperationId);
   }
 });
 document.querySelector("#refresh-history").addEventListener("click", loadMetricsHistory);
@@ -4778,7 +5356,7 @@ manualApplicationForm.addEventListener("submit", async (event) => {
       environmentValues,
       secretValues: parseManualEnvironment(form.get("secrets"), "Secretos"),
     };
-    if (form.get("template") === "n8n") {
+    if (getApplicationTemplateDefinition()?.kind === "n8n") {
       environmentValues.GENERIC_TIMEZONE = form.get("timezone").trim();
       body.webhookZoneId = form.get("webhookZoneId");
       body.webhookSubdomain = form.get("webhookSubdomain").trim();
@@ -4787,10 +5365,13 @@ manualApplicationForm.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify(body),
     });
+    if (!result.instance?.id || !result.task?.id) {
+      throw new Error("El servidor no devolvió los identificadores de instancia y despliegue.");
+    }
     manualApplicationStatus.textContent = result.message
       ?? `${form.get("name").trim()} registrada; preparando el despliegue…`;
     await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
-    pollManualApplicationDeployment(result.task.id, form.get("name").trim());
+    pollManualApplicationDeployment(result.task.id, form.get("name").trim(), result.instance.id);
   } catch (error) {
     manualApplicationForm.querySelector('[name="secrets"]').value = "";
     manualApplicationStatus.textContent = error.message;
@@ -4811,26 +5392,6 @@ document.querySelector("#copy-postgresql-credentials").addEventListener("click",
     postgresqlStatus.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
   } catch (error) {
     postgresqlStatus.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
-  }
-});
-document.querySelector("#close-supabase-credentials").addEventListener("click", () => supabaseCredentialsDialog.close());
-document.querySelector("#copy-supabase-credentials").addEventListener("click", async () => {
-  const fields = [
-    ["Studio", "studio-url"],
-    ["API", "api-url"],
-    ["Usuario del panel", "dashboard-username"],
-    ["Contraseña del panel", "dashboard-password"],
-    ["Contraseña PostgreSQL", "postgres-password"],
-    ["Anon key", "anon-key"],
-    ["Service role key", "service-role-key"],
-  ];
-  const credentials = fields.map(([label, field]) =>
-    `${label}: ${document.querySelector(`#supabase-credential-${field}`).textContent}`).join("\n");
-  try {
-    await navigator.clipboard.writeText(credentials);
-    supabaseStatus.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
-  } catch (error) {
-    supabaseStatus.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
   }
 });
 webUpdateButton.addEventListener("click", startWebUpdate);

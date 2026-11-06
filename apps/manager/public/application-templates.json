@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "id": "custom",
+      "label": "Aplicación personalizada",
+      "kind": "manual",
+      "defaults": {
+        "cpus": 1,
+        "memoryMb": 1536
+      }
+    },
+    {
+      "id": "n8n",
+      "label": "n8n",
+      "kind": "n8n",
+      "defaults": {
+        "name": "n8n",
+        "id": "n8n-instance",
+        "version": "latest",
+        "category": "Automatización",
+        "description": "Automatización de flujos de trabajo.",
+        "image": "n8nio/n8n:latest",
+        "port": 5678,
+        "volumeTarget": "/home/node/.n8n",
+        "cpus": 1,
+        "memoryMb": 1536,
+        "timezone": "UTC"
+      }
+    },
+    {
+      "id": "supabase",
+      "label": "Supabase",
+      "kind": "supabase",
+      "defaults": {
+        "name": "Supabase - {{hostname}}",
+        "enabledServices": [
+          "db",
+          "studio",
+          "api-gw",
+          "auth",
+          "rest",
+          "realtime",
+          "storage",
+          "imgproxy",
+          "meta",
+          "functions",
+          "supavisor",
+          "analytics",
+          "vector"
+        ],
+        "exposeDatabasePorts": true,
+        "apiDomain": "",
+        "studioDomain": "",
+        "siteUrl": "",
+        "additionalRedirectUrls": [],
+        "organizationName": "Default Organization",
+        "projectName": "Default Project",
+        "disableSignup": true,
+        "enableEmailSignup": true,
+        "enableEmailAutoconfirm": false,
+        "enableAnonymousUsers": false,
+        "jwtExpirySeconds": 3600,
+        "maxRows": 1000,
+        "storageFileSizeLimitBytes": 52428800,
+        "storageRegion": "local",
+        "enableImageTransformation": true,
+        "functionsVerifyJwt": true,
+        "smtp": null,
+        "oauthProviders": {},
+        "resourceLimits": {
+          "db": { "cpus": 2, "memoryMb": 2048 },
+          "studio": { "cpus": 1, "memoryMb": 512 },
+          "api-gw": { "cpus": 1, "memoryMb": 256 },
+          "auth": { "cpus": 0.5, "memoryMb": 256 },
+          "rest": { "cpus": 0.5, "memoryMb": 256 },
+          "realtime": { "cpus": 1, "memoryMb": 512 },
+          "storage": { "cpus": 1, "memoryMb": 512 },
+          "imgproxy": { "cpus": 0.5, "memoryMb": 256 },
+          "meta": { "cpus": 0.25, "memoryMb": 128 },
+          "functions": { "cpus": 1, "memoryMb": 512 },
+          "supavisor": { "cpus": 1, "memoryMb": 512 },
+          "analytics": { "cpus": 1, "memoryMb": 512 },
+          "vector": { "cpus": 0.5, "memoryMb": 256 }
+        }
+      }
+    }
+  ]
+}

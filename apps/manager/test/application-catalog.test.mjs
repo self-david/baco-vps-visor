@@ -26,6 +26,31 @@ test("the project service agent can reach external registries inside its systemd
   assert.doesNotMatch(serviceUnit, /^PrivateNetwork=true$/m);
 });
 
+test("builder cache cleanup is available to test-mode VPS installations", async () => {
+  const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+  const routeStart = server.indexOf('if (url.pathname === "/api/system/builder-cache-prune") {');
+  const routeEnd = server.indexOf(
+    'if (request.method === "GET" && url.pathname === "/api/system/tasks") {',
+    routeStart,
+  );
+  const route = server.slice(routeStart, routeEnd);
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.doesNotMatch(route, /if \(testMode\)/);
+  assert.match(route, /serviceOperationAgent\.requestBuilderCachePrune\(\)/);
+});
+
+test("Supabase Compose service memory limits use one consistent value", async () => {
+  const agent = await readFile(new URL("../../../installer/supabase-deployment-agent.sh", import.meta.url), "utf8");
+
+  assert.match(
+    agent,
+    /memory_limit = f"\{limits\['memoryMb'\]\}M"\s+resource_limits\["cpus"\] = str\(limits\["cpus"\]\)\s+resource_limits\["memory"\] = memory_limit\s+service\["mem_limit"\] = memory_limit/,
+  );
+  assert.match(agent, /compose_error="\$\("\$\{compose_command\[@\]\}" config -q 2>&1\)"/);
+  assert.match(agent, /Compose rechazó la configuración generada para Supabase\. Detalle:/);
+});
+
 test("Ubuntu 24.04 compatibility checks warn and continue in both installation flows", async () => {
   const [installer, nodeEnrollment] = await Promise.all([
     readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
@@ -450,18 +475,73 @@ test("manager serves browser ES modules with a JavaScript content type", async (
   assert.match(server, /"\.mjs":\s*"text\/javascript; charset=utf-8"/);
 });
 
-test("application creation has a dedicated route and supports the n8n template", async () => {
-  const [server, database, serviceOperations, component, detailComponent, applicationScript, loginScript, serviceAgent, migration020] = await Promise.all([
+test("application catalog loading is independent of project deployment health", async () => {
+  const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+  const routeStart = server.indexOf('if (url.pathname === "/api/applications") {');
+  const routeEnd = server.indexOf(
+    'if (url.pathname === "/api/applications/supabase/instances") {',
+    routeStart,
+  );
+  const route = server.slice(routeStart, routeEnd);
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.match(route, /getApplicationCatalog\(\)/);
+  assert.match(route, /getApplicationInstances\(\)/);
+  assert.match(route, /dockerGet\("\/nodes"\)/);
+  assert.doesNotMatch(route, /getProjectDeploymentState|getProjects\(\)/);
+});
+
+test("Supabase domain conflict checks bind exactly the parameters referenced by SQL", async () => {
+  const database = await readFile(new URL("../db.mjs", import.meta.url), "utf8");
+  const queryStart = database.indexOf("SELECT id FROM application_instances");
+  const queryEnd = database.indexOf("if (conflictingDomain.rowCount > 0)", queryStart);
+  const conflictCheck = database.slice(queryStart, queryEnd);
+
+  assert.ok(queryStart >= 0 && queryEnd > queryStart);
+  assert.match(conflictCheck, /ANY\(\$1::text\[\]\)/);
+  assert.match(conflictCheck, /\$2::uuid IS NULL OR id <> \$2::uuid/);
+  assert.doesNotMatch(conflictCheck, /\$3/);
+  assert.match(conflictCheck, /\[\s*\[instance\.configuration\.apiDomain, instance\.configuration\.studioDomain\][\s\S]*instance\.id \?\? null/);
+});
+
+test("application removal confirms VPS cleanup before deleting Cloudflare records", async () => {
+  const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+  const routeStart = server.indexOf('const applicationInstanceMatch = url.pathname.match(');
+  const routeEnd = server.indexOf('if (url.pathname === "/api/applications") {', routeStart);
+  const route = server.slice(routeStart, routeEnd);
+  const removal = route.indexOf("requestApplicationRemoval(");
+  const dnsDeletion = route.indexOf("cloudflareClient.deleteTunnelCname(");
+  const tunnelUpdate = route.indexOf("cloudflareClient.updateTunnelConfiguration(");
+  const instanceDeletion = route.indexOf("deleteManagedApplicationInstance(instanceId)");
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.ok(removal >= 0 && removal < dnsDeletion);
+  assert.ok(dnsDeletion < tunnelUpdate);
+  assert.ok(tunnelUpdate < instanceDeletion);
+  assert.match(route, /No se pudo completar la eliminación durante \$\{deletionStage\}: \$\{detail\}/);
+});
+
+test("application creation has isolated JSON templates for n8n and Supabase", async () => {
+  const [server, database, serviceOperations, component, catalogComponent, supabaseForm, detailComponent, applicationScript, loginScript, serviceAgent, supabaseAgent, migration020, migration023, templateJson, styles] = await Promise.all([
     readFile(new URL("../server.mjs", import.meta.url), "utf8"),
     readFile(new URL("../db.mjs", import.meta.url), "utf8"),
     readFile(new URL("../service-operations.mjs", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ApplicationCreateView.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ApplicationCatalog.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/SupabaseConfigurationForm.astro", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ApplicationDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/login.js", import.meta.url), "utf8"),
     readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/supabase-deployment-agent.sh", import.meta.url), "utf8"),
     readFile(new URL("../database/migrations/020_multiple_application_instances.sql", import.meta.url), "utf8"),
+    readFile(new URL("../database/migrations/023_multiple_supabase_instances_per_node.sql", import.meta.url), "utf8"),
+    readFile(new URL("../public/application-templates.json", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
+  const templates = JSON.parse(templateJson).templates;
+  const n8nTemplate = templates.find((template) => template.id === "n8n");
+  const supabaseTemplate = templates.find((template) => template.id === "supabase");
 
   assert.match(server, /decodedPath === "\/applications\/new"/);
   assert.match(server, /\\\/applications\\\/\[0-9a-f\]/);
@@ -470,12 +550,31 @@ test("application creation has a dedicated route and supports the n8n template",
   assert.match(detailComponent, /no necesitas iniciar sesión ni tener credenciales previas/);
   assert.match(detailComponent, /No hay correo ni contraseña predeterminados/);
   assert.match(detailComponent, /id="application-detail-delete"/);
+  assert.match(catalogComponent, /id="supabase-instances"/);
+  assert.match(catalogComponent, /className="card application-library"/);
+  assert.match(catalogComponent, /aria-labelledby="installed-applications-title"/);
+  assert.match(styles, /grid-template-areas: "installed library"/);
+  assert.match(styles, /grid-template-areas: "library" "installed"/);
+  assert.doesNotMatch(catalogComponent, /id="supabase-services"|supabase-settings-summary/);
+  assert.match(detailComponent, /id="application-detail-supabase"/);
+  assert.match(detailComponent, /id="application-detail-supabase-services"/);
+  assert.match(detailComponent, /id="application-detail-supabase-configuration"/);
+  assert.match(detailComponent, /id="application-detail-supabase-credentials"/);
   assert.match(detailComponent, /application-detail-login-guide/);
   assert.match(detailComponent, /application-detail-users-guide/);
   assert.match(detailComponent, /Settings<\/strong> y luego a <strong>Users/);
   assert.match(detailComponent, /Invite user/);
   assert.match(detailComponent, /Sin SMTP/);
   assert.match(applicationScript, /usersGuide\.hidden = instance\.applicationId !== "n8n-instance" \|\| instance\.status !== "installed"/);
+  assert.match(applicationScript, /renderApplicationDetail\(result\.instances\)/);
+  assert.match(applicationScript, /application-detail-supabase-credentials/);
+  assert.match(applicationScript, /application-detail-supabase-limits/);
+  assert.match(applicationScript, /details\.textContent = "Detalles"/);
+  assert.match(applicationScript, /supabaseStatus\.dataset\.state = "error"/);
+  assert.match(applicationScript, /message\.textContent = `No se pudieron cargar \$\{applicationName\}\. Usa “Actualizar estado” para reintentar\.`/);
+  assert.match(applicationScript, /summary\.dataset\.state = enabledServices\.length > 0/);
+  assert.ok(server.includes("supabase-credentials$/i"));
+  assert.match(serviceOperations, /readSupabaseInstanceCredentials/);
   assert.match(loginScript, /isApplicationDetailRoute/);
   assert.match(component, /id="manual-application-form"/);
   assert.match(component, /value="n8n"/);
@@ -492,31 +591,82 @@ test("application creation has a dedicated route and supports the n8n template",
   assert.ok(component.indexOf('name="webhookSubdomain"') < component.indexOf('name="webhookZoneId"'));
   assert.match(component, /id="manual-app-deployment-logs"/);
   assert.match(applicationScript, /manual-app-metadata-fields"\)\.hidden = isN8n/);
-  assert.match(applicationScript, /getApplicationVersionFromImage\(fields\.image\.value\)/);
+  assert.match(applicationScript, /manualApplicationForm\.elements\.version\.value = getApplicationVersionFromImage/);
   assert.match(applicationScript, /appendManualApplicationLog\(operation\.message\)/);
   assert.match(applicationScript, /request\("\/api\/system\/service-operations"\)/);
   assert.doesNotMatch(component, /name="domain"|manual-app-server/);
   assert.match(applicationScript, /window\.location\.pathname === "\/applications\/new"/);
-  assert.match(applicationScript, /manualApplicationTemplate\.value = "n8n"/);
+  assert.match(applicationScript, /fetch\("\/application-templates\.json"/);
+  assert.match(applicationScript, /applicationTemplateDefinitions\.has\(requestedTemplate\)/);
+  assert.match(applicationScript, /definition\?\.kind === "supabase"/);
+  assert.match(applicationScript, /definition\?\.kind === "n8n"/);
+  assert.match(supabaseForm, /id="supabase-create-form"/);
+  assert.match(component, /value="supabase"/);
+  assert.match(applicationScript, /supabaseCreateForm\.classList\.toggle\("hidden", !isSupabase\)/);
+  assert.equal(n8nTemplate.defaults.image, "n8nio/n8n:latest");
+  assert.equal(n8nTemplate.defaults.timezone, "UTC");
+  assert.deepEqual(supabaseTemplate.defaults.enabledServices, [
+    "db", "studio", "api-gw", "auth", "rest", "realtime", "storage",
+    "imgproxy", "meta", "functions", "supavisor", "analytics", "vector",
+  ]);
+  assert.equal(Object.keys(supabaseTemplate.defaults.resourceLimits).length, 13);
+  assert.deepEqual(supabaseTemplate.defaults.resourceLimits.db, { cpus: 2, memoryMb: 2048 });
+  assert.equal(supabaseTemplate.defaults.name, "Supabase - {{hostname}}");
+  assert.notEqual(n8nTemplate.defaults, supabaseTemplate.defaults);
   assert.match(applicationScript, /application\.id !== "n8n-instance"/);
   assert.match(applicationScript, /renderManualApplicationZones\(domainData\.zones\)/);
   assert.match(applicationScript, /renderN8nInstances/);
-  assert.match(applicationScript, /renderApplicationDetail\(n8nInstances\)/);
+  assert.match(applicationScript, /function renderSupabaseInstances\(instances\)/);
+  assert.match(applicationScript, /domain\.textContent = `\$\{label\}: \$\{hostname\}`/);
+  assert.match(applicationScript, /createApplicationUrlLink\(instance\.configuration\.studioDomain, "Abrir Studio"\)/);
+  assert.match(applicationScript, /domain\.rel = "noopener noreferrer"/);
+  assert.match(applicationScript, /if \(instance\.configuration\.domain\) \{/);
+  assert.match(applicationScript, /textContent = "Dominio pendiente"/);
+  assert.match(applicationScript, /createApplicationUrlLink\(hostname, "Abrir n8n"\)/);
+  assert.match(applicationScript, /detailsLink\.href = `\/applications\/\$\{encodeURIComponent\(instance\.id\)\}`/);
+  assert.match(applicationScript, /application\.host\}:\$\{application\.port\} · \$\{application\.database\} · usuario \$\{application\.username\}/);
+  assert.match(catalogComponent, /id="n8n-legacy-actions"/);
+  assert.match(catalogComponent, /id="postgresql-connection"/);
+  assert.match(catalogComponent, /No ofrece una página web/);
+  assert.match(styles, /\.application-instance \{[^}]*border-top: 1px solid/);
+  assert.match(applicationScript, /details\.textContent = "Detalles"/);
+  assert.match(applicationScript, /remove\.textContent = "Eliminar"/);
+  assert.match(applicationScript, /deleteApplicationInstance\(\{/);
+  assert.match(applicationScript, /deleteButton\.hidden = !\["n8n-instance", "supabase"\]/);
+  assert.match(applicationScript, /renderApplicationDetail\(result\.instances\)/);
   assert.match(applicationScript, /\/applications\/\$\{encodeURIComponent\(instance\.id\)\}/);
-  assert.match(applicationScript, /¿Eliminar la instancia \$\{instanceName\}\?/);
-  assert.match(applicationScript, /workflows, credenciales e historial de ejecuciones/);
+  assert.match(applicationScript, /query\.set\("instanceId", instance\.id\)/);
+  assert.match(applicationScript, /pollManualApplicationDeployment\(taskId, applicationName, instanceId\)/);
+  assert.match(applicationScript, /¿Eliminar la instancia \$\{instance\.name\}\?/);
+  assert.match(applicationScript, /volumen con workflows, credenciales e historial/);
   assert.match(applicationScript, /method: "DELETE"/);
   assert.match(server, /applicationInstanceMatch = url\.pathname\.match/);
+  assert.match(server, /upsertTunnelCname\(target\.token/);
+  assert.match(server, /upsertARecord\(target\.token/);
+  assert.match(server, /port: target\.hostname === configuration\.apiDomain \? 8000 : 3000/);
+  assert.match(server, /Supabase · \$\{supabaseInstanceName\}/);
+  assert.match(server, /serviceOperationAgent\.hasSupabaseInstanceCredentials\(instance\.id\)/);
+  assert.doesNotMatch(
+    server.slice(server.indexOf("const supabaseInstanceCredentialsMatch"), server.indexOf("const giteaCredentialsMatch")),
+    /instance\.status !== "installed"/,
+  );
+  assert.match(database, /ON CONFLICT \(application_instance_id, hostname\) DO UPDATE/);
+  assert.match(applicationScript, /supabaseRevealButton\.disabled = !instance\.credentialsAvailable/);
+  assert.match(supabaseAgent, /install -o root -g 1000 -m 0640 "\$\{credentials_temp_path\}" "\$\{persistent_credentials_path\}"/);
   assert.match(server, /requestApplicationRemoval\(/);
   assert.match(server, /updateTunnelConfiguration\(/);
-  assert.match(server, /deleteManualApplicationInstance\(instanceId\)/);
+  assert.match(server, /deleteManagedApplicationInstance\(instanceId\)/);
   assert.match(serviceOperations, /async function requestApplicationRemoval\(/);
   assert.match(serviceOperations, /operation: "remove-application"/);
   assert.match(serviceAgent, /request\.get\("operation"\) == "remove-application"/);
   assert.match(serviceAgent, /docker service rm "\$\{application_service\}"/);
   assert.match(serviceAgent, /docker secret rm "\$\{secret_name\}"/);
   assert.match(serviceAgent, /docker volume rm "\$\{application_volume\}"/);
-  assert.match(database, /DELETE FROM application_instances[\s\S]*application_id = 'n8n-instance' AND status <> 'installing'/);
+  assert.match(database, /DELETE FROM application_instances[\s\S]*application_id IN \('n8n-instance', 'supabase'\)[\s\S]*status <> 'installing'/);
+  assert.match(serviceOperations, /\["n8n-instance", "supabase"\]\.includes\(applicationId\)/);
+  assert.match(serviceAgent, /Only managed n8n and Supabase instances can be removed/);
+  assert.match(serviceAgent, /vps_manager_remove_supabase "\$\{application_instance_id\}"/);
+  assert.match(supabaseAgent, /down --volumes --remove-orphans/);
   assert.match(server, /requestBody\.zoneId/);
   assert.match(server, /delete applicationBody\.webhookZoneId/);
   assert.match(server, /delete applicationBody\.webhookSubdomain/);
@@ -540,6 +690,9 @@ test("application creation has a dedicated route and supports the n8n template",
   assert.match(applicationEnvironmentArgs, /application_environment_args\+=\(--env "\$\{environment_entry\}"\)/);
   assert.doesNotMatch(applicationEnvironmentArgs, /--env-add/);
   assert.match(migration020, /DROP CONSTRAINT application_instances_server_key/);
+  assert.match(migration023, /DROP INDEX IF EXISTS application_instances_supabase_server_key/);
+  assert.match(database, /if \(instance\.applicationId === "supabase" && instance\.id\)/);
+  assert.match(server, /currentInstance = body\.instanceId[\s\S]*instance\.id\.toLowerCase\(\) === body\.instanceId\.toLowerCase\(\)/);
   assert.match(server, /application_instances_server_key/);
   assert.match(server, /application_instance_domains_hostname_lower_key/);
 });
@@ -616,9 +769,9 @@ test("project domain routes are activated automatically without redeploying", as
 });
 
 test("Supabase exposes the complete selectable service set with required core services", async () => {
-  const [migration, dialog, application] = await Promise.all([
+  const [migration, form, application] = await Promise.all([
     readFile(new URL("../database/migrations/022_supabase_service_selection.sql", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/SupabaseConfigurationDialog.astro", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/SupabaseConfigurationForm.astro", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
   ]);
 
@@ -630,8 +783,13 @@ test("Supabase exposes the complete selectable service set with required core se
   }
   assert.match(migration, /"required":\["db","studio","api-gw","auth","rest","meta"\]/);
   assert.match(migration, /"dependencies":\{"vector":\["analytics"\]\}/);
-  assert.match(dialog, /id="supabase-service-selection"/);
-  assert.match(dialog, /name="exposeDatabasePorts"/);
+  assert.match(form, /id="supabase-service-selection"/);
+  assert.match(form, /name="exposeDatabasePorts"/);
+  assert.match(form, /id="supabase-service-filter"/);
+  assert.match(form, /name="action" value="deploy"/);
+  assert.doesNotMatch(form, /<dialog/);
   assert.match(application, /name = "enabledServices"/);
   assert.match(application, /requiredDependencies\.some/);
+  assert.match(application, /applySupabaseServiceFilter/);
+  assert.match(application, /template=supabase&serverNodeId=/);
 });

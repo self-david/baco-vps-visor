@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat, link, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, lstat, link, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { validateSwarmNodeRequest } from "./swarm-node-manager.mjs";
 
@@ -24,6 +25,7 @@ const allowedOperations = new Set([
   "deploy-application",
   "remove-application",
   "enroll-swarm-node",
+  "prune-builder-cache",
 ]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
@@ -181,7 +183,8 @@ function validateStatus(status) {
                 || !requestIdPattern.test(status.instanceId ?? "")
                 || (status.state === "succeeded" && !serviceIdPattern.test(status.serviceId ?? "")))
               : status.operation === "remove-application"
-                ? (status.applicationId !== "n8n-instance" || !requestIdPattern.test(status.instanceId ?? ""))
+                ? (!["n8n-instance", "supabase"].includes(status.applicationId)
+                  || !requestIdPattern.test(status.instanceId ?? ""))
               : status.operation === "enroll-swarm-node"
               ? (() => {
                 try {
@@ -202,6 +205,7 @@ function validateStatus(status) {
             : status.operation !== "configure-gitea-token"
               && status.operation !== "update-project-routes"
               && status.operation !== "remove-application"
+              && status.operation !== "prune-builder-cache"
               && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
@@ -215,7 +219,10 @@ function validateStatus(status) {
         !== ["id", "message", "operation", "state", "tunnelId", "updatedAt"].sort().join(","))
     || (status.operation === "update-project-routes"
       && Object.keys(status).sort().join(",")
-        !== ["domainsHash", "id", "message", "operation", "projectId", "state", "updatedAt"].sort().join(","))) {
+        !== ["domainsHash", "id", "message", "operation", "projectId", "state", "updatedAt"].sort().join(","))
+    || (status.operation === "prune-builder-cache"
+      && Object.keys(status).sort().join(",")
+        !== ["id", "message", "operation", "state", "updatedAt"].sort().join(","))) {
     throw new Error("The service operation status file has an invalid format.");
   }
   return status;
@@ -231,9 +238,11 @@ export function createServiceOperationAgent({
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
   const postgresqlCredentialsPath = (requestId) => join(directory, `postgresql-credentials-${requestId}.json`);
   const supabaseCredentialsPath = (requestId) => join(directory, `supabase-credentials-${requestId}.json`);
+  const supabaseInstanceCredentialsPath = (instanceId) => join(directory, `supabase-instance-credentials-${instanceId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
   const projectBuildStatusPath = (requestId) => join(directory, `project-build-status-${requestId}.json`);
   const applicationDeploymentPath = (requestId) => join(directory, `application-deploy-${requestId}.json`);
+  const builderCachePruneStatusPath = join(directory, "builder-cache-prune-status.json");
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
   const cloudflareTunnelCredentialsPath = (requestId) => join(directory, `cloudflare-tunnel-token-${requestId}.txt`);
   const nodeCredentialsPath = (requestId) => join(directory, `node-ssh-key-${requestId}`);
@@ -298,6 +307,8 @@ export function createServiceOperationAgent({
               && queuedRequest.configuration.memoryMb >= 256 && queuedRequest.configuration.memoryMb <= 16384
           : queuedRequest.operation === "install-postgresql"
             ? true
+          : queuedRequest.operation === "prune-builder-cache"
+            ? true
           : queuedRequest.operation === "configure-gitea-token"
             ? typeof queuedRequest.token === "string" && /^[A-Za-z0-9._-]{20,512}$/.test(queuedRequest.token)
             : queuedRequest.operation === "configure-registry"
@@ -330,7 +341,7 @@ export function createServiceOperationAgent({
                     ? applicationIdPattern.test(queuedRequest.applicationId ?? "")
                       && requestIdPattern.test(queuedRequest.instanceId ?? "")
                   : queuedRequest.operation === "remove-application"
-                    ? queuedRequest.applicationId === "n8n-instance"
+                    ? ["n8n-instance", "supabase"].includes(queuedRequest.applicationId)
                       && requestIdPattern.test(queuedRequest.instanceId ?? "")
                   : queuedRequest.operation === "enroll-swarm-node"
                     ? (() => {
@@ -357,7 +368,9 @@ export function createServiceOperationAgent({
       }
       const validScaleRequest = queuedRequest.operation !== "scale-service"
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
-      const expectedFields = queuedRequest.operation === "install-gitea"
+      const expectedFields = queuedRequest.operation === "prune-builder-cache"
+        ? ["id", "operation"]
+        : queuedRequest.operation === "install-gitea"
         ? ["id", "operation", "domain"]
         : queuedRequest.operation === "install-n8n"
           ? ["id", "operation", "domain", "configuration"]
@@ -443,7 +456,9 @@ export function createServiceOperationAgent({
                         managerAddress: queuedRequest.managerAddress,
                         role: queuedRequest.role,
                       }
-              : { serviceId: queuedRequest.serviceId }),
+              : queuedRequest.operation === "prune-builder-cache"
+                ? {}
+                : { serviceId: queuedRequest.serviceId }),
           replicas: queuedRequest.replicas,
           ...(queuedRequest.containerId ? { containerId: queuedRequest.containerId } : {}),
           message: queuedRequest.operation === "install-gitea"
@@ -452,6 +467,8 @@ export function createServiceOperationAgent({
               ? `Instalación de n8n aceptada para ${queuedRequest.domain}; esperando al agente del VPS.`
             : queuedRequest.operation === "install-postgresql"
               ? "Instalación de PostgreSQL aceptada; esperando al agente del VPS."
+            : queuedRequest.operation === "prune-builder-cache"
+              ? "Limpieza de caché de compilación aceptada; esperando al agente del VPS."
             : queuedRequest.operation === "configure-gitea-token"
               ? "Configuración del token de Gitea aceptada; esperando al agente del VPS."
               : queuedRequest.operation === "configure-registry"
@@ -481,6 +498,33 @@ export function createServiceOperationAgent({
       }
     }
     return status ?? null;
+  }
+
+  async function getBuilderCachePruneStatus(requestId) {
+    if (requestId !== undefined && !requestIdPattern.test(requestId)) {
+      throw new TypeError("El identificador de limpieza de caché no es válido.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.operation === "prune-builder-cache"
+      && (requestId === undefined || currentStatus.id === requestId)) {
+      return currentStatus;
+    }
+    const contents = await readOptional(builderCachePruneStatusPath);
+    if (contents === undefined) return null;
+    const savedStatus = validateStatus(JSON.parse(contents));
+    if (savedStatus.operation !== "prune-builder-cache"
+      || (requestId !== undefined && savedStatus.id !== requestId)) {
+      return null;
+    }
+    if (savedStatus.state === "running"
+      && Date.now() - Date.parse(savedStatus.updatedAt) > staleOperationThresholdMs) {
+      return {
+        ...savedStatus,
+        state: "failed",
+        message: "La limpieza quedó obsoleta: el agente del VPS no actualiza su estado desde hace más de 20 minutos.",
+      };
+    }
+    return savedStatus;
   }
 
   async function getProjectBuildStatus(requestId) {
@@ -684,6 +728,49 @@ export function createServiceOperationAgent({
       state: "queued",
       operation: "install-postgresql",
       message: "Instalación de PostgreSQL aceptada; el agente del VPS iniciará el servicio.",
+    };
+  }
+
+  async function requestBuilderCachePrune(requestId = createId()) {
+    if (!requestIdPattern.test(requestId)) {
+      throw new Error("El identificador de limpieza de caché no es válido.");
+    }
+    const currentStatus = await getStatus();
+    if (currentStatus?.id === requestId) {
+      if (currentStatus.operation !== "prune-builder-cache") {
+        throw new Error("El identificador ya pertenece a otra operación.");
+      }
+      return currentStatus;
+    }
+    if (activeStates.has(currentStatus?.state)) {
+      const error = new Error("Ya hay una operación de servicio en curso.");
+      error.code = "OPERATION_IN_PROGRESS";
+      throw error;
+    }
+    const temporaryPath = join(directory, `.request-${requestId}.tmp`);
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify({
+        id: requestId,
+        operation: "prune-builder-cache",
+      })}\n`, { flag: "wx", mode: 0o600 });
+      await link(temporaryPath, requestPath);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        const conflict = new Error("Ya hay una operación de servicio en curso.");
+        conflict.code = "OPERATION_IN_PROGRESS";
+        throw conflict;
+      }
+      throw error;
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    return {
+      id: requestId,
+      operation: "prune-builder-cache",
+      state: "queued",
+      message: "Limpieza de caché de compilación aceptada; esperando al agente del VPS.",
     };
   }
 
@@ -970,10 +1057,10 @@ export function createServiceOperationAgent({
   }
 
   async function requestApplicationRemoval(applicationId, instanceId, requestId) {
-    if (applicationId !== "n8n-instance"
+    if (!["n8n-instance", "supabase"].includes(applicationId)
       || !requestIdPattern.test(instanceId ?? "")
       || !requestIdPattern.test(requestId ?? "")) {
-      throw new TypeError("Manual application removal request fields are invalid.");
+      throw new TypeError("Managed application removal request fields are invalid.");
     }
     const currentStatus = await getStatus();
     if (currentStatus?.id === requestId) {
@@ -1398,6 +1485,162 @@ export function createServiceOperationAgent({
     }
   }
 
+  async function readSupabaseCredentials(requestId, instanceId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("A valid Supabase deployment task identifier is required.");
+    }
+    if (instanceId !== undefined && !requestIdPattern.test(instanceId)) {
+      throw new TypeError("A valid Supabase instance identifier is required.");
+    }
+    let file;
+    try {
+      file = await open(
+        supabaseCredentialsPath(requestId),
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+    } catch (error) {
+      if (isMissing(error)) {
+        const unavailable = new Error("Las credenciales de un solo uso ya fueron consultadas o expiraron.");
+        unavailable.code = "CREDENTIALS_UNAVAILABLE";
+        throw unavailable;
+      }
+      throw error;
+    }
+    try {
+      const metadata = await file.stat();
+      if (!metadata.isFile() || metadata.size > 16_384
+        || Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        const expired = new Error("Las credenciales de un solo uso expiraron o no son válidas.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      return exposeSupabaseCredentials(validateSupabaseCredentials(
+        JSON.parse(await file.readFile("utf8")),
+        { taskId: requestId, instanceId },
+      ));
+    } finally {
+      await file.close();
+    }
+  }
+
+  function validateSupabaseCredentials(credentials, { taskId, instanceId } = {}) {
+    const expectedFields = [
+      "taskId", "instanceId", "apiUrl", "studioUrl", "dashboardUsername",
+      "dashboardPassword", "postgresPassword", "anonKey", "serviceRoleKey",
+    ].sort();
+    const validUrl = (value) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "https:" && isPublicHostname(parsed.hostname)
+          && !parsed.username && !parsed.password;
+      } catch {
+        return false;
+      }
+    };
+    if (!credentials || typeof credentials !== "object"
+      || Object.keys(credentials).sort().join(",") !== expectedFields.join(",")
+      || !requestIdPattern.test(credentials.taskId ?? "")
+      || !requestIdPattern.test(credentials.instanceId ?? "")
+      || (taskId !== undefined && credentials.taskId !== taskId)
+      || (instanceId !== undefined && credentials.instanceId !== instanceId)
+      || !validUrl(credentials.apiUrl)
+      || !validUrl(credentials.studioUrl)
+      || credentials.dashboardUsername !== "supabase"
+      || typeof credentials.dashboardPassword !== "string"
+      || credentials.dashboardPassword.length < 20
+      || typeof credentials.postgresPassword !== "string"
+      || credentials.postgresPassword.length < 20
+      || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.anonKey ?? "")
+      || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.serviceRoleKey ?? "")) {
+      throw new Error("The Supabase credential file has an invalid format.");
+    }
+    return {
+      taskId: credentials.taskId,
+      instanceId: credentials.instanceId,
+      studioUrl: credentials.studioUrl,
+      apiUrl: credentials.apiUrl,
+      dashboardUsername: credentials.dashboardUsername,
+      dashboardPassword: credentials.dashboardPassword,
+      postgresPassword: credentials.postgresPassword,
+      anonKey: credentials.anonKey,
+      serviceRoleKey: credentials.serviceRoleKey,
+    };
+  }
+
+  function exposeSupabaseCredentials(credentials) {
+    return {
+      studioUrl: credentials.studioUrl,
+      apiUrl: credentials.apiUrl,
+      dashboardUsername: credentials.dashboardUsername,
+      dashboardPassword: credentials.dashboardPassword,
+      postgresPassword: credentials.postgresPassword,
+      anonKey: credentials.anonKey,
+      serviceRoleKey: credentials.serviceRoleKey,
+    };
+  }
+
+  async function hasSupabaseInstanceCredentials(instanceId) {
+    if (!requestIdPattern.test(instanceId ?? "")) return false;
+    try {
+      const metadata = await lstat(supabaseInstanceCredentialsPath(instanceId));
+      if (!metadata.isFile()) throw new Error("The Supabase credential state path must be a regular file.");
+      return true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
+  async function readSupabaseInstanceCredentials(instanceId) {
+    if (!requestIdPattern.test(instanceId ?? "")) {
+      throw new TypeError("A valid Supabase instance identifier is required.");
+    }
+    let file;
+    try {
+      file = await open(
+        supabaseInstanceCredentialsPath(instanceId),
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+    } catch (error) {
+      if (isMissing(error)) {
+        const unavailable = new Error("No hay credenciales persistentes para esta instancia de Supabase.");
+        unavailable.code = "CREDENTIALS_UNAVAILABLE";
+        throw unavailable;
+      }
+      throw error;
+    }
+    try {
+      const metadata = await file.stat();
+      if (!metadata.isFile() || metadata.size > 16_384) {
+        throw new Error("The Supabase credential state path is not a valid regular file.");
+      }
+      return exposeSupabaseCredentials(validateSupabaseCredentials(
+        JSON.parse(await file.readFile("utf8")),
+        { instanceId },
+      ));
+    } finally {
+      await file.close();
+    }
+  }
+
+  async function saveSupabaseInstanceCredentials(instanceId, credentials) {
+    if (!requestIdPattern.test(instanceId ?? "")) {
+      throw new TypeError("A valid Supabase instance identifier is required.");
+    }
+    const validated = validateSupabaseCredentials(credentials, { instanceId });
+    const path = supabaseInstanceCredentialsPath(instanceId);
+    const temporaryPath = `${path}.tmp-${createId()}`;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, { flag: "wx", mode: 0o600 });
+      await chmod(temporaryPath, 0o640);
+      await rename(temporaryPath, path);
+    } finally {
+      await unlink(temporaryPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+  }
+
   async function consumeSupabaseCredentials(requestId) {
     if (!requestIdPattern.test(requestId ?? "")) {
       throw new TypeError("A valid Supabase deployment task identifier is required.");
@@ -1421,44 +1664,10 @@ export function createServiceOperationAgent({
         expired.code = "CREDENTIALS_UNAVAILABLE";
         throw expired;
       }
-      const credentials = JSON.parse(await readFile(claimedPath, "utf8"));
-      const expectedFields = [
-        "taskId", "instanceId", "apiUrl", "studioUrl", "dashboardUsername",
-        "dashboardPassword", "postgresPassword", "anonKey", "serviceRoleKey",
-      ].sort();
-      const validUrl = (value) => {
-        try {
-          const parsed = new URL(value);
-          return parsed.protocol === "https:" && isPublicHostname(parsed.hostname)
-            && !parsed.username && !parsed.password;
-        } catch {
-          return false;
-        }
-      };
-      if (!credentials || typeof credentials !== "object"
-        || Object.keys(credentials).sort().join(",") !== expectedFields.join(",")
-        || credentials.taskId !== requestId
-        || !requestIdPattern.test(credentials.instanceId ?? "")
-        || !validUrl(credentials.apiUrl)
-        || !validUrl(credentials.studioUrl)
-        || credentials.dashboardUsername !== "supabase"
-        || typeof credentials.dashboardPassword !== "string"
-        || credentials.dashboardPassword.length < 20
-        || typeof credentials.postgresPassword !== "string"
-        || credentials.postgresPassword.length < 20
-        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.anonKey ?? "")
-        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.serviceRoleKey ?? "")) {
-        throw new Error("The Supabase credential file has an invalid format.");
-      }
-      return {
-        studioUrl: credentials.studioUrl,
-        apiUrl: credentials.apiUrl,
-        dashboardUsername: credentials.dashboardUsername,
-        dashboardPassword: credentials.dashboardPassword,
-        postgresPassword: credentials.postgresPassword,
-        anonKey: credentials.anonKey,
-        serviceRoleKey: credentials.serviceRoleKey,
-      };
+      return exposeSupabaseCredentials(validateSupabaseCredentials(
+        JSON.parse(await readFile(claimedPath, "utf8")),
+        { taskId: requestId },
+      ));
     } finally {
       await unlink(claimedPath).catch((error) => {
         if (!isMissing(error)) throw error;
@@ -1468,12 +1677,17 @@ export function createServiceOperationAgent({
 
   return {
     getStatus,
+    getBuilderCachePruneStatus,
     getProjectBuildStatus,
     hasGiteaCredentials,
     consumeGiteaCredentials,
     hasPostgresqlCredentials,
     consumePostgresqlCredentials,
     hasSupabaseCredentials,
+    readSupabaseCredentials,
+    hasSupabaseInstanceCredentials,
+    readSupabaseInstanceCredentials,
+    saveSupabaseInstanceCredentials,
     consumeSupabaseCredentials,
     requestRestart: (serviceId, requestId = createId()) =>
       requestOperation("restart-service", serviceId, requestId),
@@ -1484,6 +1698,7 @@ export function createServiceOperationAgent({
     requestGiteaInstall,
     requestN8nInstall,
     requestPostgresqlInstall,
+    requestBuilderCachePrune,
     requestGiteaApiToken,
     requestProjectBuild,
     requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>

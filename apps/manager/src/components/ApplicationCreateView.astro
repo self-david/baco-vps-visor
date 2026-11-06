@@ -1,28 +1,32 @@
+---
+import SupabaseConfigurationForm from "./SupabaseConfigurationForm.astro";
+---
 <section id="application-create-view" class="hidden" hidden aria-labelledby="application-create-title">
   <header class="project-detail-header">
     <a class="project-back-link" href="/#tab-apps">← Aplicaciones</a>
     <div class="project-detail-title-row">
       <div>
-        <p class="eyebrow">NUEVA INSTANCIA</p>
         <h2 id="application-create-title">Agregar aplicación</h2>
-        <p class="muted">Cada instalación crea un servicio y almacenamiento independientes en el VPS principal del Swarm.</p>
+        <p id="application-create-description" class="muted">Configura la aplicación y sus opciones antes de desplegarla en el VPS.</p>
       </div>
     </div>
   </header>
-  <section class="card application-card" aria-labelledby="application-create-form-title">
+  <div class="application-template-picker">
+    <label htmlFor="manual-app-template">Tipo de aplicación</label>
+    <select id="manual-app-template" name="template">
+      <option value="custom">Aplicación personalizada</option>
+      <option value="n8n">n8n</option>
+      <option value="supabase">Supabase</option>
+    </select>
+  </div>
+  <section id="manual-application-card" class="card application-card" aria-labelledby="application-create-form-title">
     <div class="card-heading">
       <div>
-        <p class="eyebrow">CONFIGURACIÓN</p>
         <h3 id="application-create-form-title">Detalles de la instancia</h3>
       </div>
       <span class="badge roadmap-badge">Swarm</span>
     </div>
     <form id="manual-application-form" class="form-stack">
-      <label htmlFor="manual-app-template">Tipo de aplicación</label>
-      <select id="manual-app-template" name="template">
-        <option value="custom">Aplicación personalizada</option>
-        <option value="n8n">n8n</option>
-      </select>
       <label htmlFor="manual-app-name">Nombre de la instancia</label>
       <input id="manual-app-name" name="name" type="text" maxLength="100" required />
       <div id="manual-app-metadata-fields" class="application-form-fields">
@@ -96,4 +100,5 @@
       <button id="manual-app-submit" class="button" type="submit">Agregar y desplegar</button>
     </form>
   </section>
+  <SupabaseConfigurationForm />
 </section>

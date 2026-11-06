@@ -831,17 +831,40 @@ servicios base; Realtime, Storage, imgproxy, Edge Functions, Supavisor y el par
 Logflare/Vector se pueden seleccionar por instalación. Vector requiere Logflare.
 El acceso TCP a la base y al pooler está activado inicialmente (puertos 5432 y
 6543); si se habilita, esos puertos deben limitarse mediante el firewall del VPS.
+Los dominios de API y Studio deben pertenecer a zonas Cloudflare conectadas. Al
+guardar, el panel crea los registros DNS A o CNAME según el modo de ingreso,
+actualiza las rutas del túnel y registra los dominios para el enrutamiento HTTPS.
+
+La creación y edición de instancias de n8n y Supabase usan la ruta
+`/applications/new`; sus formularios aparecen dentro de esa ventana, no en
+diálogos separados. Los valores iniciales por aplicación se mantienen aislados
+en `apps/manager/public/application-templates.json`. Ese JSON solo contiene
+valores predeterminados visibles para el navegador: nunca agregues contraseñas,
+tokens ni secretos allí. El selector de servicios Supabase conserva sus
+dependencias y validaciones propias. Para ampliar los valores iniciales se
+agrega otra entrada de plantilla sin cambiar los valores de n8n ni Supabase;
+una aplicación nueva sigue necesitando su validador y flujo de despliegue en el
+servidor.
 
 El despliegue obtiene una versión fijada de la configuración oficial, valida los
 límites de memoria contra la capacidad del VPS y usa un perfil inicial compacto
 de 6.528 MiB para ejecutar los 13 servicios en el VPS de 7,8 GiB. Las
 configuraciones guardadas con los límites predeterminados anteriores se migran
 al desplegar, conservando los límites personalizados. Los secretos generados se
-conservan con permisos restringidos. El panel consulta Docker para mostrar por componente
-si está instalado, corriendo, detenido o desactivado; no infiere el estado de
-ejecución a partir de la configuración guardada. Las credenciales iniciales se
-pueden revelar una sola vez. La validación en el VPS de producción sigue pendiente
-hasta contar con permisos administrativos para Docker.
+conservan con permisos restringidos. La vista de cada instancia muestra los
+endpoints HTTPS, la conexión privada de base de datos, la configuración de
+servicios y su estado real. Las claves y contraseñas se solicitan explícitamente,
+solo después de iniciar sesión; cada consulta se audita y las respuestas no se
+almacenan en caché. Los secretos persistentes quedan en el VPS con permisos
+restringidos. El panel consulta Docker para mostrar por componente si está
+instalado, corriendo, detenido o desactivado; no infiere el estado de ejecución
+a partir de la configuración guardada. Las credenciales se guardan en el VPS tan
+pronto como se generan, por lo que pueden consultarse aunque otros servicios
+sigan iniciando. Las credenciales de despliegues anteriores solo se pueden
+migrar mientras siga disponible el archivo temporal de un solo uso; si expiró,
+vuelve a desplegar Supabase para guardarlas de forma persistente.
+La validación en el VPS de producción sigue pendiente hasta contar con permisos
+administrativos para Docker.
 
 ## 6.5. Instalaciones personalizadas
 
@@ -1062,6 +1085,13 @@ las métricas de un contenedor, aparece como no disponible.
 El total se limita a contenedores activos que puede consultar el Docker Engine
 del manager. No incluye procesos del sistema que no estén en contenedores,
 contenedores detenidos ni suma automáticamente otros nodos Swarm.
+
+La acción **Limpiar caché ahora** ejecuta `docker builder prune --all --force`
+en el host y muestra cuántos objetos de caché BuildKit quitó y cuánto espacio
+recuperó. Solo elimina caché de compilación que no está en uso; no borra
+imágenes, contenedores, volúmenes ni datos persistentes de aplicaciones. Está
+disponible también en el modo de prueba si el panel se ejecuta en el VPS y tiene
+montado el directorio del agente del host.
 
 ## 10.1. Métricas
 
@@ -1585,7 +1615,7 @@ Rutas principales implementadas:
 | Sesión | `POST /api/auth/login`, `GET /api/auth/session`, `POST /api/auth/logout` | Entrar, comprobar sesión y salir |
 | Proyectos | `GET/POST /api/projects`, `POST /api/projects/:id/build`, `GET /api/projects/:id/build-status`, `POST /api/projects/:id/deploy`, `GET /api/projects/:id/health` | Crear/listar, construir, desplegar y comprobar proyectos |
 | Docker | `GET /api/docker/containers`, `GET /api/docker/services`, `GET /api/docker/stacks`, `GET /api/docker/container-metrics` | Consultar recursos y consumo de contenedores |
-| Monitoreo | `GET /api/system/metrics-history`, `GET /api/system/metric-alerts` | Consultar histórico y alertas |
+| Monitoreo | `GET /api/system/metrics-history`, `GET /api/system/metric-alerts`, `GET/POST /api/system/builder-cache-prune` | Consultar histórico y alertas; limpiar de forma controlada caché BuildKit no utilizada |
 | Operaciones | `GET /api/system/tasks`, `GET /api/system/audit-log` | Consultar tareas e historial administrativo |
 
 La tabla es un mapa breve, no una lista completa. Los métodos y validaciones

@@ -148,7 +148,12 @@ manager_private_address = "-"
 node_role = "-"
 container_id = "-"
 common_fields = {"id", "operation", "serviceId"}
-if request.get("operation") == "restart-service":
+if request.get("operation") == "prune-builder-cache":
+    if set(request) != {"id", "operation"}:
+        raise SystemExit("Invalid builder cache cleanup request fields.")
+    service_id = "-"
+    replicas = "-"
+elif request.get("operation") == "restart-service":
     if set(request) != common_fields:
         raise SystemExit("Invalid service operation request fields.")
     replicas = "-"
@@ -396,8 +401,8 @@ elif request.get("operation") == "remove-application":
         str(request["instanceId"]),
     ):
         raise SystemExit("Invalid manual application instance identifier.")
-    if request["applicationId"] != "n8n-instance":
-        raise SystemExit("Only managed n8n instances can be removed by this operation.")
+    if request["applicationId"] not in ("n8n-instance", "supabase"):
+        raise SystemExit("Only managed n8n and Supabase instances can be removed by this operation.")
     service_id = "-"
     replicas = "-"
     application_id = request["applicationId"]
@@ -617,6 +622,22 @@ PY
   elif [[ "${operation}" == "scale-service" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","replicas":%s,"updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${replicas}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
+  elif [[ "${operation}" == "prune-builder-cache" ]]; then
+    python3 - "${temporary_file}" "${request_id}" "${state}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" <<'PY'
+import json
+import sys
+
+status_path, request_id, state, updated_at, message = sys.argv[1:]
+with open(status_path, "w", encoding="utf-8") as status_file:
+    json.dump({
+        "id": request_id,
+        "operation": "prune-builder-cache",
+        "state": state,
+        "updatedAt": updated_at,
+        "message": message,
+    }, status_file, ensure_ascii=True)
+    status_file.write("\n")
+PY
   elif [[ "${operation}" == "stop-container" || "${operation}" == "restart-container" ]]; then
     printf '{"id":"%s","operation":"%s","state":"%s","serviceId":"%s","containerId":"%s","updatedAt":"%s","message":"%s"}\n' \
       "${request_id}" "${operation}" "${state}" "${service_id}" "${container_id}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${message}" > "${temporary_file}"
@@ -633,6 +654,13 @@ PY
     mv -f -- "${build_status_temp}" "${STATE_DIRECTORY}/project-build-status-${request_id}.json"
   fi
   mv -f -- "${temporary_file}" "${STATUS_FILE}"
+  if [[ "${operation}" == "prune-builder-cache" ]]; then
+    local cache_prune_status_temp
+    cache_prune_status_temp="$(mktemp "${STATE_DIRECTORY}/builder-cache-prune-status.XXXXXX")"
+    cp -- "${STATUS_FILE}" "${cache_prune_status_temp}"
+    chmod 0644 "${cache_prune_status_temp}"
+    mv -f -- "${cache_prune_status_temp}" "${STATE_DIRECTORY}/builder-cache-prune-status.json"
+  fi
   if [[ "${operation}" == "configure-registry" && "${state}" != "running" ]]; then
     registry_status_written=true
   fi
@@ -670,6 +698,8 @@ elif [[ "${operation}" == "enroll-swarm-node" ]]; then
   write_status "running" "Validando red privada, UFW y acceso SSH del VPS destino."
 elif [[ "${operation}" == "scale-service" ]]; then
   write_status "running" "Escalado de servicio en curso."
+elif [[ "${operation}" == "prune-builder-cache" ]]; then
+  write_status "running" "Preparando la limpieza segura de caché BuildKit sin uso."
 elif [[ "${operation}" == "stop-container" ]]; then
   write_status "running" "Deteniendo temporalmente la tarea; Swarm la repondrá."
 elif [[ "${operation}" == "restart-container" ]]; then
@@ -682,6 +712,40 @@ rm -f -- "${REQUEST_FILE}"
 if ! command -v docker >/dev/null 2>&1; then
   write_status "failed" "Docker no está disponible en el host."
   echo "Docker is not installed." >&2
+  exit 1
+fi
+
+if [[ "${operation}" == "prune-builder-cache" ]]; then
+  cleanup_output_file="$(mktemp "${STATE_DIRECTORY}/builder-cache-prune-output.XXXXXX")"
+  if docker builder prune --all --force >"${cleanup_output_file}" 2>&1; then
+    cleanup_succeeded=true
+  else
+    cleanup_succeeded=false
+  fi
+  deleted_cache_count="$(grep -Ec '^[[:space:]]*[[:alnum:]]{20,}\*?[[:space:]]+true[[:space:]]+' "${cleanup_output_file}" || true)"
+  if [[ "${deleted_cache_count}" == "0" ]]; then
+    deleted_cache_count="$(grep -c '^Deleted:' "${cleanup_output_file}" || true)"
+  fi
+  reclaimed_space="$(awk -F': ' '/^Total reclaimed space:/ || /^Total:/ { value=$2 } END { print value }' "${cleanup_output_file}")"
+  if [[ "${cleanup_succeeded}" == "true" ]]; then
+    cat -- "${cleanup_output_file}"
+  else
+    cat -- "${cleanup_output_file}" >&2
+  fi
+  rm -f -- "${cleanup_output_file}"
+  if [[ "${cleanup_succeeded}" == "true" ]]; then
+    if [[ "${reclaimed_space}" =~ ^[0-9]+([.][0-9]+)?[[:space:]]?[A-Za-z]+$ ]]; then
+      write_status "succeeded" "Caché BuildKit sin uso: ${deleted_cache_count} objeto(s) eliminados; ${reclaimed_space} liberados."
+    else
+      write_status "succeeded" "Caché BuildKit sin uso limpiada: ${deleted_cache_count} objeto(s) eliminados. Docker no informó el espacio recuperado."
+    fi
+    exit 0
+  fi
+  if [[ "${reclaimed_space}" =~ ^[0-9]+([.][0-9]+)?[[:space:]]?[A-Za-z]+$ ]]; then
+    write_status "failed" "La limpieza terminó con error tras retirar ${deleted_cache_count} objeto(s) y liberar ${reclaimed_space}. Revisa los logs del agente."
+  else
+    write_status "failed" "No se pudo limpiar la caché BuildKit. Revisa los logs del agente del VPS."
+  fi
   exit 1
 fi
 
@@ -1869,6 +1933,11 @@ PY
 fi
 
 if [[ "${operation}" == "remove-application" ]]; then
+  if [[ "${application_id}" == "supabase" ]]; then
+    vps_manager_remove_supabase "${application_instance_id}" "${request_id}"
+    exit $?
+  fi
+
   application_service="vps-manager-app-${application_instance_id//-/}"
   if ! application_service_names="$(docker service ls --format '{{.Name}}')"; then
     write_status "failed" "No se pudo consultar la lista de servicios Swarm."

@@ -1,6 +1,62 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+vps_manager_remove_supabase() {
+  local instance_id="$1"
+  local request_id="$2"
+  local application_directory="/var/lib/vps-manager/applications/supabase-${instance_id}"
+  local compose_project="vps-manager-supabase-${instance_id//-/}"
+  local compose_file="${application_directory}/docker-compose.vps-manager.yml"
+  local persistent_credentials_path="${STATE_DIRECTORY}/supabase-instance-credentials-${instance_id}.json"
+  local containers
+
+  if [[ ! "${instance_id}" =~ ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$ ]]; then
+    write_status "failed" "El identificador de instancia Supabase no es válido."
+    return 1
+  fi
+  if [[ -L "${application_directory}" || (-e "${application_directory}" && ! -d "${application_directory}") ]]; then
+    write_status "failed" "La carpeta de la instancia Supabase no es válida; no se eliminarán archivos."
+    return 1
+  fi
+  if [[ -L "${persistent_credentials_path}" || (-e "${persistent_credentials_path}" && ! -f "${persistent_credentials_path}") ]]; then
+    write_status "failed" "El archivo de credenciales de Supabase no es válido; se detuvo su eliminación."
+    return 1
+  fi
+  if [[ -d "${application_directory}" ]]; then
+    if [[ -L "${compose_file}" || ! -f "${compose_file}" ]]; then
+      write_status "failed" "No se encontró el archivo Compose seguro de la instancia Supabase."
+      return 1
+    fi
+    if ! docker compose --project-name "${compose_project}" \
+      -f "${compose_file}" down --volumes --remove-orphans; then
+      write_status "failed" "Docker Compose no pudo retirar Supabase y sus volúmenes persistentes."
+      return 1
+    fi
+  else
+    if ! containers="$(docker ps --all --quiet --filter "label=com.docker.compose.project=${compose_project}")"; then
+      write_status "failed" "No se pudo verificar si quedan contenedores de la instancia Supabase."
+      return 1
+    fi
+    if [[ -n "${containers}" ]]; then
+      write_status "failed" "Hay contenedores de Supabase sin su configuración Compose; no se eliminarán recursos a ciegas."
+      return 1
+    fi
+  fi
+
+  if [[ -d "${application_directory}" ]]; then
+    if ! rm -rf -- "${application_directory}"; then
+      write_status "failed" "No se pudo retirar la configuración local de Supabase."
+      return 1
+    fi
+  fi
+  if ! rm -f -- "${persistent_credentials_path}" \
+    "${STATE_DIRECTORY}/supabase-credentials-${request_id}.json"; then
+    write_status "failed" "No se pudieron eliminar las credenciales protegidas de Supabase."
+    return 1
+  fi
+  write_status "succeeded" "Servicios, volúmenes persistentes, secretos locales y credenciales de Supabase eliminados."
+}
+
 vps_manager_install_supabase() {
   local staged_config="$1"
   local request_id="$2"
@@ -13,12 +69,14 @@ vps_manager_install_supabase() {
   local requested_memory_mb
   local memory_budget_mb
   local compose_project="vps-manager-supabase-${instance_id//-/}"
+  local persistent_credentials_path="${STATE_DIRECTORY}/supabase-instance-credentials-${instance_id}.json"
   local -a compose_command
   local -a selected_services
   local -a inactive_services
   local attempt
   local api_container_id
   local credentials_temp_path
+  local compose_error
 
   if ! command -v git >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 \
     || ! python3 -c 'import yaml' >/dev/null 2>&1; then
@@ -31,6 +89,10 @@ vps_manager_install_supabase() {
   fi
   if [[ ! -r "${staged_config}" || -L "${staged_config}" ]]; then
     write_status "failed" "No se encontró la configuración protegida de Supabase."
+    return 1
+  fi
+  if [[ -L "${persistent_credentials_path}" || ( -e "${persistent_credentials_path}" && ! -f "${persistent_credentials_path}" ) ]]; then
+    write_status "failed" "La ruta protegida de credenciales de Supabase no es un archivo regular."
     return 1
   fi
 
@@ -489,8 +551,10 @@ for service_id in service_ids:
     deploy = service.setdefault("deploy", {})
     resources = deploy.setdefault("resources", {})
     resource_limits = resources.setdefault("limits", {})
+    memory_limit = f"{limits['memoryMb']}M"
     resource_limits["cpus"] = str(limits["cpus"])
-    resource_limits["memory"] = f"{limits['memoryMb']}M"
+    resource_limits["memory"] = memory_limit
+    service["mem_limit"] = memory_limit
     labels = service.get("labels") or {}
     if isinstance(labels, list):
         labels = dict(label.split("=", 1) for label in labels)
@@ -576,6 +640,8 @@ PY
     return 1
   fi
 
+  install -o root -g 1000 -m 0640 "${credentials_temp_path}" "${persistent_credentials_path}"
+
   mapfile -t selected_services < <(
     python3 - "${temporary_directory}/metadata.json" <<'PY'
 import json
@@ -596,8 +662,9 @@ PY
   )
   local -a compose_base=(docker compose --project-name "${compose_project}" -f "${application_directory}/docker-compose.vps-manager.yml")
   compose_command=("${compose_base[@]}")
-  if ! "${compose_command[@]}" config -q; then
-    write_status "failed" "Docker Compose rechazó la configuración generada para Supabase."
+  if ! compose_error="$("${compose_command[@]}" config -q 2>&1)"; then
+    compose_error="$(printf '%s' "${compose_error}" | tr '\r\n' '  ' | cut -c1-600)"
+    write_status "failed" "Docker Compose rechazó la configuración generada para Supabase. Detalle: ${compose_error:-sin detalle adicional}"
     rm -rf -- "${temporary_directory}"
     return 1
   fi

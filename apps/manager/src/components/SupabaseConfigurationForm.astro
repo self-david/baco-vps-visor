@@ -1,0 +1,85 @@
+<section id="supabase-create-form" class="card application-card hidden" aria-labelledby="supabase-configuration-title" hidden>
+  <div class="card-heading">
+    <div>
+      <h3 id="supabase-configuration-title">Configurar instancia de Supabase</h3>
+    </div>
+    <span class="badge roadmap-badge">Stack configurable</span>
+  </div>
+  <p class="muted">Cada instancia guarda sus propios dominios, servicios y límites. No se mezcla con la configuración de n8n ni con futuras aplicaciones.</p>
+  <form id="supabase-configuration-form" class="form-stack">
+    <label for="supabase-instance-name">Nombre de la instalación</label>
+    <input id="supabase-instance-name" name="name" type="text" maxlength="100" required>
+    <label for="supabase-server-node">VPS destino (nodo activo del Swarm)</label>
+    <select id="supabase-server-node" name="serverNodeId" required></select>
+    <fieldset class="application-fieldset">
+      <legend>Servicios del stack</legend>
+      <p class="muted">Los componentes base son obligatorios. Los demás son opcionales; Vector necesita Analytics.</p>
+      <label for="supabase-service-filter">Filtrar servicios</label>
+      <input id="supabase-service-filter" type="search" placeholder="Buscar por nombre o imagen" autocomplete="off">
+      <p id="supabase-service-filter-status" class="muted" role="status" aria-live="polite"></p>
+      <div id="supabase-service-selection" class="application-service-selection"></div>
+      <label class="checkbox-label" for="supabase-expose-database-ports">
+        <input id="supabase-expose-database-ports" name="exposeDatabasePorts" type="checkbox">
+        Publicar las conexiones de base de datos (puertos 5432 y 6543) en el VPS
+      </label>
+      <p class="muted">Abre esos puertos solo si los necesitas y restringe el acceso mediante el firewall del VPS.</p>
+    </fieldset>
+    <div class="application-form-section">
+      <h4>Dominios y acceso</h4>
+      <label for="supabase-api-domain">Dominio HTTPS de API</label>
+      <input id="supabase-api-domain" name="apiDomain" type="text" placeholder="api.ejemplo.com" autocomplete="off" required>
+      <label for="supabase-studio-domain">Dominio HTTPS de Studio</label>
+      <input id="supabase-studio-domain" name="studioDomain" type="text" placeholder="studio.ejemplo.com" autocomplete="off" required>
+      <p id="supabase-domains-readonly-note" class="muted" hidden>Los dominios de una instancia existente no se pueden cambiar; crea otra instancia para usar dominios distintos.</p>
+      <p class="muted">Ambos dominios deben pertenecer a zonas Cloudflare conectadas. Al guardar, el panel crea los registros DNS y configura el acceso por túnel o por la IPv4 pública.</p>
+      <label for="supabase-site-url">URL del sitio que usará Supabase</label>
+      <input id="supabase-site-url" name="siteUrl" type="url" placeholder="https://app.ejemplo.com" required>
+      <label for="supabase-redirect-urls">URLs HTTPS adicionales de redirección (una por línea)</label>
+      <textarea id="supabase-redirect-urls" name="additionalRedirectUrls" rows="3" placeholder="https://app.ejemplo.com/auth/callback"></textarea>
+    </div>
+    <div class="application-form-section">
+      <h4>Organización y proyecto</h4>
+      <label for="supabase-organization-name">Organización inicial</label>
+      <input id="supabase-organization-name" name="organizationName" type="text" maxlength="100" required>
+      <label for="supabase-project-name">Proyecto inicial</label>
+      <input id="supabase-project-name" name="projectName" type="text" maxlength="100" required>
+    </div>
+    <fieldset class="application-fieldset">
+      <legend>Autenticación</legend>
+      <label class="checkbox-label" for="supabase-disable-signup"><input id="supabase-disable-signup" name="disableSignup" type="checkbox"> Deshabilitar registros</label>
+      <label class="checkbox-label" for="supabase-email-signup"><input id="supabase-email-signup" name="enableEmailSignup" type="checkbox"> Registro por email</label>
+      <label class="checkbox-label" for="supabase-email-autoconfirm"><input id="supabase-email-autoconfirm" name="enableEmailAutoconfirm" type="checkbox"> Confirmar emails automáticamente</label>
+      <label class="checkbox-label" for="supabase-anonymous-users"><input id="supabase-anonymous-users" name="enableAnonymousUsers" type="checkbox"> Permitir usuarios anónimos</label>
+      <label for="supabase-jwt-expiry">Duración JWT (segundos)</label>
+      <input id="supabase-jwt-expiry" name="jwtExpirySeconds" type="number" min="300" max="604800" step="1" required>
+    </fieldset>
+    <fieldset class="application-fieldset">
+      <legend>API, almacenamiento y funciones</legend>
+      <label for="supabase-max-rows">Máximo de filas por consulta REST</label>
+      <input id="supabase-max-rows" name="maxRows" type="number" min="1" max="10000" step="1" required>
+      <label for="supabase-file-size">Límite de archivo en bytes</label>
+      <input id="supabase-file-size" name="storageFileSizeLimitBytes" type="number" min="1048576" max="5368709120" step="1" required>
+      <label for="supabase-storage-region">Región de almacenamiento</label>
+      <input id="supabase-storage-region" name="storageRegion" type="text" maxlength="100" required>
+      <label class="checkbox-label" for="supabase-image-transformation"><input id="supabase-image-transformation" name="enableImageTransformation" type="checkbox"> Habilitar transformación de imágenes</label>
+      <label class="checkbox-label" for="supabase-functions-verify-jwt"><input id="supabase-functions-verify-jwt" name="functionsVerifyJwt" type="checkbox"> Verificar JWT en Edge Functions</label>
+    </fieldset>
+    <details class="application-form-advanced">
+      <summary>SMTP, OAuth y límites por servicio</summary>
+      <div class="application-form-fields">
+        <label for="supabase-smtp-settings">SMTP opcional (JSON sin contraseña)</label>
+        <textarea id="supabase-smtp-settings" name="smtp" rows="3" placeholder='{"host":"smtp.ejemplo.com","port":587,"adminEmail":"admin@ejemplo.com","senderName":"Supabase","username":"usuario"}'></textarea>
+        <label for="supabase-oauth-settings">Proveedores OAuth opcionales (JSON sin secretos de cliente)</label>
+        <textarea id="supabase-oauth-settings" name="oauthProviders" rows="3" placeholder='{"github":{"enabled":true,"clientId":"..."} }'></textarea>
+        <label for="supabase-resource-limits">CPU y memoria por servicio (JSON)</label>
+        <textarea id="supabase-resource-limits" name="resourceLimits" rows="10" spellcheck="false" required></textarea>
+      </div>
+    </details>
+    <p class="muted">Las contraseñas y claves se generan de forma segura al desplegar; no se guardan en este formulario ni en el JSON de plantilla.</p>
+    <p id="supabase-configuration-status" class="application-status" role="status" aria-live="polite"></p>
+    <div class="application-form-actions">
+      <button id="save-supabase-configuration" class="button secondary" type="submit" name="action" value="save" disabled>Guardar configuración</button>
+      <button id="deploy-supabase-configuration" class="button" type="submit" name="action" value="deploy" disabled>Guardar y desplegar</button>
+    </div>
+  </form>
+</section>
