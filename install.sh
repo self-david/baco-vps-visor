@@ -196,7 +196,10 @@ else
   SOURCE_DIR="${SCRIPT_DIR}"
 fi
 
-[[ -f "${SOURCE_DIR}/apps/manager/server.mjs" && -f "${SOURCE_DIR}/installer/stack.yml" ]] || fail "El repositorio no contiene la versión esperada de VPS Manager."
+[[ -f "${SOURCE_DIR}/apps/manager/server.mjs" \
+  && -f "${SOURCE_DIR}/installer/stack.yml" \
+  && -f "${SOURCE_DIR}/installer/project-deployment-agent.sh" ]] \
+  || fail "El repositorio no contiene la versión esperada de VPS Manager."
 VPS_MANAGER_VERSION="$(tr -d '\r\n' < "${SOURCE_DIR}/apps/manager/VERSION")"
 [[ "${VPS_MANAGER_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
   || fail "La versión del panel debe tener formato semver estable (por ejemplo 1.2.3)."
@@ -305,6 +308,7 @@ install -m 0755 "${SOURCE_DIR}/installer/swarm-node-enroll.sh" /usr/local/libexe
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.path" /etc/systemd/system/vps-manager-web-update.path
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-web-update.service" /etc/systemd/system/vps-manager-web-update.service
 install -m 0755 "${SOURCE_DIR}/installer/service-agent.sh" /usr/local/libexec/vps-manager-service-agent
+install -m 0755 "${SOURCE_DIR}/installer/project-deployment-agent.sh" /usr/local/libexec/vps-manager-project-deployment-agent.sh
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.path" /etc/systemd/system/vps-manager-service-agent.path
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-service-agent.service" /etc/systemd/system/vps-manager-service-agent.service
 install -m 0644 "${SOURCE_DIR}/installer/vps-manager-container-cleanup.timer" /etc/systemd/system/vps-manager-container-cleanup.timer

@@ -9,7 +9,17 @@
                   </div>
                 </div>
                 <p id="metrics-status" class="muted metrics-status" aria-live="polite"></p>
-                <div id="metrics-total" class="metrics-total hidden" aria-live="polite"></div>
+                <section id="metrics-total" class="metrics-total" aria-live="polite" aria-label="Suma total de recursos"></section>
+                <section class="metrics-projects" aria-labelledby="metrics-projects-title">
+                  <h4 id="metrics-projects-title">URLs de proyectos</h4>
+                  <div id="metrics-project-urls" class="metrics-project-urls"></div>
+                  <p id="metrics-project-urls-empty" class="muted">No hay URLs asignadas a proyectos.</p>
+                </section>
+                <div class="metrics-view-switch" role="group" aria-label="Vista del consumo de recursos">
+                  <button class="button secondary" type="button" data-metrics-view="services" aria-pressed="false">Por servicio</button>
+                  <button class="button secondary" type="button" data-metrics-view="containers" aria-pressed="false">Por contenedor</button>
+                  <button class="button secondary" type="button" data-metrics-view="both" aria-pressed="true">Ambos</button>
+                </div>
                 <div id="metrics-groups" class="metrics-groups hidden" aria-live="polite"></div>
                 <section class="metrics-individual" aria-labelledby="metrics-individual-title">
                   <h4 id="metrics-individual-title">Consumo por contenedor</h4>

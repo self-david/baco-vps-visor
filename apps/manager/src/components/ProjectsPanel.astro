@@ -2,7 +2,7 @@
 ---
 <section id="tab-projects" class="dashboard-panel hidden" role="tabpanel" aria-labelledby="tab-button-projects" tabindex="0" hidden>
             <div class="grid grid-cols-1 gap-[18px]">
-              <section class="card" aria-labelledby="projects-title">
+              <section class="card projects-overview-card" aria-labelledby="projects-title">
                 <div class="card-heading">
                   <div>
                     <p class="eyebrow">DESPLIEGUE DE CÓDIGO</p>
@@ -10,14 +10,16 @@
                   </div>
                   <button id="refresh-projects" class="button secondary" type="button">Actualizar</button>
                 </div>
-                <p class="muted">Conecta GitHub o importa los archivos de un proyecto.</p>
-                <p id="projects-status" class="muted" role="status" aria-live="polite">Cargando proyectos…</p>
-                <div id="projects-list" class="project-list"></div>
-                <section class="project-import" aria-labelledby="project-upload-title">
+                <p class="muted project-intro">Conecta GitHub o importa los archivos de un proyecto.</p>
+                <section class="project-import project-create-card" aria-labelledby="project-upload-title">
                   <div class="card-heading">
-                    <h4 id="project-upload-title">Crear proyecto desde archivos</h4>
+                    <div>
+                      <p class="eyebrow">EMPIEZA AQUÍ</p>
+                      <h4 id="project-upload-title">Nuevo proyecto</h4>
+                    </div>
                     <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-project-files" data-guide-title="Crear un proyecto desde archivos" aria-label="Ayuda para crear un proyecto desde archivos" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
                   </div>
+                  <p class="muted">Elige una plantilla o importa tu código desde un ZIP, carpeta o archivos.</p>
                   <div class="project-template-list" aria-label="Plantillas incluidas">
                     <h5>Empezar con una plantilla</h5>
                     <div class="project-actions">
@@ -157,6 +159,8 @@
                     </div>
                   </dialog>
                 </section>
+                <p id="projects-status" class="muted" role="status" aria-live="polite">Cargando proyectos…</p>
+                <div id="projects-list" class="project-list"></div>
               </section>
 
               <section class="card" aria-labelledby="github-settings-title">

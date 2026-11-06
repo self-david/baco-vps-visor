@@ -4,8 +4,11 @@ import { readdir, readFile } from "node:fs/promises";
 import { applicationCatalog } from "../src/data/application-catalog.mjs";
 
 test("project deployment configuration parser imports its fingerprint dependency", async () => {
-  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
-  const parser = serviceAgent.match(
+  const projectDeploymentAgent = await readFile(
+    new URL("../../../installer/project-deployment-agent.sh", import.meta.url),
+    "utf8",
+  );
+  const parser = projectDeploymentAgent.match(
     /if ! python3 - "\$\{deployment_config_file\}"[^\n]*<<'PY'\r?\n([\s\S]*?)\r?\nPY/,
   );
 
@@ -23,11 +26,23 @@ test("the project service agent can reach external registries inside its systemd
   assert.doesNotMatch(serviceUnit, /^PrivateNetwork=true$/m);
 });
 
+test("the project deployment agent is installed and loaded separately from general service operations", async () => {
+  const [serviceAgent, installer] = await Promise.all([
+    readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(serviceAgent, /source \/usr\/local\/libexec\/vps-manager-project-deployment-agent\.sh/);
+  assert.doesNotMatch(serviceAgent, /^if \[\[ "\$\{operation\}" == "build-project" \]\]; then$/m);
+  assert.match(installer, /installer\/project-deployment-agent\.sh/);
+  assert.match(installer, /vps-manager-project-deployment-agent\.sh/);
+});
+
 test("pnpm projects automatically refresh and install dependencies before every project build", async () => {
-  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
-  const buildStart = serviceAgent.indexOf('\nif [[ "${operation}" == "build-project" ]]; then');
-  const buildEnd = serviceAgent.indexOf('\nif [[ "${operation}" == "configure-registry" ]]', buildStart);
-  const projectBuild = serviceAgent.slice(buildStart, buildEnd);
+  const projectBuild = await readFile(
+    new URL("../../../installer/project-deployment-agent.sh", import.meta.url),
+    "utf8",
+  );
 
   assert.match(projectBuild, /pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts/);
   assert.match(projectBuild, /pnpm install --frozen-lockfile --ignore-scripts/);
@@ -42,7 +57,7 @@ test("pnpm projects automatically refresh and install dependencies before every 
     projectBuild.indexOf("pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts")
       < projectBuild.indexOf("pnpm install --frozen-lockfile --ignore-scripts"),
   );
-  assert.match(serviceAgent, /project-pnpm-lock-\$\{project_id\}\.yaml/);
+  assert.match(projectBuild, /project-pnpm-lock-\$\{project_id\}\.yaml/);
 });
 
 test("projects tab exposes GitHub OAuth, imports, and a route-based detail view", async () => {
@@ -70,6 +85,8 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectsPanel, /id="project-import-settings-step"/);
   assert.match(projectsPanel, /id="project-import-open-project"/);
   assert.match(projectsPanel, /id="project-import-name"/);
+  assert.match(projectsPanel, /class="project-import project-create-card"/);
+  assert.ok(projectsPanel.indexOf('class="project-create-card"') < projectsPanel.indexOf('id="projects-list"'));
   assert.match(projectsPanel, /id="project-import-create-domain"/);
   assert.match(projectsPanel, /id="project-import-domain-zone"/);
   assert.match(projectsPanel, /id="project-import-domain-subdomain"/);
@@ -132,6 +149,10 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.doesNotMatch(projectsPanel, /id="github-webhook-secret"/);
   assert.match(projectsPanel, /Guardar y continuar/);
   assert.match(page, /<ProjectDetailView \/>/);
+  assert.ok(page.indexOf("</section>\n      <ProjectDetailView />") > page.indexOf('id="dashboard-view"'));
+  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject\)/);
+  const login = await readFile(new URL("../public/login.js", import.meta.url), "utf8");
+  assert.match(login, /projectDetailView\.classList\.toggle\("hidden", !authenticated \|\| !isProjectRoute\)/);
   assert.match(projectDetailView, /data-project-tab="deploy">Implementaciones/);
   assert.match(projectDetailView, /data-project-tab="settings">Configuración/);
   assert.match(projectDetailView, /href="\/#tab-projects"/);
@@ -209,17 +230,33 @@ test("projects tab exposes GitHub OAuth, imports, and a route-based detail view"
   assert.match(projectDetailView, /project-detail-history/);
   assert.match(application, /Despliegue automático al recibir cambios en \$\{project\.productionBranch\}/);
   assert.match(application, /projectAutoDeployInput\.closest\("label"\)\.hidden = isUpload/);
+  assert.match(application, /function renderMetricsProjectUrls\(\)/);
+  assert.match(application, /data-metrics-view/);
+  assert.match(application, /metricsView === "containers"/);
+  assert.match(application, /metricsView === "services"/);
+  const monitoringPanel = await readFile(new URL("../src/components/MonitoringPanel.astro", import.meta.url), "utf8");
+  assert.match(monitoringPanel, /id="metrics-project-urls"/);
+  assert.match(monitoringPanel, /data-metrics-view="services"/);
+  assert.match(monitoringPanel, /data-metrics-view="containers"/);
+  assert.match(monitoringPanel, /data-metrics-view="both"/);
+  assert.match(monitoringPanel, /id="metrics-total" class="metrics-total"/);
+  assert.doesNotMatch(monitoringPanel, /id="metrics-total" class="metrics-total hidden"/);
+  assert.match(application, /Suma total de recursos/);
+  assert.match(application, /RAM usada por contenedores/);
+  assert.match(application, /Suma parcial: faltan métricas/);
+  assert.match(application, /No se pudo calcular la suma:/);
   assert.match(application, /\/api\/github\/project-profile/);
   assert.match(application, /githubDetectedBuildProfile\?\.framework/);
   assert.match(projectDetailView, /project-framework-summary/);
 });
 
 test("project file selection displays a nested filename tree and project cards offer guarded deletion", async () => {
-  const [importer, application, projectDetailView, serviceAgent, server] = await Promise.all([
+  const [importer, application, projectDetailView, serviceAgent, projectDeploymentAgent, server] = await Promise.all([
     readFile(new URL("../public/project-import.js", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
     readFile(new URL("../src/components/ProjectDetailView.astro", import.meta.url), "utf8"),
     readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/project-deployment-agent.sh", import.meta.url), "utf8"),
     readFile(new URL("../server.mjs", import.meta.url), "utf8"),
   ]);
   const rendererStart = application.indexOf("function renderProjects() {");
@@ -238,7 +275,7 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(renderer, /Reintentar deploy/);
   assert.doesNotMatch(renderer, /project-registry-guidance/);
   assert.match(application, /window\.location\.assign\("\/#tab-projects"\)/);
-  assert.match(application, /dashboardTabsRoot\.hidden = showingProject/);
+  assert.match(application, /dashboardView\.classList\.toggle\("hidden", showingProject\)/);
   assert.match(application, /function renderAssignedDomains\(domains\)/);
   assert.match(application, /Conectado correctamente\./);
   assert.match(application, /Falló la conexión\. Motivo:/);
@@ -247,10 +284,10 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(server, /originProtocol: getCloudflareTunnelOriginProtocol\(settings\)/);
   assert.match(server, /localTunnelOriginAvailable: testMode/);
   assert.match(application, /request\("\/api\/cloudflare\/tunnel\/origin"/);
-  assert.match(serviceAgent, /project_http_router="\$\{project_router\}-http"/);
+  assert.match(projectDeploymentAgent, /project_http_router="\$\{project_router\}-http"/);
   assert.match(serviceAgent, /application_http_router="\$\{application_router\}-http"/);
-  assert.match(serviceAgent, /traefik\.http\.routers\.\$\{project_router\}\.service=\$\{project_router\}/);
-  assert.match(serviceAgent, /traefik\.http\.routers\.\$\{project_http_router\}\.service=\$\{project_http_router\}/);
+  assert.match(projectDeploymentAgent, /traefik\.http\.routers\.\$\{project_router\}\.service=\$\{project_router\}/);
+  assert.match(projectDeploymentAgent, /traefik\.http\.routers\.\$\{project_http_router\}\.service=\$\{project_http_router\}/);
   assert.match(serviceAgent, /traefik\.http\.routers\.\$\{application_router\}\.service=\$\{application_router\}/);
   assert.match(serviceAgent, /traefik\.http\.routers\.\$\{application_http_router\}\.service=\$\{application_http_router\}/);
   assert.match(application, /HTTP \$\{response\.status\}: \$\{responseMessage\}/);
@@ -264,29 +301,27 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(server, /source.{0,10}files/);
   assert.match(server, /vps-manager-project-\$\{project\.id\.replaceAll\("-", ""\)\}:\$\{commitSha\}/);
   assert.doesNotMatch(server, /Configura primero el registro privado en Configuración para importar y desplegar repositorios/);
-  const projectBuildStart = serviceAgent.indexOf('\nif [[ "${operation}" == "build-project" ]]; then');
-  const projectBuildEnd = serviceAgent.indexOf('\nif [[ "${operation}" == "configure-registry" ]]', projectBuildStart);
-  const projectBuild = serviceAgent.slice(projectBuildStart, projectBuildEnd);
-  assert.match(projectBuild, /--load/);
-  assert.doesNotMatch(projectBuild, /--push/);
-  assert.match(serviceAgent, /--mode replicated/);
-  assert.match(serviceAgent, /--constraint "node\.id==\$\{project_manager_node_id\}"/);
-  assert.match(serviceAgent, /--restart-condition any/);
+  assert.match(projectDeploymentAgent, /--load/);
+  assert.doesNotMatch(projectDeploymentAgent, /--push/);
+  assert.match(projectDeploymentAgent, /--mode replicated/);
+  assert.match(projectDeploymentAgent, /--constraint "node\.id==\$\{project_manager_node_id\}"/);
+  assert.match(projectDeploymentAgent, /--restart-condition any/);
   assert.match(server, /validateProjectArchive\(archive\)/);
   assert.match(server, /projects.{0,30}0-9a-f/);
-  assert.match(serviceAgent, /has_root_contents/);
-  assert.match(serviceAgent, /FROM nginx:alpine/);
-  assert.match(serviceAgent, /build_dockerfile="\$\{build_directory\}\/Dockerfile\.static"/);
-  assert.match(serviceAgent, /--file "\$\{build_dockerfile\}"/);
+  assert.match(projectDeploymentAgent, /has_root_contents/);
+  assert.match(projectDeploymentAgent, /FROM nginx:alpine/);
+  assert.match(projectDeploymentAgent, /build_dockerfile="\$\{build_directory\}\/Dockerfile\.static"/);
+  assert.match(projectDeploymentAgent, /--file "\$\{build_dockerfile\}"/);
   assert.match(serviceAgent, /deployment_type = request\["deploymentType"\]/);
   assert.match(serviceAgent, /"deploymentType": deployment_type/);
-  assert.match(serviceAgent, /build_output_directory/);
-  assert.match(serviceAgent, /RUN test -s "\/app\/%s\/index\.html"/);
-  assert.match(serviceAgent, /configura una aplicación dinámica/);
-  assert.match(serviceAgent, /CMD \["node", "server\.js"\]/);
-  assert.match(serviceAgent, /CMD \["python", "main\.py"\]/);
-  assert.match(serviceAgent, /C\+\+ requiere un Dockerfile/);
-  assert.doesNotMatch(serviceAgent, /archive must contain one root directory/);
+  assert.match(projectDeploymentAgent, /build_output_directory/);
+  assert.match(projectDeploymentAgent, /RUN test -s "\/app\/%s\/index\.html"/);
+  assert.match(projectDeploymentAgent, /configura una aplicación dinámica/);
+  assert.match(projectDeploymentAgent, /CMD \["node", "server\.js"\]/);
+  assert.match(projectDeploymentAgent, /CMD \["python", "main\.py"\]/);
+  assert.match(projectDeploymentAgent, /C\+\+ requiere un Dockerfile/);
+  assert.doesNotMatch(projectDeploymentAgent, /archive must contain one root directory/);
+  assert.match(serviceAgent, /source \/usr\/local\/libexec\/vps-manager-project-deployment-agent\.sh/);
 });
 
 test("project domains refresh health, offer route repair, and explain internal port usage", async () => {
@@ -447,13 +482,16 @@ test("project services and containers use their project name in the resource lis
 test("project domain routes are activated automatically without redeploying", async () => {
   const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
   const application = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
+  const projectDeploymentAgent = await readFile(
+    new URL("../../../installer/project-deployment-agent.sh", import.meta.url),
+    "utf8",
+  );
 
   assert.match(server, /requestProjectRouteUpdate\(projectId, config\.domainsHash\)/);
   assert.match(server, /setInterval\(\(\) => \{\s*void reconcileProjectRoutes\(\);/);
   assert.match(application, /Activando ruta automáticamente/);
   assert.doesNotMatch(application, /Redespliega el proyecto para activar esta ruta/);
-  assert.match(serviceAgent, /update-project-routes/);
-  assert.match(serviceAgent, /vps-manager\.project-domains-hash=\$\{domains_hash\}/);
-  assert.match(serviceAgent, /Rutas del proyecto actualizadas automáticamente sin reiniciar el contenedor/);
+  assert.match(projectDeploymentAgent, /update-project-routes/);
+  assert.match(projectDeploymentAgent, /vps-manager\.project-domains-hash=\$\{domains_hash\}/);
+  assert.match(projectDeploymentAgent, /Rutas del proyecto actualizadas automáticamente sin reiniciar el contenedor/);
 });

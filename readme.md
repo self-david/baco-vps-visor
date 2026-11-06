@@ -475,6 +475,7 @@ Cada proyecto tiene una vista `/projects/<id>` con pestañas de despliegue, conf
 La importación incluye plantillas predeterminadas para HTML/CSS/JavaScript vanilla, un servidor Node.js con `node:http` y un servidor Python con la biblioteca estándar. Node y Python escuchan en `0.0.0.0:3000`, leen el puerto de `PORT` y exponen `/health`; no requieren manifiestos ni dependencias. Al elegir una plantilla, crea el proyecto y luego usa **Construir** y **Desplegar** desde su vista para publicarlo.
 Para proyectos Python con dependencias, el puerto sugerido depende del framework detectado: FastAPI y Django usan `8000`, Flask `5000`; los proyectos Python genéricos conservan `3000`. Verifica que el servidor de la aplicación escuche en el puerto configurado.
 Los builds se cargan localmente en el nodo principal, por lo que no requieren un registro privado. Cada proyecto se ejecuta en su propio servicio Swarm; los dominios asociados se enrutan a ese servicio mediante Traefik.
+La ejecución de build, despliegue, actualización de rutas y retiro vive en el agente aislado `installer/project-deployment-agent.sh`. La CI ejecuta las pruebas del manager, verifica el build y comprueba la sintaxis de los agentes e instaladores.
 Mientras un build está en cola o en ejecución, el botón **Construir** queda deshabilitado. La vista del proyecto actualiza el estado automáticamente y muestra las últimas líneas de BuildKit, también cuando falla.
 
 Si los logs muestran un error de resolución DNS como `lookup auth.docker.io` o

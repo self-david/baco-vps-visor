@@ -87,7 +87,16 @@ import ProjectSettingsForm from "./ProjectSettingsForm.astro";
       <p>Los sitios con <code>index.html</code> se sirven con Nginx. Las aplicaciones Node, Python y otros servidores usan una imagen de runtime adecuada; puedes dejar que Railpack detecte la configuración o usar un Dockerfile propio. Los sitios compilados se construyen y luego se sirven como archivos estáticos.</p>
       <p>La imagen se construye en el VPS principal y Swarm ejecuta una tarea por proyecto en ese nodo. No necesitas configurar un registro privado para este modo; para distribuir proyectos entre varios nodos se necesitaría un registro accesible por todos.</p>
     </template>
-    <div class="project-release-actions" id="project-detail-actions"></div>
+    <section class="project-release-actions" aria-labelledby="project-release-actions-title">
+      <div class="project-panel-heading">
+        <div>
+          <p class="eyebrow">PUBLICACIÓN</p>
+          <h3 id="project-release-actions-title">Acciones de despliegue</h3>
+          <p class="muted">Construye y publica en una sola acción; las operaciones separadas están en acciones avanzadas.</p>
+        </div>
+      </div>
+      <div id="project-detail-actions"></div>
+    </section>
     <details id="project-detail-history" class="project-history-panel">
       <summary>Historial de implementaciones</summary>
     </details>

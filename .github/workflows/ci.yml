@@ -1,0 +1,36 @@
+name: Validate manager and deployment agent
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/manager/package-lock.json
+
+      - name: Install manager dependencies
+        run: npm ci --prefix apps/manager
+
+      - name: Test manager and deployment contracts
+        run: npm test --prefix apps/manager
+
+      - name: Build manager
+        run: npm run build --prefix apps/manager
+
+      - name: Validate installer and deployment shell syntax
+        run: bash -n install.sh installer/service-agent.sh installer/project-deployment-agent.sh installer/update.sh

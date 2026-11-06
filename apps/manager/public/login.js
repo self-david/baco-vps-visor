@@ -1,5 +1,6 @@
 const loginView = document.querySelector("#login-view");
 const dashboardView = document.querySelector("#dashboard-view");
+const projectDetailView = document.querySelector("#project-detail-view");
 const loginForm = document.querySelector("#login-form");
 const loginError = document.querySelector("#login-error");
 const logoutButton = document.querySelector("#logout");
@@ -18,8 +19,11 @@ async function request(path, options = {}) {
 }
 
 function setAuthenticated(authenticated) {
+  const isProjectRoute = /^\/projects\/[0-9a-f-]{36}$/i.test(window.location.pathname);
   loginView.classList.toggle("hidden", authenticated);
-  dashboardView.classList.toggle("hidden", !authenticated);
+  dashboardView.classList.toggle("hidden", !authenticated || isProjectRoute);
+  projectDetailView.classList.toggle("hidden", !authenticated || !isProjectRoute);
+  projectDetailView.hidden = !authenticated || !isProjectRoute;
   logoutButton.classList.toggle("hidden", !authenticated);
   window.managerAuthenticated = authenticated;
   window.dispatchEvent(new CustomEvent("vps-manager:auth", {

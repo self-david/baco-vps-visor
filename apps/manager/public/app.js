@@ -1,5 +1,4 @@
 const dashboardView = document.querySelector("#dashboard-view");
-const dashboardTabsRoot = document.querySelector("#dashboard-tabs-root");
 const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
@@ -7,6 +6,9 @@ const metricsStatus = document.querySelector("#metrics-status");
 const metricsTotal = document.querySelector("#metrics-total");
 const metricsGroups = document.querySelector("#metrics-groups");
 const metricsContainers = document.querySelector("#metrics-containers");
+const metricsIndividual = document.querySelector(".metrics-individual");
+const metricsProjectUrls = document.querySelector("#metrics-project-urls");
+const metricsProjectUrlsEmpty = document.querySelector("#metrics-project-urls-empty");
 const metricsEmpty = document.querySelector("#metrics-empty");
 const metricsSettingsForm = document.querySelector("#metrics-settings-form");
 const metricsIntervalInput = document.querySelector("#metrics-interval");
@@ -142,7 +144,6 @@ const githubOutputDirectoryInput = document.querySelector("#github-import-output
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
-const dashboardPanels = document.querySelector("#dashboard-panels");
 const projectDetailView = document.querySelector("#project-detail-view");
 const guideDialog = document.querySelector("#guide-dialog");
 const guideDialogTitle = document.querySelector("#guide-dialog-title");
@@ -211,8 +212,10 @@ const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
 let containerMetricsHost = null;
 let containerMetricsUnavailable = [];
+let metricsView = "both";
 let runningContainerCount = 0;
 let metricsLoaded = false;
+let metricsLoadError = "";
 let metricsLoading = false;
 let metricAlertsRefreshTimer;
 let metricAlertsSignature = "";
@@ -517,27 +520,55 @@ function renderMetricsGroups() {
   }
 
   metricsTotal.replaceChildren();
-  metricsTotal.classList.toggle("hidden", !metricsLoaded);
-  if (metricsLoaded) {
-    const heading = document.createElement("strong");
-    heading.textContent = `Total de contenedores activos · ${runningContainerCount}`;
-    const value = document.createElement("span");
+  const totalHeading = document.createElement("h4");
+  totalHeading.textContent = "Suma total de recursos";
+  metricsTotal.append(totalHeading);
+  if (!metricsLoaded) {
+    const message = document.createElement("p");
+    message.className = `metrics-total-message${metricsLoadError ? " is-error" : ""}`;
+    message.textContent = metricsLoadError
+      ? `No se pudo calcular la suma: ${metricsLoadError}`
+      : "Actualiza CPU/RAM para consultar el consumo sumado de todos los contenedores activos.";
+    metricsTotal.append(message);
+  } else {
+    const values = document.createElement("div");
+    values.className = "metrics-total-values";
+    const cpu = document.createElement("div");
+    cpu.className = "metrics-total-value";
+    const cpuLabel = document.createElement("span");
+    cpuLabel.textContent = `CPU agregada · ${containerMetricsHost?.cpuCount ?? "?"} CPU(s)`;
+    const cpuValue = document.createElement("strong");
+    cpuValue.textContent = `${totalCpuPercent.toFixed(1)}%`;
+    cpu.append(cpuLabel, cpuValue);
+    const memory = document.createElement("div");
+    memory.className = "metrics-total-value";
+    const memoryLabel = document.createElement("span");
+    memoryLabel.textContent = "RAM usada por contenedores";
+    const memoryValue = document.createElement("strong");
     const hostMemory = containerMetricsHost?.memoryBytes;
-    const memorySummary = Number.isFinite(hostMemory) && hostMemory > 0
-      ? `${formatBytes(totalMemoryBytes)} / ${formatBytes(hostMemory)} RAM del host`
-      : `${formatBytes(totalMemoryBytes)} RAM`;
-    const cpuSummary = Number.isFinite(containerMetricsHost?.cpuCount)
-      ? `${totalCpuPercent.toFixed(1)}% CPU agregado · ${containerMetricsHost.cpuCount} CPU(s)`
-      : `${totalCpuPercent.toFixed(1)}% CPU agregado`;
-    value.textContent = `${cpuSummary} · ${memorySummary}`;
+    memoryValue.textContent = Number.isFinite(hostMemory) && hostMemory > 0
+      ? `${formatBytes(totalMemoryBytes)} / ${formatBytes(hostMemory)}`
+      : formatBytes(totalMemoryBytes);
+    memory.append(memoryLabel, memoryValue);
+    values.append(cpu, memory);
+    const count = document.createElement("span");
+    count.className = "metrics-total-note";
+    count.textContent = `${runningContainerCount} contenedor(es) activos`;
+    metricsTotal.append(values, count);
+    if (containerMetricsUnavailable.length > 0) {
+      const warning = document.createElement("span");
+      warning.className = "metrics-total-message is-warning";
+      warning.textContent = `Suma parcial: faltan métricas de ${containerMetricsUnavailable.length} contenedor(es).`;
+      metricsTotal.append(warning);
+    }
     const note = document.createElement("span");
     note.className = "metrics-total-note";
-    note.textContent = "Consumo sumado de contenedores en este host Docker; CPU puede superar 100%.";
-    metricsTotal.append(heading, value, note);
+    note.textContent = "CPU sumada entre contenedores; puede superar 100%. La vista elegida abajo no cambia este total.";
+    metricsTotal.append(note);
   }
 
   metricsGroups.replaceChildren();
-  metricsGroups.classList.toggle("hidden", groups.size === 0);
+  metricsGroups.classList.toggle("hidden", groups.size === 0 || metricsView === "containers");
   for (const [name, group] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const item = document.createElement("div");
     item.className = "metrics-group";
@@ -551,6 +582,10 @@ function renderMetricsGroups() {
     metricsGroups.append(item);
   }
 
+  metricsIndividual.classList.toggle("hidden", metricsView === "services");
+  document.querySelector("#metrics-individual-title").textContent = metricsView === "both"
+    ? "Consumo por contenedor"
+    : "Detalle por contenedor";
   metricsContainers.replaceChildren();
   for (const metrics of [...containerMetrics.values()].sort((left, right) =>
     right.cpuPercent - left.cpuPercent || right.memoryUsageBytes - left.memoryUsageBytes)) {
@@ -589,6 +624,36 @@ function renderMetricsGroups() {
     metricsEmpty.textContent = "No hay contenedores activos en este host Docker.";
   } else {
     metricsEmpty.textContent = "Actualiza CPU/RAM para consultar los contenedores activos.";
+  }
+}
+
+function renderMetricsProjectUrls() {
+  metricsProjectUrls.replaceChildren();
+  const projectUrls = projects.flatMap((project) =>
+    domainData.domains
+      .filter((domain) => domain.projectId === project.id)
+      .map((domain) => ({ project, domain })),
+  );
+  metricsProjectUrlsEmpty.classList.toggle("hidden", projectUrls.length > 0);
+  for (const { project, domain } of projectUrls) {
+    const row = document.createElement("div");
+    row.className = "metrics-project-url";
+    const main = document.createElement("div");
+    const projectName = document.createElement("strong");
+    projectName.textContent = project.name;
+    const link = document.createElement("a");
+    link.href = `https://${domain.hostname}/`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = domain.hostname;
+    const urlHealth = project.health?.urls?.find((url) => url.hostname === domain.hostname);
+    const status = document.createElement("span");
+    status.className = "muted project-health-status";
+    status.dataset.state = urlHealth?.state ?? "unknown";
+    status.textContent = projectUrlHealthLabel(urlHealth);
+    main.append(projectName, link);
+    row.append(main, status);
+    metricsProjectUrls.append(row);
   }
 }
 
@@ -1309,6 +1374,7 @@ async function loadContainerMetrics() {
     containerMetricsUnavailable = result.unavailable;
     runningContainerCount = result.runningContainerCount;
     metricsLoaded = true;
+    metricsLoadError = "";
     renderMetricsGroups();
     renderFilteredResources();
     const unavailableCount = result.unavailable.length;
@@ -1318,6 +1384,13 @@ async function loadContainerMetrics() {
       : `Muestra puntual actualizada · CPU agregada (puede superar 100%) · ${updatedAt}`;
     await Promise.all([loadMetricsHistory(), loadMetricAlerts()]);
   } catch (error) {
+    metricsLoadError = error.message;
+    metricsLoaded = false;
+    containerMetrics.clear();
+    containerMetricsHost = null;
+    containerMetricsUnavailable = [];
+    runningContainerCount = 0;
+    renderMetricsGroups();
     metricsStatus.textContent = error.message;
   } finally {
     metricsLoading = false;
@@ -2050,8 +2123,7 @@ function renderProjectRoute() {
   const projectId = routeMatch?.[1].toLowerCase() ?? null;
   const project = projectId ? projects.find((item) => item.id.toLowerCase() === projectId) : null;
   const showingProject = Boolean(routeMatch);
-  dashboardTabsRoot.hidden = showingProject;
-  dashboardPanels.classList.toggle("hidden", showingProject);
+  dashboardView.classList.toggle("hidden", showingProject);
   projectDetailView.classList.toggle("hidden", !showingProject);
   projectDetailView.hidden = !showingProject;
 
@@ -2661,6 +2733,7 @@ function renderProjects() {
   const selectedProjectId = window.location.pathname.match(/^\/projects\/([0-9a-f-]{36})$/i)?.[1].toLowerCase();
   if (projects.length === 0) {
     projectsStatus.textContent = "Todavía no hay proyectos. Crea uno para empezar.";
+    renderMetricsProjectUrls();
     renderProjectRoute();
     return;
   }
@@ -2708,7 +2781,32 @@ function renderProjects() {
     healthSummary.className = "muted project-health-status";
     healthSummary.dataset.state = project.health?.urlStatus ?? "unknown";
     healthSummary.textContent = projectHealthSummary(project.health);
-    card.append(heading, details, buildInfo, deploymentInfo, healthSummary);
+    const urlList = document.createElement("div");
+    urlList.className = "project-url-list";
+    if (assignedDomains.length === 0) {
+      const noUrls = document.createElement("span");
+      noUrls.className = "muted";
+      noUrls.textContent = "Sin URLs asignadas";
+      urlList.append(noUrls);
+    } else {
+      for (const domain of assignedDomains) {
+        const urlRow = document.createElement("div");
+        urlRow.className = "project-url-row";
+        const link = document.createElement("a");
+        link.href = `https://${domain.hostname}/`;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = domain.hostname;
+        const urlHealth = project.health?.urls?.find((url) => url.hostname === domain.hostname);
+        const urlState = document.createElement("span");
+        urlState.className = "muted project-health-status";
+        urlState.dataset.state = urlHealth?.state ?? "unknown";
+        urlState.textContent = projectUrlHealthLabel(urlHealth);
+        urlRow.append(link, urlState);
+        urlList.append(urlRow);
+      }
+    }
+    card.append(heading, details, buildInfo, deploymentInfo, healthSummary, urlList);
 
     const actions = document.createElement("div");
     actions.className = "project-actions";
@@ -3205,6 +3303,7 @@ function renderProjects() {
         environmentStatus.textContent = `No se pudieron cargar las variables: ${error.message}`;
       });
   }
+  renderMetricsProjectUrls();
   renderProjectRoute();
 }
 
@@ -4263,8 +4362,9 @@ async function loadResources() {
     containerMetricsUnavailable = [];
     runningContainerCount = 0;
     metricsLoaded = false;
+    metricsLoadError = "";
     metricsTotal.replaceChildren();
-    metricsTotal.classList.add("hidden");
+    renderMetricsGroups();
     metricsGroups.replaceChildren();
     metricsGroups.classList.add("hidden");
     metricsContainers.replaceChildren();
@@ -4335,6 +4435,15 @@ supabaseConfigurationForm.addEventListener("submit", async (event) => {
 refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
+for (const button of document.querySelectorAll("[data-metrics-view]")) {
+  button.addEventListener("click", () => {
+    metricsView = button.dataset.metricsView;
+    for (const option of document.querySelectorAll("[data-metrics-view]")) {
+      option.setAttribute("aria-pressed", String(option === button));
+    }
+    renderMetricsGroups();
+  });
+}
 window.addEventListener("dashboardtabchange", (event) => {
   if (event.detail?.tabId === "monitoring" && window.managerAuthenticated) {
     void loadContainerMetrics();
