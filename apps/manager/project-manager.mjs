@@ -17,6 +17,7 @@ export function validateProjectInput(body) {
     "buildCommand",
     "buildOutputDirectory",
     "internalPort",
+    "framework",
     "autoDeploy",
   ];
   if (!body || typeof body !== "object" || Array.isArray(body)
@@ -41,6 +42,9 @@ export function validateProjectInput(body) {
     || (body.buildOutputDirectory !== undefined && typeof body.buildOutputDirectory !== "string")
     || (body.internalPort !== undefined
       && (!Number.isInteger(body.internalPort) || body.internalPort < 1 || body.internalPort > 65535))
+    || (body.framework !== undefined
+      && (typeof body.framework !== "string" || body.framework.length > 80
+        || /[\u0000-\u001f\u007f]/.test(body.framework)))
     || (body.autoDeploy !== undefined && typeof body.autoDeploy !== "boolean")) {
     const invalid = new TypeError("Proporciona una configuración de proyecto válida y una descripción de hasta 500 caracteres.");
     invalid.code = "INVALID_PROJECT";
@@ -60,6 +64,7 @@ export function validateProjectInput(body) {
   const dockerfilePath = body.dockerfilePath?.trim() || "Dockerfile";
   const buildCommand = body.buildCommand?.trim() || "npm run build";
   const buildOutputDirectory = body.buildOutputDirectory?.trim() || "dist";
+  const framework = body.framework?.trim() || "Desconocido";
   if ((sourceType === "github" && (!repositoryPattern.test(repository) || githubInstallationId === null))
     || (sourceType === "upload" && repository)
     || (sourceType === "upload" && githubInstallationId !== null)
@@ -72,6 +77,7 @@ export function validateProjectInput(body) {
     || !/^[A-Za-z0-9._/-]{1,255}$/.test(buildOutputDirectory)
     || buildOutputDirectory.startsWith("/")
     || buildOutputDirectory.split("/").some((part) => part === ".." || part === "")
+    || framework.length > 80
     || (productionBranch.length > 255 || /[\u0000-\u001f\u007f]/.test(productionBranch))) {
     const invalid = new TypeError("Selecciona una fuente y rutas de build válidas.");
     invalid.code = "INVALID_PROJECT";
@@ -96,6 +102,7 @@ export function validateProjectInput(body) {
     buildCommand,
     buildOutputDirectory,
     internalPort: deploymentType === "static" || deploymentType === "build" ? 80 : body.internalPort ?? 3000,
+    framework,
     autoDeploy: body.autoDeploy ?? true,
   };
 }

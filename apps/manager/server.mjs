@@ -9,6 +9,7 @@ import { createBackupScheduler } from "./backup-scheduler.mjs";
 import { createDiagnosticsCollector } from "./diagnostics.mjs";
 import { createUpdateChecker } from "./update-checker.mjs";
 import { createWebUpdater } from "./web-updater.mjs";
+import { createCloudflareTunnelReconciler } from "./cloudflare-tunnel-reconciler.mjs";
 import {
   createServiceOperationAgent,
   findManagedService,
@@ -35,6 +36,7 @@ import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
 import { validateSupabaseInstanceConfiguration } from "./application-config.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
+import { checkProjectHealth } from "./project-health.mjs";
 import {
   createGiteaClient,
   validateRepositoryInput,
@@ -54,6 +56,7 @@ import {
   getTaskById,
   getLatestTaskByType,
   getLatestProjectBuilds,
+  getLatestProjectBuildOperations,
   getRecentProjectDeployments,
   getProjects,
   getProject,
@@ -183,6 +186,54 @@ function getCloudflareTunnelOriginProtocol(tunnel) {
   return testMode ? "http" : "https";
 }
 
+function mapProjectBuildOperation(task, agentStatus) {
+  if (!task) return null;
+  const matchingAgentStatus = agentStatus?.id === task.id
+    && agentStatus.operation === "build-project"
+    && agentStatus.projectId === task.projectId
+    ? agentStatus
+    : null;
+  const buildkitRunning = matchingAgentStatus?.state === "running"
+    && /BuildKit está construyendo/i.test(matchingAgentStatus.message ?? "");
+  const waitingForAgent = task.status === "in_progress"
+    && !matchingAgentStatus
+    && ["queued", "running"].includes(agentStatus?.state);
+  const phase = task.status === "pending"
+    ? "queued"
+    : task.status === "failed"
+      ? "failed"
+      : task.status === "completed"
+        ? "completed"
+        : buildkitRunning
+          ? "buildkit"
+          : waitingForAgent ? "waiting-agent" : "preparing-source";
+  return {
+    taskId: task.id,
+    status: task.status,
+    phase,
+    message: matchingAgentStatus?.message
+      ?? (task.status === "pending"
+        ? "En cola; esperando a que el agente del VPS tome la tarea."
+        : task.status === "failed"
+          ? task.error ?? "La construcción falló sin proporcionar detalles."
+          : task.status === "completed"
+            ? task.result?.message ?? "La construcción terminó."
+            : waitingForAgent
+              ? "Esperando a que termine otra operación del agente VPS; BuildKit todavía no ha comenzado."
+              : buildkitRunning
+                ? "BuildKit está construyendo la imagen."
+                : "Preparando el código fuente y el contexto antes de iniciar BuildKit."),
+    error: task.error,
+    logs: matchingAgentStatus?.logs ?? task.result?.logs ?? "",
+    startedAt: task.startedAt ?? task.createdAt,
+    diagnostic: /(?:lookup auth\.docker\.io|127\.0\.0\.53[\s\S]{0,160}address family not supported|socket: address family not supported by protocol)/i
+      .test(matchingAgentStatus?.logs ?? "")
+      ? "El VPS no pudo resolver auth.docker.io por DNS; no parece un error del Dockerfile. Comprueba en el VPS `getent ahostsv4 auth.docker.io`, `resolvectl query auth.docker.io` y `cat /etc/resolv.conf`. Corrige el DNS del host o del proveedor y vuelve a construir. No reemplaces /etc/docker/daemon.json sin conservar su configuración; reiniciar Docker puede interrumpir servicios."
+      : null,
+    updatedAt: task.updatedAt,
+  };
+}
+
 async function updateCloudflareTunnelHosts(
   tunnel,
   hostnames,
@@ -197,6 +248,45 @@ async function updateCloudflareTunnelHosts(
     [...new Set(hostnames)].sort(),
     { originProtocol, managerHostname },
   );
+}
+const reconcileCloudflareTunnel = createCloudflareTunnelReconciler({
+  getSettings: getCloudflareTunnelSettings,
+  hasApiToken: () => hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
+  getApiToken: () => getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId),
+  getDomains: getProjectDomains,
+  getDomainZones,
+  hasZoneToken: (credentialId) => hasCloudflareToken(serviceOperationsDirectory, credentialId),
+  getZoneToken: (credentialId) => getCloudflareToken(serviceOperationsDirectory, credentialId),
+  saveDomain: saveProjectDomain,
+  saveSettings: saveCloudflareTunnelSettings,
+  getServices: () => dockerGet("/services"),
+  getServiceTasks: (serviceId) => dockerGet(
+    `/tasks?filters=${encodeURIComponent(JSON.stringify({ service: [serviceId] }))}`,
+  ),
+  getLatestTask: () => getLatestTaskByType("cloudflare.tunnel.configure"),
+  cloudflareClient,
+  stageCredentials: (taskId, token) =>
+    serviceOperationAgent.stageCloudflareTunnelCredentials(taskId, token),
+  removeCredentials: (taskId) =>
+    serviceOperationAgent.removeCloudflareTunnelCredentials(taskId),
+  createConfigureTask: createCloudflareTunnelConfigureTask,
+});
+let cloudflareTunnelReconcileInProgress = false;
+async function recoverCloudflareTunnel() {
+  if (cloudflareTunnelReconcileInProgress || cloudflareTunnelConfigurationPending) return;
+  cloudflareTunnelReconcileInProgress = true;
+  cloudflareTunnelConfigurationPending = true;
+  try {
+    const result = await reconcileCloudflareTunnel();
+    if (result.state === "configuration-queued") {
+      console.log(`Cloudflare Tunnel recovery queued: ${result.taskId}.`);
+    }
+  } catch (error) {
+    console.error("Could not recover Cloudflare Tunnel:", error);
+  } finally {
+    cloudflareTunnelReconcileInProgress = false;
+    cloudflareTunnelConfigurationPending = false;
+  }
 }
 const taskQueueWorker = createTaskQueueWorker({
   store: { claimNextTask, completeTask, failTask, renewTaskLease },
@@ -507,10 +597,15 @@ async function dockerGetText(path, contentLimit) {
 }
 
 async function getContainers() {
-  const containers = await dockerGet("/containers/json?all=1");
+  const [containers, services] = await Promise.all([
+    dockerGet("/containers/json?all=1"),
+    dockerGet("/services"),
+  ]);
+  const projectServiceDisplayNames = await getProjectServiceDisplayNames(services);
   return containers.map((container) => ({
     id: container.Id.slice(0, 12),
     name: (container.Names?.[0] ?? "").replace(/^\//, ""),
+    displayName: projectServiceDisplayNames.get(container.Labels?.["com.docker.swarm.service.id"]) ?? null,
     image: container.Image,
     state: container.State,
     status: container.Status,
@@ -523,13 +618,55 @@ async function getContainers() {
   }));
 }
 
+async function getProjectServiceDisplayNames(services) {
+  const projectServices = services.filter((service) =>
+    service.Spec?.Labels?.["vps-manager.managed"] === "true"
+    && service.Spec?.Labels?.["vps-manager.component"] === "project");
+  const displayNames = new Map(services.map((service) => [
+    service.ID,
+    service.Spec?.Name ?? "Servicio sin nombre",
+  ]));
+  if (projectServices.length === 0) return displayNames;
+
+  const projects = await getProjects();
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+  for (const service of projectServices) {
+    const projectName = projectNames.get(service.Spec.Labels["vps-manager.project-id"]);
+    if (projectName) displayNames.set(service.ID, `P • ${projectName}`);
+  }
+  return displayNames;
+}
+
 async function getContainerMetrics(containers) {
-  const inventory = containers ?? await dockerGet("/containers/json?all=1");
+  const [inventory, services, hostInfo] = await Promise.all([
+    containers ?? dockerGet("/containers/json?all=1"),
+    dockerGet("/services"),
+    dockerGet("/info"),
+  ]);
+  const serviceDisplayNames = await getProjectServiceDisplayNames(services);
   const runningContainers = inventory.filter((container) => container.State === "running");
-  return collectContainerMetrics(
-    runningContainers,
+  const metrics = await collectContainerMetrics(
+    runningContainers.map((container) => {
+      const serviceId = container.Labels?.["com.docker.swarm.service.id"];
+      return {
+        ...container,
+        group: (serviceDisplayNames.get(serviceId)
+          ?? container.Labels?.["com.docker.stack.namespace"]
+          ?? container.Labels?.["com.docker.compose.project"]
+          ?? (container.Names?.[0] ?? "").replace(/^\//, ""))
+          || "Sin grupo",
+      };
+    }),
     (container) => dockerGet(`/containers/${container.Id}/stats?stream=false`),
   );
+  return {
+    ...metrics,
+    host: {
+      cpuCount: hostInfo.NCPU,
+      memoryBytes: hostInfo.MemTotal,
+    },
+    runningContainerCount: runningContainers.length,
+  };
 }
 
 async function getContainerRestartSamples(containers) {
@@ -644,6 +781,7 @@ async function getOperationalServiceStatuses(services) {
 async function getServicesWithStacks() {
   const services = await dockerGet("/services");
   const tasks = await dockerGet("/tasks?desired-state=running");
+  const projectServiceDisplayNames = await getProjectServiceDisplayNames(services);
   const runningByService = new Map();
   for (const task of tasks) {
     if (task.Status?.State === "running") {
@@ -659,6 +797,7 @@ async function getServicesWithStacks() {
       stack: service.Spec?.Labels?.["com.docker.stack.namespace"] ?? null,
       id: service.ID.slice(0, 12),
       name: service.Spec?.Name ?? "unknown",
+      displayName: projectServiceDisplayNames.get(service.ID) ?? null,
       image: service.Spec?.TaskTemplate?.ContainerSpec?.Image ?? "unknown",
       mode,
       replicas: replicated ? `${running}/${replicated.Replicas ?? 1}` : `${running} activos`,
@@ -676,8 +815,10 @@ async function getServices() {
 
 async function getProjectDeploymentState(projects) {
   const projectIds = projects.map((project) => project.id);
-  const [builds, deploymentHistory, deploymentConfigs, services, tasks, nodes, uploadedSources] = await Promise.all([
+  const [builds, buildOperations, agentStatus, deploymentHistory, deploymentConfigs, services, tasks, nodes, uploadedSources] = await Promise.all([
     getLatestProjectBuilds(projectIds),
+    getLatestProjectBuildOperations(projectIds),
+    serviceOperationAgent.getStatus(),
     getRecentProjectDeployments(projectIds),
     Promise.all(projects.map(async (project) => [
       project.id,
@@ -710,9 +851,17 @@ async function getProjectDeploymentState(projects) {
     buildCommand: build.result.buildCommand,
     buildOutputDirectory: build.result.buildOutputDirectory,
   }]));
+  const latestBuildOperations = new Map(buildOperations.map((task) => [
+    task.projectId,
+    mapProjectBuildOperation(task, agentStatus),
+  ]));
   const deploymentsByProject = new Map();
   const deploymentConfigHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
     [projectId, config.configHash]));
+  const deploymentEnvironmentHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
+    [projectId, config.environmentHash]));
+  const deploymentDomainsHashes = new Map(deploymentConfigs.map(([projectId, config]) =>
+    [projectId, config.domainsHash]));
   const uploadSources = new Map(uploadedSources);
   for (const deployment of deploymentHistory) {
     const projectId = deployment.projectId;
@@ -720,7 +869,7 @@ async function getProjectDeploymentState(projects) {
     history.push({
       taskId: deployment.id,
       status: deployment.status,
-      commitSha: deployment.result?.commitSha ?? deployment.payload.commitSha ?? null,
+      commitSha: deployment.result?.commitSha ?? deployment.commitSha ?? null,
       image: deployment.result?.image ?? null,
       error: deployment.error,
       completedAt: deployment.completedAt ?? deployment.updatedAt,
@@ -751,12 +900,17 @@ async function getProjectDeploymentState(projects) {
       runningReplicas: runningByService.get(service.ID) ?? 0,
       desiredReplicas: service.Spec?.Mode?.Global ? readyActiveNodes : service.Spec?.Mode?.Replicated?.Replicas ?? 1,
       mode: service.Spec?.Mode?.Global ? "global" : "replicated",
-      configurationCurrent: labels["vps-manager.project-config-hash"] === deploymentConfigHashes.get(projectId),
+      routesCurrent: labels["vps-manager.project-domains-hash"] === deploymentDomainsHashes.get(projectId),
+      configurationCurrent: (
+        labels["vps-manager.project-environment-hash"] === deploymentEnvironmentHashes.get(projectId)
+        && labels["vps-manager.project-domains-hash"] === deploymentDomainsHashes.get(projectId)
+      ) || labels["vps-manager.project-config-hash"] === deploymentConfigHashes.get(projectId),
     });
   }
   return projects.map((project) => ({
     ...project,
     latestBuild: latestBuilds.get(project.id) ?? null,
+    latestBuildOperation: latestBuildOperations.get(project.id) ?? null,
     latestSource: uploadSources.get(project.id) ?? null,
     deployment: deployments.get(project.id) ?? null,
     deploymentHistory: deploymentsByProject.get(project.id) ?? [],
@@ -1037,15 +1191,72 @@ async function queueInitialGithubDeployment(project, commitSha) {
   });
 }
 
-async function saveProjectDomainAssignments(projectId) {
+async function saveProjectDomainAssignments(projectId, { force = false } = {}) {
   const domains = await getProjectDomains();
-  await saveProjectDeploymentConfig(
-    serviceOperationsDirectory,
-    projectId,
-    domains
-      .filter((domain) => domain.projectId === projectId)
-      .map((domain) => ({ hostname: domain.hostname, port: domain.port })),
-  );
+  await saveProjectDeploymentConfig(serviceOperationsDirectory, projectId, domains
+    .filter((domain) => domain.projectId === projectId)
+    .map((domain) => ({ hostname: domain.hostname, port: domain.port })));
+  return synchronizeProjectRoutes(projectId, { force });
+}
+
+async function synchronizeProjectRoutes(projectId, { force = false } = {}) {
+  const services = await dockerGet("/services");
+  const service = services.find((candidate) =>
+    candidate.Spec?.Labels?.["vps-manager.managed"] === "true"
+    && candidate.Spec?.Labels?.["vps-manager.component"] === "project"
+    && candidate.Spec.Labels["vps-manager.project-id"] === projectId);
+  if (!service) return { state: "not-deployed" };
+
+  const config = await getProjectDeploymentConfig(serviceOperationsDirectory, projectId);
+  if (!force && service.Spec.Labels["vps-manager.project-domains-hash"] === config.domainsHash) {
+    return { state: "current" };
+  }
+  const operation = await serviceOperationAgent.getStatus();
+  if (operation?.state === "queued" || operation?.state === "running") {
+    return { state: "pending" };
+  }
+  try {
+    return await serviceOperationAgent.requestProjectRouteUpdate(projectId, config.domainsHash);
+  } catch (error) {
+    if (error?.code === "OPERATION_IN_PROGRESS") return { state: "pending" };
+    throw error;
+  }
+}
+
+let projectRouteReconcileInProgress = false;
+const forcedProjectRouteReconcile = new Set();
+async function reconcileProjectRoutes() {
+  if (projectRouteReconcileInProgress) return;
+  projectRouteReconcileInProgress = true;
+  try {
+    const operation = await serviceOperationAgent.getStatus();
+    if (operation?.state === "queued" || operation?.state === "running") return;
+    const [projects, services] = await Promise.all([getProjects(), dockerGet("/services")]);
+    for (const project of projects) {
+      const service = services.find((candidate) =>
+        candidate.Spec?.Labels?.["vps-manager.managed"] === "true"
+        && candidate.Spec?.Labels?.["vps-manager.component"] === "project"
+        && candidate.Spec.Labels["vps-manager.project-id"] === project.id);
+      if (!service) {
+        forcedProjectRouteReconcile.delete(project.id);
+        continue;
+      }
+      const config = await getProjectDeploymentConfig(serviceOperationsDirectory, project.id);
+      const force = forcedProjectRouteReconcile.has(project.id);
+      if (!force && service.Spec.Labels["vps-manager.project-domains-hash"] === config.domainsHash) continue;
+      const result = await synchronizeProjectRoutes(project.id, { force });
+      if (result.state === "queued") {
+        forcedProjectRouteReconcile.delete(project.id);
+        console.log(`Project route update queued for ${project.name}.`);
+        return;
+      }
+      if (result.state === "current") forcedProjectRouteReconcile.delete(project.id);
+    }
+  } catch (error) {
+    console.error("Could not reconcile project domain routes:", error);
+  } finally {
+    projectRouteReconcileInProgress = false;
+  }
 }
 
 async function getStacks() {
@@ -1295,6 +1506,28 @@ const server = createServer(async (request, response) => {
       }
       return;
     }
+    if (url.pathname === "/api/github/project-profile" && request.method === "GET") {
+      const accountId = Number(url.searchParams.get("accountId"));
+      const repository = url.searchParams.get("repository");
+      const branch = url.searchParams.get("branch");
+      try {
+        if (!Number.isSafeInteger(accountId) || accountId < 1
+          || !(await getGithubInstallations()).some((item) => item.installationId === accountId)) {
+          throw new RequestError(404, "No se encontró la cuenta conectada de GitHub.");
+        }
+        const profile = await githubOAuth.inspectRepository(accountId, repository, branch);
+        respondJson(response, 200, { profile });
+      } catch (error) {
+        const status = error instanceof RequestError ? error.statusCode
+          : error?.code === "GITHUB_TREE_TOO_LARGE" ? 422
+            : error?.code?.startsWith("GITHUB_") ? 502 : error instanceof TypeError ? 400 : 503;
+        if (status >= 500) console.error("Could not detect GitHub project profile:", error);
+        respondJson(response, status, {
+          error: status >= 500 ? "No se pudo analizar el repositorio de GitHub." : error.message,
+        });
+      }
+      return;
+    }
   }
 
   if (url.pathname === "/api/webhooks/gitea") {
@@ -1538,8 +1771,8 @@ const server = createServer(async (request, response) => {
         || Object.keys(body).some((key) => ![
           "accountId", "name", "token", "originProtocol", "managerSubdomain", "managerZoneId",
         ].includes(key))
-        || !["accountId", "name", "token"].every((key) => Object.hasOwn(body, key))) {
-        respondJson(response, 400, { error: "La solicitud debe incluir Account ID, nombre del túnel y API Token; originProtocol es opcional." });
+        || !["accountId", "name"].every((key) => Object.hasOwn(body, key))) {
+        respondJson(response, 400, { error: "La solicitud debe incluir Account ID y nombre del túnel; el API Token es obligatorio al crear el túnel." });
         return;
       }
       if (body.originProtocol !== undefined && !["http", "https"].includes(body.originProtocol)) {
@@ -1564,8 +1797,9 @@ const server = createServer(async (request, response) => {
         respondJson(response, 400, { error: "El nombre del túnel debe empezar con una letra o número y contener solo letras, números, guiones o guiones bajos (máximo 63 caracteres)." });
         return;
       }
-      if (typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
-        || /[\u0000-\u001f\u007f]/.test(body.token)) {
+      if (body.token !== undefined && body.token !== ""
+        && (typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512
+          || /[\u0000-\u001f\u007f]/.test(body.token))) {
         respondJson(response, 400, { error: "El API Token debe tener entre 20 y 512 caracteres. Pega el token de API completo, no el token del conector de `cloudflared`." });
         return;
       }
@@ -1582,6 +1816,18 @@ const server = createServer(async (request, response) => {
       if (current && current.name !== body.name) {
         respondJson(response, 409, { error: "El nombre del túnel es inmutable en esta configuración." });
         return;
+      }
+      let apiToken = body.token || undefined;
+      if (!apiToken) {
+        if (!current) {
+          respondJson(response, 400, { error: "Pega un API Token de Cloudflare para crear el túnel." });
+          return;
+        }
+        if (!await hasCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId)) {
+          respondJson(response, 409, { error: "Pega un API Token de Cloudflare para reconectar el túnel; no hay uno guardado." });
+          return;
+        }
+        apiToken = await getCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId);
       }
       const originProtocol = body.originProtocol
         ?? getCloudflareTunnelOriginProtocol(current);
@@ -1642,10 +1888,10 @@ const server = createServer(async (request, response) => {
         ? {
           id: current.tunnelId,
           name: current.name,
-          token: await cloudflareClient.getTunnelToken(body.token, current.accountId, current.tunnelId),
+          token: await cloudflareClient.getTunnelToken(apiToken, current.accountId, current.tunnelId),
         }
         : await cloudflareClient.createTunnel(
-          body.token,
+          apiToken,
           body.accountId.toLowerCase(),
           body.name,
           randomBytes(32).toString("base64"),
@@ -1663,7 +1909,7 @@ const server = createServer(async (request, response) => {
           managerDnsRecordId: current.managerDnsRecordId ?? null,
         } : {}),
       };
-      await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, body.token);
+      await saveCloudflareToken(serviceOperationsDirectory, cloudflareTunnelCredentialId, apiToken);
       await saveCloudflareTunnelSettings({
         ...attemptedTunnel,
         lastError: null,
@@ -1699,7 +1945,7 @@ const server = createServer(async (request, response) => {
       }
       try {
         await cloudflareClient.updateTunnelConfiguration(
-          body.token,
+          apiToken,
           body.accountId.toLowerCase(),
           tunnel.id,
           domains.map((domain) => domain.hostname),
@@ -2156,14 +2402,16 @@ const server = createServer(async (request, response) => {
         if (!domainZone || domainZone.credentialId !== domainId) {
           await deleteCloudflareToken(serviceOperationsDirectory, domainId);
         }
-        if (existing.projectId) await saveProjectDomainAssignments(existing.projectId);
+        const routeUpdate = existing.projectId
+          ? await saveProjectDomainAssignments(existing.projectId)
+          : null;
         respondJson(response, 200, {
           deleted: true,
           message: tunnel
             ? "Se quitó la configuración del dominio y su hostname dejó de estar en el túnel. El registro DNS de Cloudflare se conserva."
             : existing.applicationId === "n8n"
             ? "Se quitó la configuración de n8n. El registro A de Cloudflare se conserva."
-            : "Se quitó la configuración. El registro A de Cloudflare se conserva; el enrutamiento del servicio se actualiza en su próximo despliegue.",
+            : `Se quitó la configuración. El registro A de Cloudflare se conserva.${routeUpdate?.state === "not-deployed" ? " La ruta no está activa porque el proyecto aún no está desplegado." : " La ruta del proyecto se actualizará automáticamente."}`,
         });
       } catch (error) {
         console.error("Could not remove project domain:", error);
@@ -2287,7 +2535,9 @@ const server = createServer(async (request, response) => {
       if (input.token !== undefined) {
         await saveCloudflareToken(serviceOperationsDirectory, domainZone.credentialId, input.token);
       }
-      if (input.projectId) await saveProjectDomainAssignments(input.projectId);
+      const routeUpdate = input.projectId
+        ? await saveProjectDomainAssignments(input.projectId)
+        : null;
       if (existing?.projectId && existing.projectId !== input.projectId) {
         await saveProjectDomainAssignments(existing.projectId);
       }
@@ -2307,7 +2557,7 @@ const server = createServer(async (request, response) => {
         },
         message: saved.applicationId === "n8n"
           ? `Se conectó ${saved.hostname} con Cloudflare${tunnel ? " Tunnel" : ""} para n8n. Instala n8n para activar el enrutamiento HTTPS.`
-          : `Se conectó ${saved.hostname} con Cloudflare${tunnel ? " Tunnel" : ""}. El enrutamiento HTTPS se aplicará en el próximo despliegue de ${project.name}.`,
+          : `Se conectó ${saved.hostname} con Cloudflare${tunnel ? " Tunnel" : ""} para ${project.name}. ${routeUpdate?.state === "not-deployed" ? "La ruta se activará automáticamente cuando despliegues el proyecto." : "La ruta se está activando automáticamente sin reconstruir el proyecto."}`,
       });
     } catch (error) {
       if (error instanceof RequestError) {
@@ -2422,7 +2672,17 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET") {
       try {
         const projects = await getProjects();
-        respondJson(response, 200, { projects: await getProjectDeploymentState(projects) });
+        const [projectStates, projectDomains] = await Promise.all([
+          getProjectDeploymentState(projects),
+          getProjectDomains(),
+        ]);
+        const healthByProject = await checkProjectHealth(projectStates, projectDomains);
+        respondJson(response, 200, {
+          projects: projectStates.map((project) => ({
+            ...project,
+            health: healthByProject.get(project.id),
+          })),
+        });
       } catch (error) {
         console.error("Could not list projects:", error);
         respondJson(response, 503, { error: "No se pudieron consultar los proyectos." });
@@ -2541,6 +2801,12 @@ const server = createServer(async (request, response) => {
         sourceType: "upload",
         deploymentType,
         buildStrategy,
+        framework: request.headers["x-project-framework"] ?? buildProfile.framework,
+        internalPort: Number(request.headers["x-internal-port"] ?? buildProfile.internalPort),
+        buildCommand: request.headers["x-build-command"] ?? buildProfile.buildCommand,
+        buildOutputDirectory: request.headers["x-build-output-directory"] ?? buildProfile.buildOutputDirectory,
+        buildContext: request.headers["x-build-context"] ?? buildProfile.buildContext,
+        dockerfilePath: request.headers["x-dockerfile-path"] ?? buildProfile.dockerfilePath,
         autoDeploy: false,
       });
       project = await createProject(project);
@@ -2701,6 +2967,163 @@ const server = createServer(async (request, response) => {
       }
       console.error("Could not save uploaded project source:", error);
       respondJson(response, 503, { error: "No se pudo guardar el archivo del proyecto." });
+    }
+    return;
+  }
+
+  const projectHealthMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/health$/);
+  if (projectHealthMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectHealthMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const [projectState, domains] = await Promise.all([
+        getProjectDeploymentState([project]),
+        getProjectDomains(),
+      ]);
+      const projectDomains = domains.filter((domain) => domain.projectId === projectId);
+      const [health, operation] = await Promise.all([
+        checkProjectHealth(projectState, projectDomains),
+        serviceOperationAgent.getStatus(),
+      ]);
+      const routeUpdatePending = forcedProjectRouteReconcile.has(projectId)
+        || (operation?.operation === "update-project-routes"
+          && operation.projectId === projectId
+          && ["queued", "running"].includes(operation.state));
+      respondJson(response, 200, {
+        deployment: projectState[0].deployment,
+        routeUpdatePending,
+        health: health.get(projectId),
+      });
+    } catch (error) {
+      console.error("Could not check project health:", error);
+      respondJson(response, 503, { error: "No se pudo consultar la salud del proyecto." });
+    }
+    return;
+  }
+
+  const projectRouteRepairMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/routes\/reconcile$/);
+  if (projectRouteRepairMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectRouteRepairMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const [projectState] = await getProjectDeploymentState([project]);
+      if (!projectState.deployment) {
+        respondJson(response, 409, { error: "Despliega el proyecto antes de reparar su ruta." });
+        return;
+      }
+      forcedProjectRouteReconcile.add(projectId);
+      const routeUpdate = await saveProjectDomainAssignments(projectId, { force: true });
+      if (routeUpdate.state === "not-deployed") {
+        forcedProjectRouteReconcile.delete(projectId);
+        respondJson(response, 409, { error: "No se encontró el servicio desplegado para este proyecto." });
+        return;
+      }
+      if (routeUpdate.state !== "pending") forcedProjectRouteReconcile.delete(projectId);
+      respondJson(response, 202, {
+        state: routeUpdate.state,
+        message: routeUpdate.state === "pending"
+          ? "La ruta se reparará cuando termine la operación actual del VPS."
+          : "Se solicitó la resincronización de la ruta sin reconstruir el proyecto.",
+      });
+    } catch (error) {
+      forcedProjectRouteReconcile.delete(projectId);
+      console.error("Could not repair project route:", error);
+      respondJson(response, 503, { error: "No se pudo solicitar la reparación de la ruta." });
+    }
+    return;
+  }
+
+  const projectBuildStatusMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/build-status$/);
+  if (projectBuildStatusMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "GET") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "GET" });
+      return;
+    }
+    let projectId;
+    try {
+      projectId = validateProjectId(projectBuildStatusMatch[1]);
+    } catch (error) {
+      respondJson(response, 400, { error: error.message });
+      return;
+    }
+    try {
+      const project = await getProject(projectId);
+      if (!project) {
+        respondJson(response, 404, { error: "No se encontró el proyecto." });
+        return;
+      }
+      const [tasks, builds, agentStatus] = await Promise.all([
+        getLatestProjectBuildOperations([project.id]),
+        getLatestProjectBuilds([project.id]),
+        serviceOperationAgent.getStatus(),
+      ]);
+      const latestOperation = tasks[0] ?? null;
+      const savedBuildStatus = latestOperation
+        && typeof serviceOperationAgent.getProjectBuildStatus === "function"
+        ? await serviceOperationAgent.getProjectBuildStatus(latestOperation.id)
+        : null;
+      respondJson(response, 200, {
+        operation: mapProjectBuildOperation(latestOperation, savedBuildStatus ?? agentStatus),
+        latestBuild: builds[0] ? {
+          taskId: builds[0].id,
+          commitSha: builds[0].result.commitSha,
+          image: builds[0].result.image,
+          deploymentType: builds[0].result.deploymentType,
+          buildStrategy: builds[0].result.buildStrategy,
+          buildContext: builds[0].result.buildContext,
+          dockerfilePath: builds[0].result.dockerfilePath,
+          buildCommand: builds[0].result.buildCommand,
+          buildOutputDirectory: builds[0].result.buildOutputDirectory,
+          branch: builds[0].result.branch,
+        } : null,
+      });
+    } catch (error) {
+      console.error("Could not retrieve project build status:", error);
+      respondJson(response, 503, { error: "No se pudo consultar el estado de la construcción." });
     }
     return;
   }
@@ -4781,7 +5204,9 @@ const server = createServer(async (request, response) => {
         await saveContainerMetrics(result.metrics);
         respondJson(response, 200, {
           metrics: result.metrics,
-          unavailable: result.errors.map(({ id, name }) => ({ id, name })),
+          unavailable: result.errors.map(({ id, name, group }) => ({ id, name, group })),
+          host: result.host,
+          runningContainerCount: result.runningContainerCount,
         });
         return;
       }
@@ -4966,6 +5391,16 @@ server.listen(port, "0.0.0.0", () => {
 initDatabase()
   .then(async () => {
     taskQueueWorker.start();
+    void recoverCloudflareTunnel();
+    const cloudflareTunnelRecoveryTimer = setInterval(() => {
+      void recoverCloudflareTunnel();
+    }, 60_000);
+    cloudflareTunnelRecoveryTimer.unref();
+    void reconcileProjectRoutes();
+    const projectRouteRecoveryTimer = setInterval(() => {
+      void reconcileProjectRoutes();
+    }, 15_000);
+    projectRouteRecoveryTimer.unref();
     const intervalMinutes = await getMetricsSamplingIntervalMinutes();
     metricsSampler = createMetricsSampler({
       intervalMinutes,

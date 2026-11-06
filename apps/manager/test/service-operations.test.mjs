@@ -221,6 +221,63 @@ test("queues a fixed service restart request without accepting command input", a
   }
 });
 
+test("ignores an abandoned running status when the host agent has no queued request", async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "restart-service",
+      state: "running",
+      serviceId,
+      updatedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      message: "Reinicio de servicio en curso.",
+    }));
+
+    const staleStatus = await fixture.agent.getStatus();
+    assert.equal(staleStatus.state, "failed");
+    assert.match(staleStatus.message, /agente no actualiza su estado/);
+
+    const buildRequest = await fixture.agent.requestRestart(serviceId, secondRequestId);
+    assert.equal(buildRequest.id, secondRequestId);
+    assert.equal(buildRequest.state, "queued");
+    assert.equal(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")).id, secondRequestId);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("reads and removes a build-specific terminal status independently of the global agent status", async () => {
+  const fixture = await createFixture();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const statusPath = join(fixture.directory, `project-build-status-${requestId}.json`);
+  const buildArchivePath = join(fixture.directory, `build-source-${requestId}.zip`);
+  try {
+    const status = {
+      id: requestId,
+      operation: "build-project",
+      state: "failed",
+      projectId,
+      commitSha: "a".repeat(40),
+      deploymentType: "dynamic",
+      buildStrategy: "dockerfile",
+      buildContext: ".",
+      dockerfilePath: "Dockerfile",
+      updatedAt: new Date().toISOString(),
+      message: "BuildKit failed.",
+      logs: "#1 loading Dockerfile\nERROR: build failed",
+    };
+    await writeFile(statusPath, JSON.stringify(status));
+    await writeFile(buildArchivePath, Buffer.from("archive"));
+
+    assert.deepEqual(await fixture.agent.getProjectBuildStatus(requestId), status);
+    await fixture.agent.removeProjectBuildArchive(requestId);
+    await assert.rejects(readFile(statusPath), { code: "ENOENT" });
+    await assert.rejects(readFile(buildArchivePath), { code: "ENOENT" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("queues a validated scale request through the fixed service-operation channel", async () => {
   const fixture = await createFixture();
   try {
@@ -480,8 +537,27 @@ test("stages a bounded project archive and requests only a fixed BuildKit operat
       image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
       updatedAt: "2026-11-03T18:00:00Z",
       message: "Imagen construida.",
+      logs: "x".repeat(1_048_576),
     }));
     assert.equal((await fixture.agent.getStatus()).image, `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`);
+    assert.equal(Buffer.byteLength((await fixture.agent.getStatus()).logs), 1_048_576);
+    await writeFile(join(fixture.directory, "status.json"), JSON.stringify({
+      id: requestId,
+      operation: "build-project",
+      state: "running",
+      projectId,
+      commitSha,
+      deploymentType: "build",
+      buildStrategy: "dockerfile",
+      buildContext: ".",
+      dockerfilePath: "Dockerfile",
+      buildCommand: "npm run build",
+      buildOutputDirectory: "dist",
+      updatedAt: "2026-11-03T18:00:00Z",
+      message: "BuildKit está construyendo.",
+      logs: "x".repeat(1_048_577),
+    }));
+    await assert.rejects(fixture.agent.getStatus(), /invalid format/);
     await fixture.agent.removeProjectBuildArchive(requestId);
     await assert.rejects(readFile(archivePath), { code: "ENOENT" });
   } finally {
@@ -575,6 +651,35 @@ test("requests a fixed Swarm deployment and removal for a project", async () => 
   }
 });
 
+test("requests a project route update without requesting a container redeployment", async () => {
+  const fixture = await createFixture();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const domainsHash = "b".repeat(64);
+  try {
+    const queued = await fixture.agent.requestProjectRouteUpdate(projectId, domainsHash, requestId);
+    assert.equal(queued.state, "queued");
+    assert.equal(queued.operation, "update-project-routes");
+    assert.equal(queued.message, "Actualización de rutas aceptada; no se reiniciará el contenedor.");
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.directory, "request.json"), "utf8")), {
+      id: requestId,
+      operation: "update-project-routes",
+      projectId,
+      domainsHash,
+    });
+    assert.equal((await fixture.agent.getStatus()).domainsHash, domainsHash);
+    await assert.rejects(
+      fixture.agent.requestProjectRouteUpdate(projectId, "invalid", secondRequestId),
+      /fields are invalid/,
+    );
+    await assert.rejects(
+      fixture.agent.requestProjectRouteUpdate(projectId, domainsHash, secondRequestId),
+      { code: "OPERATION_IN_PROGRESS" },
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("rejects malformed service IDs before creating a request", async () => {
   const fixture = await createFixture();
   try {
@@ -603,7 +708,7 @@ test("returns the existing task for duplicate IDs and rejects different active r
       id: requestId,
       state: "running",
       serviceId,
-      updatedAt: "2026-11-03T18:00:00Z",
+      updatedAt: new Date().toISOString(),
       message: "running",
     }));
     assert.equal((await fixture.agent.requestRestart(serviceId)).state, "running");

@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 
 export class TaskExecutionError extends Error {
-  constructor(message, { retryable = true } = {}) {
+  constructor(message, { retryable = true, result } = {}) {
     super(message);
     this.name = "TaskExecutionError";
     this.retryable = retryable;
+    this.result = result;
   }
 }
 
@@ -80,7 +81,9 @@ export function createTaskQueueWorker({
       if (controller.signal.aborted) return true;
       const message = error instanceof Error ? error.message : "La tarea falló por un error desconocido.";
       try {
-        await store.failTask(task.id, workerId, message, error?.retryable !== false);
+        const failureArguments = [task.id, workerId, message, error?.retryable !== false];
+        if (error?.result !== undefined) failureArguments.push(error.result);
+        await store.failTask(...failureArguments);
       } catch (storeError) {
         onError("Could not persist task execution failure:", storeError);
       }
@@ -456,6 +459,7 @@ export function createProjectBuildHandler({
     if (signal.aborted) throw signal.reason ?? new Error("La construcción fue interrumpida.");
 
     let staged = false;
+    let buildLogs = "";
     const deadline = Date.now() + maximumDurationMs;
     try {
       const source = await getBuildSource({
@@ -483,11 +487,31 @@ export function createProjectBuildHandler({
         buildCommand: source.buildCommand,
         buildOutputDirectory: source.buildOutputDirectory,
       };
-      await agent.requestProjectBuild(projectId, source.commitSha, task.id, buildConfiguration);
+      while (!signal.aborted && Date.now() < deadline) {
+        try {
+          await agent.requestProjectBuild(projectId, source.commitSha, task.id, buildConfiguration);
+          break;
+        } catch (error) {
+          if (error?.code !== "OPERATION_IN_PROGRESS") throw error;
+          await waitForRetry(signal, Math.min(pollIntervalMs, deadline - Date.now()));
+        }
+      }
+      if (signal.aborted) throw signal.reason ?? new Error("La construcción fue interrumpida.");
+      if (Date.now() >= deadline) {
+        throw new TaskExecutionError(
+          "El agente del VPS estuvo ocupado demasiado tiempo; BuildKit no llegó a iniciar.",
+          { retryable: false },
+        );
+      }
 
       while (!signal.aborted) {
-        const operation = await agent.getStatus();
+        const currentOperation = await agent.getStatus();
+        const savedOperation = typeof agent.getProjectBuildStatus === "function"
+          ? await agent.getProjectBuildStatus(task.id)
+          : null;
+        const operation = savedOperation?.id === task.id ? savedOperation : currentOperation;
         if (operation?.id === task.id) {
+          if (typeof operation.logs === "string") buildLogs = operation.logs;
           if (operation.operation !== "build-project"
             || operation.projectId !== projectId
             || operation.commitSha !== source.commitSha) {
@@ -511,6 +535,7 @@ export function createProjectBuildHandler({
                 ? `Imagen local construida para ${projectName} (${branch} · ${source.commitSha.slice(0, 12)}).`
                 : `Imagen local construida para ${projectName} · ${source.commitSha.slice(0, 12)}.`,
               image: operation.image,
+              ...(typeof operation.logs === "string" && operation.logs ? { logs: operation.logs } : {}),
               commitSha: source.commitSha,
               ...(source.deploymentType ? {
                 deploymentType: source.deploymentType,
@@ -524,11 +549,19 @@ export function createProjectBuildHandler({
             };
           }
           if (operation.state === "failed") {
-            throw new TaskExecutionError(operation.message, { retryable: false });
+            throw new TaskExecutionError(operation.message, {
+              retryable: false,
+              ...(buildLogs
+                ? { result: { message: operation.message, logs: buildLogs } }
+                : {}),
+            });
           }
         }
         if (Date.now() >= deadline) {
-          throw new TaskExecutionError("La construcción superó el límite de 14 minutos.", { retryable: false });
+          throw new TaskExecutionError("La construcción superó el límite de 14 minutos.", {
+            retryable: false,
+            ...(buildLogs ? { result: { logs: buildLogs } } : {}),
+          });
         }
         await waitForRetry(signal, Math.min(pollIntervalMs, deadline - Date.now()));
       }

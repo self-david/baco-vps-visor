@@ -467,6 +467,66 @@ test("publishes a project image from a bounded source archive without deploying 
   ]);
 });
 
+test("waits for a busy host agent and preserves the completed build output", async () => {
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  const projectTask = {
+    id: "d909f79b-e7f9-41e7-9e7a-6ea000000001",
+    type: "project.build",
+    payload: { projectId, projectName: "project", repository: "vpsadmin/project", branch: "main" },
+  };
+  const commitSha = "a".repeat(40);
+  const logs = "#1 [internal] load build definition\n#2 exporting image";
+  const completed = {
+    id: projectTask.id,
+    operation: "build-project",
+    state: "succeeded",
+    projectId,
+    commitSha,
+    deploymentType: "dynamic",
+    buildStrategy: "dockerfile",
+    buildContext: ".",
+    dockerfilePath: "Dockerfile",
+    image: `vps-manager-project-${projectId.replaceAll("-", "")}:${commitSha}`,
+    logs,
+  };
+  let requests = 0;
+  const handler = createProjectBuildHandler({
+    agent: {
+      async stageProjectBuildArchive() {},
+      async requestProjectBuild() {
+        requests += 1;
+        if (requests === 1) {
+          const error = new Error("Ya hay una operación de servicio en curso.");
+          error.code = "OPERATION_IN_PROGRESS";
+          throw error;
+        }
+      },
+      async getStatus() {
+        return { id: "a3f51b09-13bf-4c7a-9b03-9ba000000002", state: "running" };
+      },
+      async getProjectBuildStatus(id) { return id === projectTask.id ? completed : null; },
+      async removeProjectBuildArchive() {},
+    },
+    async getBuildSource() {
+      return {
+        commitSha,
+        archive: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+        deploymentType: "dynamic",
+        buildStrategy: "dockerfile",
+        buildContext: ".",
+        dockerfilePath: "Dockerfile",
+      };
+    },
+    pollIntervalMs: 100,
+    maximumDurationMs: 2000,
+  });
+
+  const result = await handler(projectTask, new AbortController().signal);
+  assert.equal(requests, 2);
+  assert.equal(result.logs, logs);
+  assert.equal(result.image, completed.image);
+});
+
 test("deploys the last successful image as a manual Swarm task", async () => {
   const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
   const commitSha = "a".repeat(40);

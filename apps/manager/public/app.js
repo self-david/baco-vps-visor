@@ -4,7 +4,10 @@ const refreshButton = document.querySelector("#refresh");
 const refreshMetricsButton = document.querySelector("#refresh-metrics");
 const statusMessage = document.querySelector("#status-message");
 const metricsStatus = document.querySelector("#metrics-status");
+const metricsTotal = document.querySelector("#metrics-total");
 const metricsGroups = document.querySelector("#metrics-groups");
+const metricsContainers = document.querySelector("#metrics-containers");
+const metricsEmpty = document.querySelector("#metrics-empty");
 const metricsSettingsForm = document.querySelector("#metrics-settings-form");
 const metricsIntervalInput = document.querySelector("#metrics-interval");
 const metricsCpuThresholdInput = document.querySelector("#metrics-cpu-threshold");
@@ -115,6 +118,7 @@ const projectProductionBranchSelect = document.querySelector("#project-productio
 const projectSaveButton = document.querySelector("#project-save");
 const projectInstallationSelect = document.querySelector("#project-installation");
 const projectDeploymentTypeSelect = document.querySelector("#project-deployment-type");
+const projectAutoDeployInput = document.querySelector("#project-auto-deploy");
 const projectDeploymentTypeHelp = document.querySelector("#project-deployment-type-help");
 const projectDynamicBuildFields = document.querySelector("#project-dynamic-build-fields");
 const projectBuildStrategySelect = document.querySelector("#project-build-strategy");
@@ -128,6 +132,13 @@ const githubImportForm = document.querySelector("#github-import-form");
 const githubImportButton = document.querySelector("#github-import-project");
 const githubImportStatus = document.querySelector("#github-import-status");
 const githubDeploymentTypeSelect = document.querySelector("#github-deployment-type");
+const githubDetectionProfile = document.querySelector("#github-detection-profile");
+const githubBuildStrategySelect = document.querySelector("#github-import-build-strategy");
+const githubBuildContextInput = document.querySelector("#github-import-build-context");
+const githubDockerfileInput = document.querySelector("#github-import-dockerfile");
+const githubInternalPortInput = document.querySelector("#github-import-port");
+const githubBuildCommandInput = document.querySelector("#github-import-build-command");
+const githubOutputDirectoryInput = document.querySelector("#github-import-output-directory");
 const projectsStatus = document.querySelector("#projects-status");
 const projectsList = document.querySelector("#projects-list");
 const refreshProjectsButton = document.querySelector("#refresh-projects");
@@ -191,12 +202,18 @@ let giteaRepositories = new Map();
 let giteaCurrentDefaultBranch = "";
 let giteaBranchRequestId = 0;
 let projectBranchRequestId = 0;
+let projectBuildPollTimer;
 let projects = [];
+const projectDeployAfterBuild = new Set();
 let domainData = { zones: [], domains: [] };
 let giteaCanManageProjects = false;
 const resourceData = { containers: [], services: [], stacks: [] };
 const containerMetrics = new Map();
+let containerMetricsHost = null;
+let containerMetricsUnavailable = [];
+let runningContainerCount = 0;
 let metricsLoaded = false;
+let metricsLoading = false;
 let metricAlertsRefreshTimer;
 let metricAlertsSignature = "";
 let selectedBackupId;
@@ -297,7 +314,7 @@ function renderResources(target, resources, getDetail, getState, onAction, empty
     main.className = "resource-main";
     const name = document.createElement("div");
     name.className = "resource-name";
-    name.textContent = resource.name;
+    name.textContent = resource.displayName ?? resource.name;
     const detail = document.createElement("div");
     detail.className = "resource-detail";
     detail.textContent = getDetail(resource);
@@ -487,12 +504,36 @@ function updateResourceCount(selector, visible, total) {
 
 function renderMetricsGroups() {
   const groups = new Map();
+  let totalCpuPercent = 0;
+  let totalMemoryBytes = 0;
   for (const metrics of containerMetrics.values()) {
     const group = groups.get(metrics.group) ?? { cpuPercent: 0, memoryUsageBytes: 0, containerCount: 0 };
     group.cpuPercent += metrics.cpuPercent;
     group.memoryUsageBytes += metrics.memoryUsageBytes;
     group.containerCount += 1;
+    totalCpuPercent += metrics.cpuPercent;
+    totalMemoryBytes += metrics.memoryUsageBytes;
     groups.set(metrics.group, group);
+  }
+
+  metricsTotal.replaceChildren();
+  metricsTotal.classList.toggle("hidden", !metricsLoaded);
+  if (metricsLoaded) {
+    const heading = document.createElement("strong");
+    heading.textContent = `Total de contenedores activos · ${runningContainerCount}`;
+    const value = document.createElement("span");
+    const hostMemory = containerMetricsHost?.memoryBytes;
+    const memorySummary = Number.isFinite(hostMemory) && hostMemory > 0
+      ? `${formatBytes(totalMemoryBytes)} / ${formatBytes(hostMemory)} RAM del host`
+      : `${formatBytes(totalMemoryBytes)} RAM`;
+    const cpuSummary = Number.isFinite(containerMetricsHost?.cpuCount)
+      ? `${totalCpuPercent.toFixed(1)}% CPU agregado · ${containerMetricsHost.cpuCount} CPU(s)`
+      : `${totalCpuPercent.toFixed(1)}% CPU agregado`;
+    value.textContent = `${cpuSummary} · ${memorySummary}`;
+    const note = document.createElement("span");
+    note.className = "metrics-total-note";
+    note.textContent = "Consumo sumado de contenedores en este host Docker; CPU puede superar 100%.";
+    metricsTotal.append(heading, value, note);
   }
 
   metricsGroups.replaceChildren();
@@ -509,6 +550,46 @@ function renderMetricsGroups() {
     item.append(title, value);
     metricsGroups.append(item);
   }
+
+  metricsContainers.replaceChildren();
+  for (const metrics of [...containerMetrics.values()].sort((left, right) =>
+    right.cpuPercent - left.cpuPercent || right.memoryUsageBytes - left.memoryUsageBytes)) {
+    const row = document.createElement("tr");
+    const name = document.createElement("th");
+    name.scope = "row";
+    name.textContent = metrics.name || metrics.id;
+    const group = document.createElement("td");
+    group.textContent = metrics.group;
+    const cpu = document.createElement("td");
+    cpu.textContent = `${metrics.cpuPercent.toFixed(1)}%`;
+    const memory = document.createElement("td");
+    memory.textContent = Number.isFinite(metrics.memoryLimitBytes) && metrics.memoryLimitBytes > 0
+      ? `${formatBytes(metrics.memoryUsageBytes)} / ${formatBytes(metrics.memoryLimitBytes)}`
+      : formatBytes(metrics.memoryUsageBytes);
+    row.append(name, group, cpu, memory);
+    metricsContainers.append(row);
+  }
+  for (const unavailable of containerMetricsUnavailable) {
+    const row = document.createElement("tr");
+    row.className = "metrics-unavailable";
+    const name = document.createElement("th");
+    name.scope = "row";
+    name.textContent = unavailable.name || unavailable.id;
+    const group = document.createElement("td");
+    group.textContent = unavailable.group;
+    const cpu = document.createElement("td");
+    cpu.textContent = "No disponible";
+    const memory = document.createElement("td");
+    memory.textContent = "No disponible";
+    row.append(name, group, cpu, memory);
+    metricsContainers.append(row);
+  }
+  metricsEmpty.classList.toggle("hidden", metricsLoaded && metricsContainers.childElementCount > 0);
+  if (metricsLoaded && metricsContainers.childElementCount === 0) {
+    metricsEmpty.textContent = "No hay contenedores activos en este host Docker.";
+  } else {
+    metricsEmpty.textContent = "Actualiza CPU/RAM para consultar los contenedores activos.";
+  }
 }
 
 function renderFilteredResources() {
@@ -518,7 +599,10 @@ function renderFilteredResources() {
     const matchesState = containerFilter === "all"
       || (containerFilter === "running" ? container.state === "running" : container.state !== "running");
     const ports = container.ports.map((port) => `${port.public ?? ""} ${port.private}/${port.type}`);
-    return matchesState && matchesSearch([container.name, container.image, container.id, container.status, ...ports], containerQuery);
+    return matchesState && matchesSearch(
+      [container.displayName, container.name, container.image, container.id, container.status, ...ports],
+      containerQuery,
+    );
   });
   const containerHasFilters = Boolean(containerQuery) || containerFilter !== "all";
   renderResources(
@@ -560,7 +644,10 @@ function renderFilteredResources() {
   const serviceFilter = document.querySelector("#service-filter").value;
   const services = resourceData.services.filter((service) => (
     (serviceFilter === "all" || service.mode === serviceFilter)
-      && matchesSearch([service.name, service.image, service.id, service.mode, service.replicas], serviceQuery)
+      && matchesSearch(
+        [service.displayName, service.name, service.image, service.id, service.mode, service.replicas],
+        serviceQuery,
+      )
   ));
   const serviceHasFilters = Boolean(serviceQuery) || serviceFilter !== "all";
   renderResources(
@@ -1208,6 +1295,8 @@ async function loadMetricsHistory() {
 }
 
 async function loadContainerMetrics() {
+  if (metricsLoading) return;
+  metricsLoading = true;
   refreshMetricsButton.disabled = true;
   metricsStatus.textContent = "Consultando CPU y memoria…";
   try {
@@ -1216,6 +1305,9 @@ async function loadContainerMetrics() {
     for (const metrics of result.metrics) {
       containerMetrics.set(metrics.id, metrics);
     }
+    containerMetricsHost = result.host;
+    containerMetricsUnavailable = result.unavailable;
+    runningContainerCount = result.runningContainerCount;
     metricsLoaded = true;
     renderMetricsGroups();
     renderFilteredResources();
@@ -1228,6 +1320,7 @@ async function loadContainerMetrics() {
   } catch (error) {
     metricsStatus.textContent = error.message;
   } finally {
+    metricsLoading = false;
     refreshMetricsButton.disabled = false;
   }
 }
@@ -1495,7 +1588,7 @@ function renderLegacyProjects() {
     const deployment = project.deployment
       ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} nodos activos · ${project.deployment.commitSha?.slice(0, 12) ?? "commit desconocido"}`
       : "Sin servicio desplegado";
-    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""} · ${latestBuild} · ${deployment}`;
+    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""} · ${latestBuild} · ${deployment} · ${projectHealthSummary(project.health)}`;
     main.append(name, details);
 
     const actions = document.createElement("div");
@@ -1671,13 +1764,17 @@ function renderLegacyProjects() {
   }
 }
 
-async function loadProjects() {
-  projectsStatus.textContent = "Consultando proyectos…";
+async function loadProjects({ quiet = false } = {}) {
+  if (!quiet) projectsStatus.textContent = "Consultando proyectos…";
   try {
     const result = await request("/api/projects");
     projects = result.projects;
     renderProjects();
   } catch (error) {
+    if (quiet) {
+      projectsStatus.textContent = error.message;
+      return;
+    }
     projects = [];
     projectsList.replaceChildren();
     projectsStatus.textContent = error.message;
@@ -1686,6 +1783,7 @@ async function loadProjects() {
 
 let githubInstallations = [];
 let currentProjectEdit = null;
+let githubDetectedBuildProfile = null;
 let previousDynamicProjectPort = "3000";
 
 async function loadGithubStatus() {
@@ -1785,10 +1883,63 @@ async function loadProjectBranches(preferredBranch = "main") {
     githubImportStatus.textContent = result.branches.length
       ? `${result.branches.length} ramas disponibles.`
       : "El repositorio no tiene ramas disponibles.";
+    if (result.branches.length) await loadGithubProjectProfile();
   } catch (error) {
     projectProductionBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
     githubImportButton.disabled = true;
     githubImportStatus.textContent = error.message;
+  }
+}
+
+function updateGithubProfileSummary() {
+  if (!githubDetectedBuildProfile) return;
+  const deploymentType = githubDeploymentTypeSelect.value;
+  const deployment = {
+    static: "Estático con Nginx",
+    dynamic: "Aplicación dinámica",
+    build: "Build estático con Nginx",
+  }[deploymentType];
+  const strategy = deploymentType === "dynamic"
+    ? githubBuildStrategySelect.value === "railpack" ? "Railpack" : "Dockerfile personalizado"
+    : deploymentType === "static" ? "Nginx sin build" : "BuildKit + Nginx";
+  const warning = githubDetectedBuildProfile.warning ? ` Aviso: ${githubDetectedBuildProfile.warning}` : "";
+  githubDetectionProfile.textContent = `Detectado: ${githubDetectedBuildProfile.framework} · ${deployment} · ${strategy} · puerto ${deploymentType === "dynamic" ? githubInternalPortInput.value : 80}. ${githubDetectedBuildProfile.reason} Confianza ${githubDetectedBuildProfile.confidence}.${warning}`;
+  githubBuildStrategySelect.disabled = deploymentType !== "dynamic";
+  githubInternalPortInput.disabled = deploymentType !== "dynamic";
+  githubBuildCommandInput.disabled = deploymentType === "static";
+  githubOutputDirectoryInput.disabled = deploymentType !== "build";
+}
+
+async function loadGithubProjectProfile() {
+  const installationId = Number(projectInstallationSelect.value);
+  const repository = projectRepositorySelect.value;
+  const branch = projectProductionBranchSelect.value;
+  if (!Number.isSafeInteger(installationId) || installationId < 1 || !repository || !branch) return;
+  githubImportButton.disabled = true;
+  githubDetectionProfile.textContent = "Analizando manifiestos y archivos del repositorio…";
+  try {
+    const query = new URLSearchParams({
+      accountId: String(installationId),
+      repository,
+      branch,
+    });
+    const result = await request(`/api/github/project-profile?${query}`);
+    githubDetectedBuildProfile = result.profile;
+    githubDeploymentTypeSelect.value = result.profile.recommendedDeploymentType;
+    githubBuildStrategySelect.value = result.profile.buildStrategy;
+    githubBuildContextInput.value = result.profile.buildContext;
+    githubDockerfileInput.value = result.profile.dockerfilePath;
+    githubInternalPortInput.value = String(result.profile.internalPort);
+    githubBuildCommandInput.value = result.profile.buildCommand;
+    githubOutputDirectoryInput.value = result.profile.buildOutputDirectory;
+    updateGithubProfileSummary();
+    githubImportStatus.textContent = "Configuración detectada. Puedes revisarla antes de importar.";
+    githubImportButton.disabled = false;
+  } catch (error) {
+    githubDetectedBuildProfile = null;
+    githubDetectionProfile.textContent = `No se pudo detectar el repositorio: ${error.message}`;
+    githubImportStatus.textContent = "Puedes seleccionar la configuración manualmente y volver a intentar.";
+    githubImportButton.disabled = false;
   }
 }
 
@@ -1828,12 +1979,17 @@ function renderProjectFileTree(paths, list) {
   const appendNodes = (parent, children) => {
     for (const [name, node] of [...children].sort(([left], [right]) => left.localeCompare(right, "es"))) {
       const item = document.createElement("li");
-      item.textContent = name;
       if (node.children.size) {
         item.classList.add("project-file-directory");
         const nested = document.createElement("ul");
         appendNodes(nested, node.children);
-        item.append(nested);
+        const directory = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = name;
+        directory.append(summary, nested);
+        item.append(directory);
+      } else {
+        item.textContent = name;
       }
       parent.append(item);
     }
@@ -1845,6 +2001,9 @@ function renderProjectFileTree(paths, list) {
 function updateProjectDeploymentFields() {
   const isStatic = projectDeploymentTypeSelect.value === "static";
   const isBuild = projectDeploymentTypeSelect.value === "build";
+  const isDynamic = projectDeploymentTypeSelect.value === "dynamic";
+  const isUpload = currentProjectEdit?.sourceType === "upload";
+  if (isUpload) projectAutoDeployInput.checked = false;
   projectDynamicBuildFields.classList.toggle("hidden", isStatic);
   for (const field of projectDynamicBuildFields.querySelectorAll("input, select")) {
     field.disabled = isStatic;
@@ -1854,17 +2013,23 @@ function updateProjectDeploymentFields() {
     projectBuildStrategySelect.value = "dockerfile";
     document.querySelector("#project-port").value = "80";
   }
-  projectBuildStrategySelect.disabled = isStatic || isBuild;
+  projectBuildStrategySelect.disabled = !isDynamic;
   document.querySelector("#project-port").disabled = isStatic || isBuild;
-  document.querySelector("#project-build-strategy-field").classList.toggle("hidden", isBuild);
+  document.querySelector("#project-port-field").hidden = !isDynamic;
+  document.querySelector("#project-port-usage").hidden = !isDynamic;
+  projectAutoDeployInput.closest("label").hidden = isUpload;
+  projectAutoDeployInput.disabled = isUpload;
+  document.querySelector("#project-auto-deploy-help").hidden = isUpload;
+  document.querySelector("#project-build-strategy-field").hidden = !isDynamic;
+  document.querySelector("#project-build-context-field").hidden = isStatic;
   const buildOutputFields = document.querySelector("#project-build-output-fields");
-  buildOutputFields.classList.toggle("hidden", !isBuild);
+  buildOutputFields.hidden = !isBuild;
   for (const field of buildOutputFields.querySelectorAll("input")) field.disabled = !isBuild;
   projectDeploymentTypeHelp.textContent = isStatic
-    ? "Los archivos se sirven con Nginx en el puerto 80. No se ejecutan scripts de servidor."
+    ? "Publica archivos HTML/CSS/JS como contenido estático servido por Nginx. No ejecuta un servidor de aplicación."
     : isBuild
-      ? "Se instala según el lockfile, se ejecuta el comando de compilación y se publica la carpeta de salida con Nginx."
-      : "El proyecto requiere un servidor HTTP. El puerto debe coincidir con el que escucha la aplicación.";
+      ? "Instala dependencias, ejecuta el comando de build y publica su carpeta de salida con Nginx."
+      : "Construye una imagen y ejecuta Node, Python u otro servidor HTTP. Indica el puerto en el que escucha la aplicación.";
   updateProjectBuildFields();
 }
 
@@ -1914,6 +2079,34 @@ function renderProjectRoute() {
   document.querySelector("#project-build-command").value = project.buildCommand ?? "npm run build";
   document.querySelector("#project-build-output-directory").value = project.buildOutputDirectory ?? "dist";
   document.querySelector("#project-port").value = String(project.internalPort ?? 3000);
+  const portUsage = document.querySelector("#project-port-usage");
+  const otherDynamicProjects = projects.filter((candidate) =>
+    candidate.id !== project.id && candidate.deploymentType === "dynamic");
+  portUsage.replaceChildren();
+  const portExplanation = document.createElement("p");
+  portExplanation.className = "muted";
+  portExplanation.textContent = "Es un puerto interno del contenedor: varios proyectos pueden usar el mismo sin colisionar. La app debe escuchar en 0.0.0.0 en este puerto.";
+  portUsage.append(portExplanation);
+  if (otherDynamicProjects.length > 0) {
+    const portListLabel = document.createElement("strong");
+    portListLabel.textContent = "Puertos configurados en otros proyectos";
+    const portList = document.createElement("ul");
+    for (const candidate of otherDynamicProjects) {
+      const item = document.createElement("li");
+      const deployment = candidate.deployment;
+      const replicas = deployment
+        ? ` · ${deployment.runningReplicas}/${deployment.desiredReplicas} réplicas`
+        : " · sin servicio desplegado";
+      item.textContent = `${candidate.name} · puerto ${candidate.internalPort ?? 3000}${replicas}`;
+      portList.append(item);
+    }
+    portUsage.append(portListLabel, portList);
+  } else {
+    const emptyPortList = document.createElement("p");
+    emptyPortList.className = "muted";
+    emptyPortList.textContent = "No hay otros proyectos dinámicos configurados.";
+    portUsage.append(emptyPortList);
+  }
   previousDynamicProjectPort = project.deploymentType === "static" || project.deploymentType === "build"
     ? "3000"
     : String(project.internalPort ?? 3000);
@@ -1925,11 +2118,530 @@ function renderProjectRoute() {
   document.querySelector("#project-detail-summary").textContent = project.sourceType === "upload"
     ? "Proyecto subido desde ZIP o archivos."
     : `GitHub · ${project.repository} · rama ${project.productionBranch}`;
+  document.querySelector("#project-framework-summary").textContent =
+    `Framework detectado: ${project.framework ?? "Desconocido"} · ${project.deploymentType === "dynamic"
+      ? project.buildStrategy === "railpack" ? "Railpack" : "Dockerfile"
+      : project.deploymentType === "build" ? "BuildKit + Nginx" : "Nginx sin build"}. Puedes editar el método, puerto y comandos en esta configuración.`;
   projectSaveButton.textContent = "Guardar cambios";
   projectFormStatus.textContent = "";
   updateProjectDeploymentFields();
   updateProjectBuildFields();
   return project;
+}
+
+function renderProjectBuildOperation(projectId, operation) {
+  if (currentProjectEdit?.id !== projectId) return;
+  const panel = document.querySelector("#project-detail-build-operation");
+  const title = document.querySelector("#project-detail-build-operation-title");
+  const message = document.querySelector("#project-detail-build-operation-message");
+  const diagnostic = document.querySelector("#project-detail-build-operation-diagnostic");
+  const updated = document.querySelector("#project-detail-build-operation-updated");
+  const logs = document.querySelector("#project-detail-build-operation-logs");
+  const progress = document.querySelector("#project-detail-build-operation-progress");
+  const buildButton = document.querySelector("#project-detail-actions [data-project-build]");
+  const publishButton = document.querySelector("#project-detail-actions [data-project-publish]");
+  const project = projects.find((candidate) => candidate.id === projectId);
+  const buildUnavailable = project?.sourceType === "upload" && !project.latestSource;
+  const isActive = ["pending", "in_progress"].includes(operation?.status);
+  const isComplete = operation?.status === "completed";
+  panel.hidden = !operation;
+  if (!operation) {
+    diagnostic.hidden = true;
+    diagnostic.textContent = "";
+    progress.hidden = true;
+    if (buildButton) {
+      buildButton.disabled = buildUnavailable;
+      buildButton.textContent = "Construir";
+    }
+    if (publishButton) {
+      publishButton.disabled = buildUnavailable;
+      publishButton.textContent = "Construir y desplegar";
+    }
+    return;
+  }
+  title.textContent = ({
+    queued: "Construcción en cola",
+    "waiting-agent": "Esperando al agente del VPS",
+    "preparing-source": "Preparando el proyecto",
+    buildkit: "BuildKit construyendo",
+    completed: "Construcción completada",
+    failed: "Falló la construcción",
+  })[operation.phase] ?? (isActive ? "Construcción en curso" : "Estado de construcción");
+  message.textContent = operation.error && operation.error !== operation.message
+    ? `${operation.message} ${operation.error}`
+    : operation.message;
+  diagnostic.hidden = !operation.diagnostic;
+  diagnostic.textContent = operation.diagnostic ?? "";
+  progress.hidden = !isActive;
+  const startedAt = Date.parse(operation.startedAt ?? operation.updatedAt ?? "");
+  const elapsedSeconds = Number.isFinite(startedAt)
+    ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+    : null;
+  const elapsedLabel = elapsedSeconds === null
+    ? ""
+    : ` · transcurrido ${Math.floor(elapsedSeconds / 60)} min ${String(elapsedSeconds % 60).padStart(2, "0")} s`;
+  const activityLabel = ({
+    queued: "En cola",
+    "waiting-agent": "Esperando al agente",
+    "preparing-source": "Preparando fuente",
+    buildkit: "BuildKit en ejecución",
+    completed: "Finalizada",
+    failed: "Fallida",
+  })[operation.phase] ?? (isActive ? "En ejecución" : isComplete ? "Finalizada" : "Actualizada");
+  updated.textContent = operation.updatedAt
+    ? `${activityLabel}${elapsedLabel} · última actualización ${new Date(operation.updatedAt).toLocaleTimeString("es-MX")}`
+    : `${activityLabel}${elapsedLabel}`;
+  const followLatestLogs = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 20;
+  logs.textContent = operation.logs
+    || (operation.phase === "queued"
+      ? "La tarea está en cola; BuildKit todavía no ha comenzado."
+      : operation.phase === "waiting-agent"
+        ? "Otra operación está usando el agente del VPS. Esta construcción espera su turno; BuildKit todavía no ha comenzado."
+        : operation.phase === "preparing-source"
+          ? "Descargando y preparando el código fuente y el contexto de construcción. BuildKit aún no ha comenzado."
+          : operation.phase === "buildkit"
+            ? "BuildKit ya inició; todavía no ha emitido líneas de salida."
+            : operation.status === "failed"
+              ? `La tarea terminó sin registros de BuildKit.${operation.error ? ` Error: ${operation.error}` : ""}`
+              : "La construcción terminó, pero el agente no entregó registros de BuildKit.");
+  if (followLatestLogs) logs.scrollTop = logs.scrollHeight;
+  if (buildButton) {
+    buildButton.disabled = isActive || buildUnavailable;
+    buildButton.textContent = isActive ? "Construcción en curso…" : "Construir";
+  }
+  if (publishButton) {
+    publishButton.disabled = isActive || buildUnavailable;
+    publishButton.textContent = isActive ? "Construcción en curso…" : "Construir y desplegar";
+  }
+}
+
+function updateProjectLatestBuild(projectId, latestBuild) {
+  const project = projects.find((candidate) => candidate.id === projectId);
+  if (!project || !latestBuild) return;
+  project.latestBuild = latestBuild;
+  const buildValue = document.querySelector("#project-detail-build-info .project-release-label span");
+  if (buildValue) {
+    buildValue.textContent = `${latestBuild.commitSha.slice(0, 12)}${latestBuild.branch ? ` · ${latestBuild.branch}` : ""}`;
+  }
+  const currentDeployment = project.deployment;
+  const deploymentCurrent = Boolean(currentDeployment
+    && latestBuild.commitSha === currentDeployment.commitSha
+    && currentDeployment.runningReplicas === currentDeployment.desiredReplicas
+    && currentDeployment.configurationCurrent);
+  const deployButton = document.querySelector("#project-detail-actions [data-project-deploy]");
+  if (deployButton) {
+    deployButton.disabled = deploymentCurrent;
+    deployButton.textContent = currentDeployment ? "Re-desplegar" : "Desplegar";
+  }
+  if (!currentDeployment) {
+    document.querySelector("#project-detail-state").textContent = "Build listo";
+  }
+}
+
+function scheduleProjectBuildPoll(projectId) {
+  if (projectBuildPollTimer !== undefined) clearTimeout(projectBuildPollTimer);
+  projectBuildPollTimer = setTimeout(() => {
+    projectBuildPollTimer = undefined;
+    void pollProjectBuildStatus(projectId);
+  }, 2000);
+}
+
+async function pollProjectBuildStatus(projectId) {
+  if (currentProjectEdit?.id !== projectId) return null;
+  try {
+    const { operation, latestBuild } = await request(`/api/projects/${encodeURIComponent(projectId)}/build-status`);
+    renderProjectBuildOperation(projectId, operation);
+    updateProjectLatestBuild(projectId, latestBuild);
+    if (["pending", "in_progress"].includes(operation?.status)) {
+      scheduleProjectBuildPoll(projectId);
+    } else if (operation?.status === "failed") {
+      projectDeployAfterBuild.delete(projectId);
+      projectsStatus.textContent = operation.error ?? operation.message;
+    } else if (operation?.status === "completed") {
+      if (projectDeployAfterBuild.delete(projectId)) {
+        projectsStatus.textContent = "Compilación lista; solicitando el despliegue…";
+        try {
+          const project = projects.find((candidate) => candidate.id === projectId);
+          if (!project) throw new Error("No se encontró el proyecto para iniciar el despliegue.");
+          await requestProjectDeployment(project, (message) => {
+            projectsStatus.textContent = message;
+          });
+        } catch (error) {
+          projectsStatus.textContent = `La compilación terminó, pero el despliegue no se completó: ${error.message}`;
+        }
+      } else {
+        projectsStatus.textContent = "Construcción finalizada correctamente; ya puedes desplegar la imagen.";
+      }
+    }
+    return operation;
+  } catch (error) {
+    document.querySelector("#project-detail-build-operation").hidden = false;
+    document.querySelector("#project-detail-build-operation-title").textContent = "Consultando construcción";
+    document.querySelector("#project-detail-build-operation-diagnostic").hidden = true;
+    const message = document.querySelector("#project-detail-build-operation-message");
+    message.textContent = `No se pudo actualizar el estado de la construcción: ${error.message}`;
+    scheduleProjectBuildPoll(projectId);
+    return null;
+  }
+}
+
+function projectHealthSummary(health) {
+  if (!health) return "Estado del servicio y las URLs todavía no consultado.";
+  const serviceLabel = {
+    running: "en ejecución",
+    stopped: "detenido",
+    "not-deployed": "sin despliegue",
+  }[health.serviceStatus] ?? "desconocido";
+  const urlLabel = health.urls.length === 0
+    ? "sin dominios asignados"
+    : `${health.urls.filter((url) => url.state === "online").length}/${health.urls.length} URLs respondiendo`;
+  const checkedAt = new Date(health.checkedAt);
+  const checkedLabel = Number.isNaN(checkedAt.getTime())
+    ? ""
+    : ` · comprobado ${checkedAt.toLocaleTimeString("es-MX")}`;
+  return `Servicio ${serviceLabel} · ${urlLabel}${checkedLabel}`;
+}
+
+async function waitForProjectTask(taskId, onProgress) {
+  const deadline = Date.now() + 18 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const { tasks } = await request("/api/system/tasks");
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error("No se encontró la tarea en el historial; actualiza para comprobar su estado.");
+    if (task.status === "completed") return task;
+    if (task.status === "failed") throw new Error(task.error ?? "La operación falló sin proporcionar detalles.");
+    onProgress(task.status === "pending" ? "En cola; esperando al agente del VPS…" : "Operación en curso en el VPS…");
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error("La operación sigue activa, pero superó el tiempo de espera del panel. Actualiza para consultar su estado.");
+}
+
+async function requestProjectDeployment(project, onProgress) {
+  try {
+    const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deploy`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if (!result.task?.id) throw new Error("El servidor aceptó el despliegue, pero no devolvió el identificador de tarea.");
+    onProgress(result.message ?? `Desplegando ${project.name}…`);
+    const task = await waitForProjectTask(result.task.id, onProgress);
+    onProgress(task.result?.message ?? `El despliegue de ${project.name} terminó correctamente.`);
+    await Promise.all([loadProjects(), loadTaskHistory()]);
+    return task;
+  } catch (error) {
+    await Promise.all([loadProjects({ quiet: true }), loadTaskHistory()]);
+    throw error;
+  }
+}
+
+async function deleteProjectAndResources(project, assignedDomains, onProgress) {
+  if (project.deployment) {
+    onProgress("Retirando el servicio del VPS…");
+    const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deployment`, {
+      method: "DELETE",
+    });
+    if (!result.task?.id) throw new Error("Se solicitó el retiro, pero el servidor no devolvió el identificador de tarea.");
+    await waitForProjectTask(result.task.id, onProgress);
+  }
+  for (const [index, domain] of assignedDomains.entries()) {
+    onProgress(`Quitando el dominio ${domain.hostname} (${index + 1}/${assignedDomains.length})…`);
+    await request(`/api/domains/${encodeURIComponent(domain.id)}`, { method: "DELETE" });
+  }
+  onProgress("Eliminando el proyecto y su configuración…");
+  await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+}
+
+function projectUrlHealthLabel(urlHealth) {
+  if (!urlHealth) return "Estado de URL no consultado.";
+  if (urlHealth.state === "online") return `Disponible · HTTP ${urlHealth.httpStatus} · ${urlHealth.responseTimeMs} ms`;
+  if (urlHealth.error) return urlHealth.error;
+  if (urlHealth.httpStatus !== null) return `Error HTTP ${urlHealth.httpStatus} · ${urlHealth.responseTimeMs} ms`;
+  return "URL no disponible.";
+}
+
+function updateProjectUrlHealthRow(hostname, urlHealth, deployment, routeUpdatePending = false) {
+  const row = [...document.querySelectorAll("#project-detail-domains .project-domain-row")]
+    .find((item) => item.dataset.hostname === hostname);
+  if (!row) return;
+  const status = row.querySelector("[data-project-url-health]");
+  if (status) {
+    status.dataset.state = urlHealth?.state ?? "unknown";
+    status.textContent = projectUrlHealthLabel(urlHealth);
+  }
+  const repairButton = row.querySelector("[data-project-route-repair]");
+  if (repairButton) repairButton.hidden = !urlHealth || urlHealth.state === "online";
+  const routeIsReady = Boolean(
+    deployment?.routesCurrent && deployment.runningReplicas > 0 && !routeUpdatePending,
+  );
+  const openSite = row.querySelector("[data-project-open-site]");
+  if (openSite) openSite.hidden = !routeIsReady;
+  const routeStatus = row.querySelector("[data-project-route-status]");
+  if (routeStatus) {
+    routeStatus.hidden = routeIsReady;
+    if (routeIsReady) routeStatus.textContent = "";
+  }
+}
+
+async function waitForProjectRouteHealth(projectId, hostname, onUpdate = () => {}) {
+  const deadline = Date.now() + 120_000;
+  let delayMs = 2000;
+  let readyChecks = 0;
+  let latestHealth = null;
+  let latestDeployment = null;
+  let routesCurrent = false;
+  while (Date.now() < deadline) {
+    const result = await request(`/api/projects/${encodeURIComponent(projectId)}/health`);
+    latestDeployment = result.deployment;
+    routesCurrent = Boolean(
+      result.deployment?.routesCurrent
+      && result.deployment.runningReplicas > 0
+      && !result.routeUpdatePending,
+    );
+    latestHealth = result.health?.urls?.find((item) => item.hostname === hostname) ?? null;
+    updateProjectUrlHealthRow(hostname, latestHealth, result.deployment, result.routeUpdatePending);
+    if (routesCurrent) {
+      readyChecks += 1;
+      if (latestHealth?.state === "online" || readyChecks >= 3) break;
+    }
+    if (!result.deployment) break;
+    onUpdate(routesCurrent
+      ? "Ruta activa; comprobando la URL…"
+      : "Esperando a que el VPS active la ruta automáticamente…");
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    delayMs = Math.min(10_000, Math.round(delayMs * 1.5));
+  }
+  return { deployment: latestDeployment, health: latestHealth, routesCurrent };
+}
+
+async function repairProjectRoute(projectId, hostname, statusElement, button) {
+  button.disabled = true;
+  statusElement.textContent = "Solicitando reparación de la ruta…";
+  try {
+    const result = await request(`/api/projects/${encodeURIComponent(projectId)}/routes/reconcile`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    statusElement.textContent = result.message;
+    const verification = await waitForProjectRouteHealth(
+      projectId,
+      hostname,
+      (message) => { statusElement.textContent = message; },
+    );
+    if (!verification.routesCurrent) {
+      statusElement.textContent = "La ruta sigue pendiente; revisa el estado del VPS y vuelve a intentar.";
+    } else if (verification.health?.state === "online") {
+      statusElement.textContent = "Ruta reparada y URL disponible.";
+    } else if (verification.health?.httpStatus === 404) {
+      statusElement.textContent = "La ruta está activa; el 404 viene de la ruta raíz de la aplicación o de la configuración de su puerto.";
+    } else {
+      statusElement.textContent = verification.health?.error
+        ?? "La ruta está activa, pero la URL todavía no responde correctamente.";
+    }
+  } catch (error) {
+    statusElement.textContent = `No se pudo reparar la ruta: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function projectProductionStatus(health) {
+  if (!health) return { label: "Estado no consultado", state: "unknown" };
+  if (health.serviceStatus === "not-deployed") return { label: "Sin publicar", state: "unavailable" };
+  if (health.serviceStatus === "stopped") return { label: "Servicio detenido", state: "unavailable" };
+  if (health.urlStatus === "degraded" || health.urlStatus === "unavailable") {
+    return { label: "Revisar disponibilidad", state: "degraded" };
+  }
+  return {
+    label: health.urlStatus === "online" ? "Disponible" : "Servicio activo",
+    state: "online",
+  };
+}
+
+function addProjectRuntimeField(list, label, value) {
+  const term = document.createElement("dt");
+  term.textContent = label;
+  const description = document.createElement("dd");
+  description.textContent = value;
+  list.append(term, description);
+}
+
+function renderProjectRuntimeSummary(project) {
+  const summary = document.querySelector("#project-runtime-summary");
+  summary.replaceChildren();
+  const deploymentTypes = {
+    static: "Sitio estático servido por Nginx",
+    dynamic: "Aplicación dinámica en contenedor",
+    build: "Build estático servido por Nginx",
+  };
+  addProjectRuntimeField(summary, "Tipo", deploymentTypes[project.deploymentType] ?? "No especificado");
+  addProjectRuntimeField(summary, "Framework detectado", project.framework || "No detectado");
+
+  if (project.deploymentType === "static") {
+    addProjectRuntimeField(summary, "Ejecución", "Nginx sirve los archivos del proyecto tal como se cargaron · puerto 80.");
+  } else if (project.deploymentType === "build") {
+    addProjectRuntimeField(summary, "Directorio de contexto", project.buildContext || ".");
+    addProjectRuntimeField(summary, "Comando de compilación", project.buildCommand || "npm run build");
+    addProjectRuntimeField(summary, "Directorio publicado", project.buildOutputDirectory || "dist");
+    addProjectRuntimeField(summary, "Ejecución", "Nginx sirve la carpeta compilada · puerto 80. Las variables de entorno no se inyectan durante el build.");
+  } else {
+    const strategy = project.buildStrategy === "railpack" ? "Railpack" : "Dockerfile";
+    addProjectRuntimeField(summary, "Método de imagen", strategy);
+    addProjectRuntimeField(summary, "Directorio de contexto", project.buildContext || ".");
+    if (project.buildStrategy === "railpack") {
+      addProjectRuntimeField(summary, "Arranque", "Railpack detecta el comando de inicio del proyecto.");
+    } else {
+      addProjectRuntimeField(summary, "Dockerfile", project.dockerfilePath || "Dockerfile");
+      addProjectRuntimeField(summary, "Arranque", "El contenedor ejecuta el CMD o ENTRYPOINT definido en el Dockerfile.");
+    }
+    addProjectRuntimeField(summary, "Puerto interno", String(project.internalPort || 3000));
+    addProjectRuntimeField(summary, "Variables de entorno", "Se inyectan al contenedor en el siguiente despliegue.");
+  }
+
+  const deployment = project.deployment;
+  addProjectRuntimeField(summary, "Servicio Swarm", deployment
+    ? `${deployment.serviceName} · ${deployment.runningReplicas}/${deployment.desiredReplicas} réplicas`
+    : "Aún no desplegado");
+  if (deployment?.image) addProjectRuntimeField(summary, "Imagen en ejecución", deployment.image);
+}
+
+function createProjectEnvironmentEditor(projectId, environment, { readOnly = false } = {}) {
+  const form = document.createElement("form");
+  form.className = "project-environment-form";
+  const rows = document.createElement("div");
+  rows.className = "project-environment-list";
+  const status = document.createElement("p");
+  status.className = "muted";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const enableEnvironment = document.createElement("button");
+  enableEnvironment.className = "button secondary";
+  enableEnvironment.type = "button";
+  enableEnvironment.textContent = "Configurar como aplicación dinámica";
+  enableEnvironment.hidden = !readOnly;
+  enableEnvironment.addEventListener("click", () => {
+    setProjectTab("settings");
+    projectDeploymentTypeSelect.value = "dynamic";
+    projectDeploymentTypeSelect.dispatchEvent(new Event("change"));
+    projectFormStatus.textContent = "Se seleccionó Aplicación dinámica. Guarda la configuración para habilitar las variables de entorno.";
+    projectForm.scrollIntoView({ behavior: "smooth", block: "start" });
+    projectSaveButton.focus({ preventScroll: true });
+  });
+  const addVariable = document.createElement("button");
+  addVariable.className = "button secondary";
+  addVariable.type = "button";
+  addVariable.textContent = "Añadir variable";
+  addVariable.disabled = readOnly;
+  const save = document.createElement("button");
+  save.className = "button";
+  save.type = "submit";
+  save.textContent = "Guardar variables";
+  save.disabled = readOnly;
+
+  const addRow = (name = "", value = "") => {
+    const row = document.createElement("div");
+    row.className = "project-environment-row";
+    const nameField = document.createElement("label");
+    nameField.className = "project-environment-name";
+    const nameLabel = document.createElement("span");
+    nameLabel.textContent = "Nombre";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = name;
+    nameInput.maxLength = 128;
+    nameInput.autocomplete = "off";
+    nameInput.spellcheck = false;
+    nameInput.placeholder = "API_KEY";
+    nameInput.setAttribute("aria-label", "Nombre de la variable");
+    nameInput.disabled = readOnly;
+    nameField.append(nameLabel, nameInput);
+
+    const valueField = document.createElement("label");
+    valueField.className = "project-environment-value";
+    const valueLabel = document.createElement("span");
+    valueLabel.textContent = "Valor";
+    const valueInput = document.createElement("input");
+    valueInput.type = "password";
+    valueInput.value = value;
+    valueInput.maxLength = 8192;
+    valueInput.autocomplete = "new-password";
+    valueInput.spellcheck = false;
+    valueInput.placeholder = "Valor secreto o de configuración";
+    valueInput.setAttribute("aria-label", `Valor de ${name || "la variable"}`);
+    valueInput.disabled = readOnly;
+    valueField.append(valueLabel, valueInput);
+
+    const actions = document.createElement("div");
+    actions.className = "project-environment-row-actions";
+    const reveal = document.createElement("button");
+    reveal.className = "button secondary resource-action";
+    reveal.type = "button";
+    reveal.textContent = "Mostrar";
+    reveal.setAttribute("aria-label", `Mostrar u ocultar el valor de ${name || "la variable"}`);
+    reveal.disabled = readOnly;
+    reveal.addEventListener("click", () => {
+      const visible = valueInput.type === "password";
+      valueInput.type = visible ? "text" : "password";
+      reveal.textContent = visible ? "Ocultar" : "Mostrar";
+    });
+    const remove = document.createElement("button");
+    remove.className = "button secondary resource-action";
+    remove.type = "button";
+    remove.textContent = "Quitar";
+    remove.disabled = readOnly;
+    remove.addEventListener("click", () => row.remove());
+    actions.append(reveal, remove);
+    row.append(nameField, valueField, actions);
+    rows.append(row);
+  };
+
+  for (const [name, value] of Object.entries(environment)) addRow(name, value);
+  if (Object.keys(environment).length === 0) {
+    status.textContent = readOnly
+      ? "Este proyecto está configurado para servir archivos estáticos. Para usar variables de entorno, cámbialo a una aplicación dinámica y guarda la configuración."
+      : "Todavía no hay variables. Añade las que necesite la aplicación.";
+  }
+  addVariable.addEventListener("click", () => {
+    addRow();
+    rows.lastElementChild?.querySelector("input")?.focus();
+    status.textContent = "";
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const nextEnvironment = Object.create(null);
+    for (const row of rows.querySelectorAll(".project-environment-row")) {
+      const [nameInput, valueInput] = row.querySelectorAll("input");
+      const name = nameInput.value.trim();
+      const value = valueInput.value;
+      if (!name && !value) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
+        status.textContent = "Usa nombres de variable válidos, por ejemplo API_KEY o DATABASE_URL.";
+        nameInput.focus();
+        return;
+      }
+      if (Object.hasOwn(nextEnvironment, name)) {
+        status.textContent = `La variable ${name} está repetida.`;
+        nameInput.focus();
+        return;
+      }
+      nextEnvironment[name] = value;
+    }
+    save.disabled = true;
+    addVariable.disabled = true;
+    try {
+      const result = await request(`/api/projects/${encodeURIComponent(projectId)}/environment`, {
+        method: "PUT",
+        body: JSON.stringify({ environment: nextEnvironment }),
+      });
+      status.textContent = result.message;
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      save.disabled = false;
+      addVariable.disabled = false;
+    }
+  });
+  form.append(rows, enableEnvironment, addVariable, save, status);
+  return form;
 }
 
 function renderProjects() {
@@ -1943,15 +2655,16 @@ function renderProjects() {
     "project-detail-upload",
     "project-detail-environment",
     "project-detail-domains",
-    "project-detail-history",
   ]) document.querySelector(`#${id}`).replaceChildren();
+  const projectHistory = document.querySelector("#project-detail-history");
+  projectHistory.querySelectorAll("ul").forEach((list) => list.remove());
   const selectedProjectId = window.location.pathname.match(/^\/projects\/([0-9a-f-]{36})$/i)?.[1].toLowerCase();
   if (projects.length === 0) {
     projectsStatus.textContent = "Todavía no hay proyectos. Crea uno para empezar.";
     renderProjectRoute();
     return;
   }
-  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada se despliegan automáticamente cuando GitHub OAuth y el webhook público están disponibles.`;
+  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} · Los pushes a la rama configurada se despliegan automáticamente cuando GitHub OAuth y el webhook público están disponibles. El estado de servicios y URLs se comprueba al cargar esta vista, sin sondeo periódico.`;
   for (const project of projects) {
     const assignedDomains = domainData.domains.filter((domain) => domain.projectId === project.id);
     const card = document.createElement("article");
@@ -1991,7 +2704,11 @@ function renderProjects() {
     details.textContent = project.sourceType === "upload"
       ? "Subido desde ZIP o archivos"
       : `GitHub · ${project.repository} · ${project.productionBranch}`;
-    card.append(heading, details);
+    const healthSummary = document.createElement("p");
+    healthSummary.className = "muted project-health-status";
+    healthSummary.dataset.state = project.health?.urlStatus ?? "unknown";
+    healthSummary.textContent = projectHealthSummary(project.health);
+    card.append(heading, details, buildInfo, deploymentInfo, healthSummary);
 
     const actions = document.createElement("div");
     actions.className = "project-actions";
@@ -2008,23 +2725,91 @@ function renderProjects() {
     manage.className = "button secondary";
     manage.href = `/projects/${encodeURIComponent(project.id)}`;
     manage.textContent = "Administrar";
+    const deploymentNeedsRetry = !project.deployment
+      || project.deployment.runningReplicas < project.deployment.desiredReplicas
+      || project.deployment.configurationCurrent === false;
+    if (project.latestBuild && deploymentNeedsRetry) {
+      const retryDeploy = document.createElement("button");
+      retryDeploy.className = "button project-publish-button";
+      retryDeploy.type = "button";
+      retryDeploy.textContent = "Reintentar deploy";
+      retryDeploy.addEventListener("click", async () => {
+        retryDeploy.disabled = true;
+        try {
+          projectsStatus.textContent = `Reintentando el deploy de ${project.name}…`;
+          await requestProjectDeployment(project, (message) => {
+            projectsStatus.textContent = message;
+            retryDeploy.textContent = message.includes("En cola") || message.includes("en curso")
+              ? "Deploy en curso…"
+              : "Reintentar deploy";
+          });
+        } catch (error) {
+          projectsStatus.textContent = `No se pudo desplegar ${project.name}: ${error.message}`;
+        } finally {
+          await loadProjects();
+          retryDeploy.disabled = false;
+          retryDeploy.textContent = "Reintentar deploy";
+        }
+      });
+      actions.append(retryDeploy);
+    }
     const removeProject = makeButton("Eliminar", async () => {
-      if (!confirm(`¿Eliminar el proyecto ${project.name}? La operación no se puede deshacer. Primero retira el servicio desplegado y desasigna sus dominios; de lo contrario, el servidor rechazará la eliminación.`)) return;
+      const cleanupDescription = [
+        project.deployment ? "se retirará su servicio del VPS" : "",
+        assignedDomains.length ? `se quitarán ${assignedDomains.length} dominio(s) asignado(s)` : "",
+      ].filter(Boolean).join(" y ");
+      const consequences = cleanupDescription
+        ? ` También ${cleanupDescription}. Los registros DNS de esos dominios se conservarán.`
+        : "";
+      if (!confirm(`¿Eliminar el proyecto ${project.name}? No se puede deshacer.${consequences}`)) return;
       removeProject.disabled = true;
+      removeProject.textContent = "Eliminando…";
       try {
-        await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+        await deleteProjectAndResources(project, assignedDomains, (message) => {
+          projectsStatus.textContent = message;
+          removeProject.textContent = message.includes("Retirando") ? "Retirando…" : "Eliminando…";
+        });
+        projectsStatus.textContent = `Se eliminó ${project.name}. Los registros DNS existentes no se modificaron.`;
         if (selectedProjectId === project.id.toLowerCase()) returnToProjectsRoute();
-        await loadProjects();
+        await Promise.all([loadProjects(), loadDomains()]);
       } catch (error) {
-        projectsStatus.textContent = error.message;
+        projectsStatus.textContent = `No se pudo completar la eliminación de ${project.name}: ${error.message}`;
       } finally {
         removeProject.disabled = false;
+        removeProject.textContent = "Eliminar";
       }
     });
     removeProject.classList.add("button-danger");
-    card.append(manage, removeProject);
+    actions.append(manage, removeProject);
+    card.append(actions);
     projectsList.append(card);
     if (selectedProjectId !== project.id.toLowerCase()) continue;
+
+    const primaryDomain = assignedDomains[0];
+    const productionDomainLink = document.querySelector("#project-production-domain");
+    const productionDomainEmpty = document.querySelector("#project-production-domain-empty");
+    productionDomainLink.hidden = !primaryDomain;
+    productionDomainEmpty.hidden = Boolean(primaryDomain);
+    if (primaryDomain) {
+      productionDomainLink.href = `https://${primaryDomain.hostname}/`;
+      productionDomainLink.textContent = `https://${primaryDomain.hostname}`;
+    }
+    const headerOpenLink = document.querySelector("#project-header-open");
+    headerOpenLink.hidden = !primaryDomain || !project.deployment;
+    if (primaryDomain) headerOpenLink.href = productionDomainLink.href;
+    document.querySelector("#project-production-source").textContent = project.sourceType === "upload"
+      ? "Código fuente cargado manualmente"
+      : `${project.repository} · rama de producción: ${project.productionBranch}`;
+    const productionStatus = projectProductionStatus(project.health);
+    const productionStatusBadge = document.querySelector("#project-production-status");
+    productionStatusBadge.textContent = productionStatus.label;
+    productionStatusBadge.dataset.state = productionStatus.state;
+    document.querySelector("#project-production-trigger").textContent = project.sourceType === "github"
+      ? project.autoDeploy
+        ? `Despliegue automático al recibir cambios en ${project.productionBranch}`
+        : `Despliegue manual · rama ${project.productionBranch}`
+      : "Origen ZIP · compilación y despliegue manuales";
+    renderProjectRuntimeSummary(project);
 
     document.querySelector("#project-detail-build-info").append(buildInfo);
     document.querySelector("#project-detail-deployment-info").append(deploymentInfo);
@@ -2096,7 +2881,47 @@ function renderProjects() {
         `Repositorio ${project.repository} · rama ${project.productionBranch}`;
     }
 
-    actions.append(makeButton("Construir", async () => {
+    const buildOperation = project.latestBuildOperation;
+    const buildInProgress = ["pending", "in_progress"].includes(buildOperation?.status);
+    const publishButton = makeButton(
+      buildInProgress ? "Construcción en curso…" : "Construir y desplegar",
+      async () => {
+        publishButton.disabled = true;
+        publishButton.textContent = "Solicitando compilación…";
+        projectsStatus.textContent = `Construyendo ${project.name}; se desplegará automáticamente al finalizar.`;
+        try {
+          const result = await request(`/api/projects/${encodeURIComponent(project.id)}/build`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          projectDeployAfterBuild.add(project.id);
+          projectsStatus.textContent = `${result.message} El despliegue comenzará al terminar la compilación.`;
+          await pollProjectBuildStatus(project.id);
+        } catch (error) {
+          projectDeployAfterBuild.delete(project.id);
+          const operation = await pollProjectBuildStatus(project.id);
+          projectsStatus.textContent = ["pending", "in_progress"].includes(operation?.status)
+            ? "Ya hay una construcción activa. Puedes consultar su salida en esta página."
+            : error.message;
+          if (!["pending", "in_progress"].includes(operation?.status)) {
+            publishButton.disabled = project.sourceType === "upload" && !project.latestSource;
+            publishButton.textContent = "Construir y desplegar";
+          }
+        }
+      },
+      (project.sourceType === "upload" && !project.latestSource) || buildInProgress,
+    );
+    publishButton.classList.add("project-publish-button");
+    publishButton.dataset.projectPublish = project.id;
+    actions.append(publishButton);
+    const advancedActions = document.createElement("details");
+    advancedActions.className = "project-advanced-actions";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.textContent = "Acciones avanzadas";
+    advancedActions.append(advancedSummary);
+    const buildButton = makeButton(buildInProgress ? "Construcción en curso…" : "Construir", async () => {
+      buildButton.disabled = true;
+      buildButton.textContent = "Solicitando construcción…";
       projectsStatus.textContent = `Construyendo ${project.name}…`;
       try {
         const result = await request(`/api/projects/${encodeURIComponent(project.id)}/build`, {
@@ -2104,11 +2929,17 @@ function renderProjects() {
           body: JSON.stringify({}),
         });
         projectsStatus.textContent = result.message;
-        await Promise.all([loadProjects(), loadTaskHistory()]);
+        await pollProjectBuildStatus(project.id);
       } catch (error) {
-        projectsStatus.textContent = error.message;
+        const operation = await pollProjectBuildStatus(project.id);
+        projectsStatus.textContent = ["pending", "in_progress"].includes(operation?.status)
+          ? "Ya hay una construcción activa para este proyecto. Se muestra su progreso y BuildKit en los registros de abajo."
+          : error.message;
       }
-    }, project.sourceType === "upload" && !project.latestSource));
+    }, (project.sourceType === "upload" && !project.latestSource) || buildInProgress);
+    buildButton.dataset.projectBuild = project.id;
+    buildButton.textContent = "Construir sin desplegar";
+    advancedActions.append(buildButton);
 
     const currentBuild = project.latestBuild;
     const currentDeployment = project.deployment;
@@ -2116,29 +2947,32 @@ function renderProjects() {
       && currentBuild.commitSha === currentDeployment.commitSha
       && currentDeployment.runningReplicas === currentDeployment.desiredReplicas
       && currentDeployment.configurationCurrent);
-    actions.append(makeButton(
-      currentDeployment ? "Re-desplegar" : "Desplegar",
+    const deployButton = makeButton(
+      currentDeployment ? "Re-desplegar versión lista" : "Reintentar deploy",
       async () => {
-        projectsStatus.textContent = `Desplegando ${project.name}…`;
+        deployButton.disabled = true;
+        deployButton.textContent = "Deploy en curso…";
         try {
-          const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deploy`, {
-            method: "POST",
-            body: JSON.stringify({}),
+          await requestProjectDeployment(project, (message) => {
+            projectsStatus.textContent = message;
           });
-          projectsStatus.textContent = result.message;
-          await Promise.all([loadProjects(), loadTaskHistory()]);
         } catch (error) {
-          projectsStatus.textContent = error.message;
+          projectsStatus.textContent = `No se pudo desplegar ${project.name}: ${error.message}`;
+        } finally {
+          deployButton.disabled = false;
+          deployButton.textContent = currentDeployment ? "Re-desplegar versión lista" : "Reintentar deploy";
         }
       },
       !currentBuild || deploymentCurrent,
-    ));
+    );
+    deployButton.dataset.projectDeploy = project.id;
+    advancedActions.append(deployButton);
 
     const rollbackTarget = project.deploymentHistory?.find((item) =>
       item.status === "completed" && item.image && item.commitSha
       && item.commitSha !== currentDeployment?.commitSha);
     if (rollbackTarget) {
-      actions.append(makeButton(`Rollback · ${rollbackTarget.commitSha.slice(0, 12)}`, async () => {
+      advancedActions.append(makeButton(`Revertir a ${rollbackTarget.commitSha.slice(0, 12)}`, async () => {
         if (!confirm(`¿Volver ${project.name} al despliegue ${rollbackTarget.commitSha.slice(0, 12)}? Se conservará la configuración actual.`)) return;
         try {
           const result = await request(`/api/projects/${encodeURIComponent(project.id)}/rollback`, {
@@ -2153,7 +2987,7 @@ function renderProjects() {
       }));
     }
     if (currentDeployment) {
-      actions.append(makeButton("Retirar servicio", async () => {
+      advancedActions.append(makeButton("Retirar servicio", async () => {
         if (!confirm(`¿Retirar el servicio de ${project.name}?`)) return;
         try {
           const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deployment`, {
@@ -2166,36 +3000,64 @@ function renderProjects() {
         }
       }));
     }
+    if (advancedActions.children.length > 1) actions.append(advancedActions);
     document.querySelector("#project-detail-actions").append(actions);
+    renderProjectBuildOperation(project.id, buildOperation);
+    if (buildInProgress) scheduleProjectBuildPoll(project.id);
 
-    const history = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = `Historial de despliegues (${project.deploymentHistory?.length ?? 0})`;
-    history.append(summary);
+    const history = document.querySelector("#project-detail-history");
+    history.querySelector("summary").textContent =
+      `Historial de implementaciones (${project.deploymentHistory?.length ?? 0})`;
     if (project.deploymentHistory?.length) {
       const list = document.createElement("ul");
       list.className = "project-history";
       for (const item of project.deploymentHistory.slice(0, 10)) {
         const entry = document.createElement("li");
-        entry.textContent = `${item.commitSha?.slice(0, 12) ?? "sin commit"} · ${item.status} · ${new Date(item.completedAt).toLocaleString("es-MX")}${item.image ? ` · ${item.image}` : item.error ? ` · ${item.error}` : ""}`;
+        const status = {
+          completed: "completada",
+          failed: "fallida",
+          pending: "en cola",
+          in_progress: "en curso",
+        }[item.status] ?? item.status;
+        entry.textContent = `${item.commitSha?.slice(0, 12) ?? "sin commit"} · ${status} · ${new Date(item.completedAt).toLocaleString("es-MX")}${item.image ? ` · ${item.image}` : item.error ? ` · ${item.error}` : ""}`;
         list.append(entry);
       }
       history.append(list);
     }
-    document.querySelector("#project-detail-history").append(history);
 
     const assignedDomainsHeading = document.createElement("h4");
     assignedDomainsHeading.textContent = `Dominios asignados (${assignedDomains.length})`;
     document.querySelector("#project-detail-domains").append(assignedDomainsHeading);
-    const routeIsReady = Boolean(currentDeployment?.configurationCurrent && currentDeployment.runningReplicas > 0);
+    const routeIsReady = Boolean(currentDeployment?.routesCurrent && currentDeployment.runningReplicas > 0);
     for (const domain of assignedDomains) {
       const domainRow = document.createElement("div");
-      domainRow.className = "project-actions";
+      domainRow.className = "project-actions project-domain-row";
+      domainRow.dataset.hostname = domain.hostname;
       const hostname = document.createElement("a");
       hostname.href = `https://${domain.hostname}/`;
       hostname.target = "_blank";
       hostname.rel = "noopener noreferrer";
       hostname.textContent = `https://${domain.hostname}/`;
+      const urlHealth = project.health?.urls?.find((item) => item.hostname === domain.hostname);
+      const healthStatus = document.createElement("span");
+      healthStatus.className = "muted project-health-status";
+      healthStatus.dataset.state = urlHealth?.state ?? "unknown";
+      healthStatus.dataset.projectUrlHealth = "";
+      healthStatus.textContent = projectUrlHealthLabel(urlHealth);
+      domainRow.append(hostname, healthStatus);
+      if (currentDeployment?.runningReplicas > 0 && urlHealth?.state !== "online") {
+        const repairStatus = document.createElement("span");
+        repairStatus.className = "muted";
+        repairStatus.setAttribute("role", "status");
+        const repairRoute = document.createElement("button");
+        repairRoute.className = "button secondary";
+        repairRoute.type = "button";
+        repairRoute.dataset.projectRouteRepair = "";
+        repairRoute.textContent = "Reparar ruta automáticamente";
+        repairRoute.addEventListener("click", () =>
+          repairProjectRoute(project.id, domain.hostname, repairStatus, repairRoute));
+        domainRow.append(repairRoute, repairStatus);
+      }
       const removeDomain = document.createElement("button");
       removeDomain.className = "button secondary";
       removeDomain.type = "button";
@@ -2208,21 +3070,22 @@ function renderProjects() {
           projectsStatus.textContent = error.message;
         }
       });
-      domainRow.append(hostname);
-      if (routeIsReady) {
-        const openSite = document.createElement("a");
-        openSite.className = "button secondary";
-        openSite.href = hostname.href;
-        openSite.target = "_blank";
-        openSite.rel = "noopener noreferrer";
-        openSite.textContent = "Ver sitio";
-        domainRow.append(openSite);
-      } else {
+      const openSite = document.createElement("a");
+      openSite.className = "button secondary";
+      openSite.href = hostname.href;
+      openSite.target = "_blank";
+      openSite.rel = "noopener noreferrer";
+      openSite.dataset.projectOpenSite = "";
+      openSite.textContent = "Ver sitio";
+      openSite.hidden = !routeIsReady;
+      domainRow.append(openSite);
+      if (!routeIsReady) {
         const routeStatus = document.createElement("span");
         routeStatus.className = "muted";
+        routeStatus.dataset.projectRouteStatus = "";
         routeStatus.textContent = currentDeployment
-          ? "Redespliega el proyecto para activar esta ruta."
-          : "Construye y despliega el proyecto para activar esta ruta.";
+          ? "Activando ruta automáticamente…"
+          : "La ruta se activará automáticamente al desplegar el proyecto.";
         domainRow.append(routeStatus);
       }
       domainRow.append(removeDomain);
@@ -2274,6 +3137,7 @@ function renderProjects() {
       }
       const hostname = subdomain === "@" ? zone : `${subdomain}.${zone}`;
       addDomain.disabled = true;
+      let domainWasSaved = false;
       try {
         const result = await request("/api/domains", {
           method: "POST",
@@ -2285,66 +3149,61 @@ function renderProjects() {
             proxied: availableZones.find((candidate) => candidate.zone === zone)?.proxied ?? false,
           }),
         });
+        domainWasSaved = true;
         await Promise.all([loadDomains(), loadProjects()]);
-        const refreshedStatus = document.querySelector("#project-detail-domains [role='status']");
+        const refreshedStatus = document.querySelector("#project-detail-domains form [role='status']");
         if (refreshedStatus) refreshedStatus.textContent = result.message;
+        const verification = await waitForProjectRouteHealth(
+          project.id,
+          hostname,
+          (message) => {
+            const status = document.querySelector("#project-detail-domains form [role='status']");
+            if (status) status.textContent = message;
+          },
+        );
+        const status = document.querySelector("#project-detail-domains form [role='status']");
+        if (status) {
+          if (!verification.routesCurrent) {
+            status.textContent = !verification.deployment
+              ? "Dominio guardado. La ruta se activará automáticamente cuando despliegues el proyecto."
+              : "Dominio guardado. La ruta aún no está activa; espera la operación del VPS o usa Reparar ruta automáticamente.";
+          } else if (verification.health?.state === "online") {
+            status.textContent = "Dominio activo y URL disponible.";
+          } else if (verification.health?.httpStatus === 404) {
+            status.textContent = "La ruta está activa, pero la aplicación devuelve 404 en /. Revisa su ruta raíz; si el 404 dice “404 page not found”, usa Reparar ruta automáticamente.";
+          } else {
+            status.textContent = verification.health?.error
+              ?? "La ruta se activó, pero la URL todavía no responde correctamente.";
+          }
+        }
       } catch (error) {
-        domainStatus.textContent = `No se pudo asignar el dominio: ${error.message}`;
+        const status = document.querySelector("#project-detail-domains form [role='status']") ?? domainStatus;
+        status.textContent = domainWasSaved
+          ? `Dominio guardado, pero no se pudo verificar el estado de la ruta: ${error.message}`
+          : `No se pudo asignar el dominio: ${error.message}`;
       } finally {
         addDomain.disabled = availableZones.length === 0;
       }
     });
     document.querySelector("#project-detail-domains").append(domainForm);
 
-    const environmentForm = document.createElement("form");
-    environmentForm.className = "form-stack";
-    const environmentText = document.createElement("textarea");
-    environmentText.rows = 7;
-    environmentText.spellcheck = false;
-    environmentText.setAttribute("aria-label", `Variables de entorno de ${project.name}, formato JSON`);
-    environmentText.placeholder = '{\n  "NODE_ENV": "production"\n}';
-    const saveEnvironment = document.createElement("button");
-    saveEnvironment.className = "button secondary";
-    saveEnvironment.type = "submit";
-    saveEnvironment.textContent = "Guardar variables";
-    environmentForm.append(environmentText, saveEnvironment);
+    const environmentPanel = document.querySelector("#project-detail-environment");
     const environmentStatus = document.createElement("p");
     environmentStatus.className = "muted";
     environmentStatus.setAttribute("role", "status");
     environmentStatus.setAttribute("aria-live", "polite");
     environmentStatus.textContent = "Cargando variables…";
-    environmentForm.prepend(environmentStatus);
+    environmentPanel.append(environmentStatus);
     void request(`/api/projects/${encodeURIComponent(project.id)}/environment`)
       .then(({ environment }) => {
-        environmentText.value = JSON.stringify(environment, null, 2);
-        environmentStatus.textContent = "";
+        environmentStatus.remove();
+        environmentPanel.append(createProjectEnvironmentEditor(project.id, environment, {
+          readOnly: project.deploymentType !== "dynamic",
+        }));
       })
       .catch((error) => {
         environmentStatus.textContent = `No se pudieron cargar las variables: ${error.message}`;
       });
-    environmentForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      let environment;
-      try {
-        environment = JSON.parse(environmentText.value || "{}");
-      } catch {
-        projectsStatus.textContent = "Las variables deben ser un objeto JSON válido.";
-        return;
-      }
-      saveEnvironment.disabled = true;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/environment`, {
-          method: "PUT",
-          body: JSON.stringify({ environment }),
-        });
-        environmentStatus.textContent = result.message;
-      } catch (error) {
-        environmentStatus.textContent = error.message;
-      } finally {
-        saveEnvironment.disabled = false;
-      }
-    });
-    document.querySelector("#project-detail-environment").append(environmentForm);
   }
   renderProjectRoute();
 }
@@ -2573,6 +3432,8 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
       ?? "No hay un túnel configurado. Puedes crear uno para publicar servicios sin IPv4 pública ni puertos abiertos.";
     cloudflareTunnelAccountInput.readOnly = false;
     cloudflareTunnelNameInput.readOnly = false;
+    cloudflareTunnelTokenInput.required = true;
+    cloudflareTunnelTokenInput.placeholder = "";
     cloudflareTunnelSaveButton.textContent = "Crear y conectar túnel";
     cloudflareTunnelOriginSelect.disabled = true;
     cloudflareTunnelManagerSubdomainInput.value = "";
@@ -2585,7 +3446,13 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
   cloudflareTunnelNameInput.value = tunnel.name;
   cloudflareTunnelAccountInput.readOnly = true;
   cloudflareTunnelNameInput.readOnly = true;
-  cloudflareTunnelSaveButton.textContent = "Actualizar token y reconectar";
+  cloudflareTunnelTokenInput.required = !tunnel.configured;
+  cloudflareTunnelTokenInput.placeholder = tunnel.configured
+    ? "Vacío para reutilizar el token guardado"
+    : "";
+  cloudflareTunnelSaveButton.textContent = tunnel.configured
+    ? "Reconectar túnel"
+    : "Actualizar token y reconectar";
   const taskStatus = tunnel.lastError
     ? `Falló la última configuración. Motivo: ${tunnel.lastError}`
     : task?.status === "pending"
@@ -2597,6 +3464,9 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
         : task?.status === "failed"
           ? `Falló la conexión. Motivo: ${task.error || "la tarea falló sin proporcionar detalles."}`
               : "El túnel está creado; todavía no hay una tarea de conexión registrada.";
+  const recoveryGuidance = tunnel.lastError || task?.status === "failed"
+    ? "Acción: pulsa «Reconectar túnel» para intentarlo de nuevo. Si el API Token caducó, sustitúyelo por uno con permiso Account → Cloudflare Tunnel → Edit."
+    : "";
   cloudflareTunnelStatus.textContent = [
     `Cloudflare Tunnel “${tunnel.name}” (${tunnel.tunnelId}).`,
     tunnel.managerHostname ? `Panel: https://${tunnel.managerHostname}.` : "El panel no tiene un hostname propio en el túnel.",
@@ -2604,6 +3474,7 @@ function renderCloudflareTunnel(tunnel, tunnelStatusError) {
     taskStatus,
     task?.id ? `Tarea: ${task.id}.` : "",
     tunnelStatusError ?? "",
+    recoveryGuidance,
   ].filter(Boolean).join(" ");
 }
 
@@ -3124,13 +3995,25 @@ for (const tab of projectDetailView.querySelectorAll("[data-project-tab]")) {
     setProjectTab(tabs[nextIndex].dataset.projectTab);
   });
 }
+for (const button of projectDetailView.querySelectorAll("[data-project-open-settings]")) {
+  button.addEventListener("click", () => {
+    setProjectTab("settings");
+    projectDetailView.querySelector('[data-project-tab="settings"]').focus();
+    projectDetailView.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
 projectInstallationSelect.addEventListener("change", async () => {
   githubImportStatus.textContent = "";
   await loadProjectRepositories();
 });
 projectRepositorySelect.addEventListener("change", () => void loadProjectBranches("main"));
+projectProductionBranchSelect.addEventListener("change", () => void loadGithubProjectProfile());
+githubDeploymentTypeSelect.addEventListener("change", updateGithubProfileSummary);
+githubBuildStrategySelect.addEventListener("change", updateGithubProfileSummary);
+githubInternalPortInput.addEventListener("input", updateGithubProfileSummary);
 refreshProjectsButton.addEventListener("click", () => void loadProjects());
 window.addEventListener("vps-manager:projects-updated", () => void loadProjects());
+window.addEventListener("vps-manager:domains-updated", () => void loadDomains());
 projectBuildStrategySelect.addEventListener("change", () => {
   updateProjectBuildFields();
 });
@@ -3160,6 +4043,7 @@ projectForm.addEventListener("submit", async (event) => {
     buildCommand: document.querySelector("#project-build-command").value.trim(),
     buildOutputDirectory: document.querySelector("#project-build-output-directory").value.trim(),
     internalPort: Number(document.querySelector("#project-port").value),
+    framework: currentProjectEdit.framework ?? "Desconocido",
     autoDeploy: document.querySelector("#project-auto-deploy").checked,
     ...(sourceType === "github" ? {
       githubInstallationId: currentProjectEdit.githubInstallationId,
@@ -3233,13 +4117,24 @@ githubImportForm.addEventListener("submit", async (event) => {
         repository,
         productionBranch,
         deploymentType: githubDeploymentTypeSelect.value,
-        buildStrategy: githubDeploymentTypeSelect.value === "static" ? "dockerfile" : "railpack",
+        buildStrategy: githubDeploymentTypeSelect.value === "dynamic" ? githubBuildStrategySelect.value : "dockerfile",
+        buildContext: githubBuildContextInput.value.trim(),
+        dockerfilePath: githubDockerfileInput.value.trim(),
+        framework: githubDetectedBuildProfile?.framework ?? "Desconocido",
+        internalPort: githubDeploymentTypeSelect.value === "dynamic"
+          ? Number(githubInternalPortInput.value)
+          : 80,
+        buildCommand: githubBuildCommandInput.value.trim(),
+        buildOutputDirectory: githubOutputDirectoryInput.value.trim(),
         autoDeploy: true,
       }),
     });
+    const deploymentMethod = result.project.deploymentType === "dynamic"
+      ? result.project.buildStrategy === "railpack" ? "Railpack" : "Dockerfile"
+      : result.project.deploymentType === "build" ? "BuildKit + Nginx" : "Nginx";
     githubImportStatus.textContent = result.deploymentQueued
-      ? `${repository} importado. Se inició el primer despliegue y los siguientes pushes se desplegarán automáticamente.`
-      : result.warning ?? `${repository} importado.`;
+      ? `${repository} importado como ${result.project.framework} con ${deploymentMethod}; se inició el primer despliegue y los siguientes pushes se desplegarán automáticamente.`
+      : result.warning ?? `${repository} importado como ${result.project.framework} con ${deploymentMethod}.`;
     await Promise.all([loadProjects(), loadTaskHistory()]);
   } catch (error) {
     githubImportStatus.textContent = error.message;
@@ -3364,9 +4259,17 @@ async function loadResources() {
     ]);
     renderServerInfo(serverResult.server, systemResult.database);
     containerMetrics.clear();
+    containerMetricsHost = null;
+    containerMetricsUnavailable = [];
+    runningContainerCount = 0;
     metricsLoaded = false;
+    metricsTotal.replaceChildren();
+    metricsTotal.classList.add("hidden");
     metricsGroups.replaceChildren();
     metricsGroups.classList.add("hidden");
+    metricsContainers.replaceChildren();
+    metricsEmpty.textContent = "Actualiza CPU/RAM para consultar los contenedores activos.";
+    metricsEmpty.classList.remove("hidden");
     metricsStatus.textContent = "";
     resourceData.containers = containersResult.containers;
     resourceData.services = servicesResult.services;
@@ -3390,6 +4293,7 @@ async function loadResources() {
       loadGithubStatus(),
       loadRegistryConfiguration(),
     ]);
+    if (window.location.hash === "#tab-monitoring") void loadContainerMetrics();
     void checkForUpdates();
     statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString("es-MX")}`;
   } catch (error) {
@@ -3431,6 +4335,11 @@ supabaseConfigurationForm.addEventListener("submit", async (event) => {
 refreshNodesButton.addEventListener("click", loadSwarmNodes);
 refreshDiagnosticsButton.addEventListener("click", loadDiagnostics);
 refreshMetricsButton.addEventListener("click", loadContainerMetrics);
+window.addEventListener("dashboardtabchange", (event) => {
+  if (event.detail?.tabId === "monitoring" && window.managerAuthenticated) {
+    void loadContainerMetrics();
+  }
+});
 document.querySelector("#refresh-history").addEventListener("click", loadMetricsHistory);
 document.querySelector("#refresh-backups").addEventListener("click", loadBackups);
 document.querySelector("#refresh-audit").addEventListener("click", loadAuditLog);
@@ -3675,6 +4584,38 @@ for (const selector of ["#container-filter", "#service-filter", "#stack-filter"]
   document.querySelector(selector).addEventListener("change", renderFilteredResources);
 }
 document.querySelector("#close-logs").addEventListener("click", () => logsDialog.close());
+const copyBuildLogsButton = document.querySelector("#project-detail-build-operation-copy");
+if (copyBuildLogsButton) {
+  copyBuildLogsButton.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const status = document.querySelector("#project-detail-build-operation-copy-status");
+    const output = document.querySelector("#project-detail-build-operation-logs").textContent;
+    button.disabled = true;
+    status.textContent = "Copiando salida…";
+    try {
+      if (!output.trim()) throw new Error("No hay salida de BuildKit para copiar.");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(output);
+      } else {
+        const temporary = document.createElement("textarea");
+        temporary.value = output;
+        temporary.setAttribute("readonly", "");
+        temporary.style.position = "fixed";
+        temporary.style.opacity = "0";
+        document.body.append(temporary);
+        temporary.select();
+        const copied = document.execCommand("copy");
+        temporary.remove();
+        if (!copied) throw new Error("El navegador no permitió copiar al portapapeles.");
+      }
+      status.textContent = "Salida copiada al portapapeles.";
+    } catch (error) {
+      status.textContent = `No se pudo copiar la salida: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
 
 window.addEventListener("vps-manager:auth", (event) => {
   const { authenticated } = event.detail;

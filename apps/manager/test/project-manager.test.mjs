@@ -23,6 +23,7 @@ test("validates GitHub project configuration with a selectable production branch
     buildCommand: "npm run build",
     buildOutputDirectory: "dist",
     internalPort: 3000,
+    framework: "Desconocido",
     autoDeploy: true,
   });
   const project = validateProjectInput({

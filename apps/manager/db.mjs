@@ -244,6 +244,7 @@ function mapProject(row) {
     buildCommand: row.build_command,
     buildOutputDirectory: row.build_output_directory,
     internalPort: row.internal_port,
+    framework: row.framework,
     autoDeploy: row.auto_deploy,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -253,7 +254,7 @@ function mapProject(row) {
 export async function getProjects() {
   const result = await pool.query(`
     SELECT id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
-      build_context, dockerfile_path, build_command, build_output_directory, internal_port, auto_deploy, created_at, updated_at
+      build_context, dockerfile_path, build_command, build_output_directory, internal_port, framework, auto_deploy, created_at, updated_at
     FROM projects
     ORDER BY lower(name), id
   `);
@@ -263,7 +264,7 @@ export async function getProjects() {
 export async function getProject(id) {
   const result = await pool.query(`
     SELECT id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
-      build_context, dockerfile_path, build_command, build_output_directory, internal_port, auto_deploy, created_at, updated_at
+      build_context, dockerfile_path, build_command, build_output_directory, internal_port, framework, auto_deploy, created_at, updated_at
     FROM projects
     WHERE id = $1
   `, [id]);
@@ -277,11 +278,11 @@ export async function createProject(project) {
     const result = await client.query(`
       INSERT INTO projects (
         name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
-        build_context, dockerfile_path, build_command, build_output_directory, internal_port, auto_deploy
+        build_context, dockerfile_path, build_command, build_output_directory, internal_port, framework, auto_deploy
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
-        build_context, dockerfile_path, build_command, build_output_directory, internal_port, auto_deploy, created_at, updated_at
+        build_context, dockerfile_path, build_command, build_output_directory, internal_port, framework, auto_deploy, created_at, updated_at
     `, [
       project.name,
       project.description,
@@ -296,6 +297,7 @@ export async function createProject(project) {
       project.buildCommand,
       project.buildOutputDirectory,
       project.internalPort,
+      project.framework,
       project.autoDeploy,
     ]);
     const created = mapProject(result.rows[0]);
@@ -324,10 +326,10 @@ export async function updateProject(id, project) {
       SET name = $2, description = $3, repository = $4, production_branch = $5,
           source_type = $6, github_installation_id = $7, deployment_type = $8, build_strategy = $9, build_context = $10,
           dockerfile_path = $11, build_command = $12, build_output_directory = $13,
-          internal_port = $14, auto_deploy = $15, updated_at = now()
+          internal_port = $14, framework = $15, auto_deploy = $16, updated_at = now()
       WHERE id = $1
       RETURNING id, name, description, repository, production_branch, source_type, github_installation_id, deployment_type, build_strategy,
-        build_context, dockerfile_path, build_command, build_output_directory, internal_port, auto_deploy, created_at, updated_at
+        build_context, dockerfile_path, build_command, build_output_directory, internal_port, framework, auto_deploy, created_at, updated_at
     `, [
       id,
       project.name,
@@ -343,6 +345,7 @@ export async function updateProject(id, project) {
       project.buildCommand,
       project.buildOutputDirectory,
       project.internalPort,
+      project.framework,
       project.autoDeploy,
     ]);
     if (result.rowCount === 0) {
@@ -568,7 +571,7 @@ export async function deleteDomainZone(id) {
 
 export async function getProjectDomains() {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
+    SELECT id, provider, zone_name, domain_zone_id, zone_id, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     ORDER BY lower(hostname), id
@@ -578,7 +581,7 @@ export async function getProjectDomains() {
 
 export async function getProjectDomain(id) {
   const result = await pool.query(`
-    SELECT id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
+    SELECT id, provider, zone_name, domain_zone_id, zone_id, hostname, project_id, application_id, port, proxied,
       dns_record_id, created_at, updated_at
     FROM project_domains
     WHERE id = $1
@@ -609,7 +612,7 @@ export async function saveProjectDomain(domain) {
           dns_record_id = EXCLUDED.dns_record_id,
           updated_at = now()
       RETURNING id, provider, zone_name, domain_zone_id, hostname, project_id, application_id, port, proxied,
-        dns_record_id, created_at, updated_at
+        zone_id, dns_record_id, created_at, updated_at
     `, [
       domain.id,
       domain.provider,
@@ -1164,6 +1167,10 @@ export async function createProjectUndeployTask(task) {
 
 export async function getLatestProjectBuilds(projectIds) {
   return taskStore.getLatestProjectBuilds(projectIds);
+}
+
+export async function getLatestProjectBuildOperations(projectIds) {
+  return taskStore.getLatestProjectBuildOperations(projectIds);
 }
 
 export async function getRecentProjectDeployments(projectIds) {

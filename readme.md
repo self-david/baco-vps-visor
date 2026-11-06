@@ -1,38 +1,113 @@
 # VPS Manager
 ## Plataforma propia de instalación, administración y despliegue de infraestructura Docker Swarm
 
-**Estado:** Implementación incremental; primera fase funcional en desarrollo  
-**Versión:** 1.0  
+**Estado:** Implementación incremental; requiere validación en un VPS antes de producción
+**Versión:** 0.1.0
 **Sistema operativo objetivo:** Ubuntu Server 24.04 LTS  
-**Arquitectura:** VPS Manager y una tarea por proyecto en el nodo manager; la ejecución de proyectos en varios nodos requiere un registro compartido y no está habilitada en este modo local.
-**Tipo de proyecto:** Plataforma self-hosted de administración de servidores, aplicaciones y proyectos web.
+**Arquitectura:** panel y servicios administrados con Docker Swarm; los builds y servicios de proyectos se ejecutan localmente en el nodo manager.
+**Tipo de proyecto:** panel propio para administrar un VPS y publicar proyectos web.
 
-> **Estado de implementación:** el panel incluye autenticación de administrador, consulta y administración controlada de Docker, n8n y PostgreSQL opcionales, dominios Cloudflare y Cloudflare Tunnel, registro privado, incorporación SSH de nodos Swarm, agente host aislado, cola persistente, métricas, alertas, auditoría, respaldos cifrados y actualizaciones verificadas. Proyectos permite conectar repositorios mediante GitHub OAuth o importar una carpeta/ZIP, construir y desplegar en Swarm, configurar variables/dominios, registrar despliegues y hacer rollback. Los proyectos ofrecen tres perfiles: estático servido por Nginx, dinámico con Dockerfile o Railpack, y Build que instala dependencias según el lockfile, ejecuta el comando configurado y publica la carpeta de salida con Nginx. La integración debe validarse en un VPS antes de considerarse lista para producción.
+> **En pocas palabras:** VPS Manager es un panel web propio para ver y operar Docker en un servidor, y para convertir código de una aplicación en un servicio publicado. El panel no es el sitio web que subes: es la herramienta que administra ese sitio y los demás servicios del VPS.
+
+## Si solo quieres entender lo básico
+
+Piensa en el VPS como una computadora alquilada que está encendida en Internet:
+
+- **Docker** ejecuta cada aplicación dentro de un contenedor, como una caja aislada con su propio programa.
+- **Docker Swarm** mantiene esos contenedores ejecutándose y los vuelve a iniciar si se detienen.
+- **VPS Manager** es el tablero desde donde ves y administras esas cajas, proyectos y servicios.
+- **Traefik** recibe las visitas web y las envía al contenedor correcto según el dominio; también gestiona HTTPS.
+- **PostgreSQL** guarda la configuración, las tareas y el historial del panel.
+- El **agente del VPS** realiza operaciones autorizadas sobre Docker, como construir una imagen o actualizar un servicio.
+
+### ¿Qué puedo hacer?
+
+1. Entrar al panel con la contraseña administrativa.
+2. Ver contenedores, servicios, stacks, estado y consumo de CPU/RAM.
+3. Importar un proyecto desde GitHub o desde un ZIP/carpeta.
+4. Elegir cómo construirlo, configurar su puerto y asociarle un dominio.
+5. Construir y desplegarlo; el panel muestra el progreso y el resultado.
+6. Consultar logs, historial, alertas y tareas, y administrar desde el panel las operaciones Docker permitidas.
+
+### ¿Qué pasa cuando publico un proyecto?
+
+```text
+Código (GitHub o ZIP)
+        ↓
+VPS Manager valida y prepara el proyecto
+        ↓
+BuildKit construye una imagen Docker
+        ↓
+Docker Swarm crea o actualiza el servicio
+        ↓
+Traefik conecta el dominio y HTTPS al servicio
+        ↓
+La aplicación queda disponible en su URL
+```
+
+En la configuración actual, las imágenes de proyectos se construyen y cargan en
+el VPS principal. Cada proyecto se ejecuta como un servicio Swarm con una tarea
+en ese nodo. Para ejecutar proyectos en más de un nodo se necesita distribuir
+sus imágenes mediante un registro compartido; ese flujo no está habilitado por
+defecto.
+
+### Glosario rápido
+
+| Palabra | En sencillo |
+|---|---|
+| VPS | Servidor virtual alquilado que ejecuta el sistema. |
+| Imagen | Paquete de solo lectura con la aplicación y lo necesario para iniciarla. |
+| Contenedor | Proceso de la aplicación ejecutándose desde una imagen. |
+| Servicio | Definición administrada por Swarm que indica qué imagen ejecutar y mantener activa. |
+| Stack | Grupo de servicios relacionados, normalmente descritos juntos. |
+| Build / compilación | Preparación del código para convertirlo en una imagen ejecutable. |
+| Deploy / despliegue | Crear o actualizar el servicio que ejecuta una imagen. |
+| Proxy inverso | Puerta de entrada web que envía cada dominio a su aplicación. |
+| Agente | Programa del VPS que ejecuta operaciones permitidas solicitadas por el panel. |
+
+### Para desarrollar o comprobar cambios
+
+Se requiere Node.js `22.23.4` o posterior. Desde la raíz del repositorio:
+
+```powershell
+npm --prefix apps/manager ci
+npm --prefix apps/manager test
+npm --prefix apps/manager run build
+```
+
+El panel en producción también necesita Docker Swarm, PostgreSQL, sus secretos
+y el agente del VPS. Ejecutar solamente el servidor Node.js no crea por sí solo
+un entorno completo ni publica aplicaciones.
+
+Este README también conserva objetivos y decisiones de planificación. Cuando
+un capítulo hable de funciones futuras, no lo tomes como una función ya
+disponible; para el comportamiento actual revisa los capítulos 4–5, 10, 14–17
+y el código citado en el mapa del repositorio.
 
 ---
 
 # 1. Descripción general
 
-VPS Manager será una plataforma de administración de infraestructura que permitirá instalar, configurar, desplegar, monitorear y administrar todos los servicios de un VPS desde una interfaz web centralizada.
+VPS Manager es una plataforma de administración de infraestructura que permite instalar, configurar, desplegar, monitorear y administrar servicios de un VPS desde una interfaz web centralizada.
 
 El objetivo es que un servidor Ubuntu recién instalado pueda convertirse, mediante un único comando, en un entorno completo de administración de infraestructura.
 
 Una vez instalado, el usuario accederá a un dashboard web desde el cual podrá:
 
-- Administrar Docker y Docker Swarm.
-- Consultar todos los contenedores, servicios y stacks.
+- Consultar contenedores, servicios y stacks de Docker.
+- Ejecutar operaciones permitidas sobre servicios administrados por VPS Manager.
 - Instalar aplicaciones desde un catálogo.
 - Preparar proyectos web desde GitHub o archivos cargados.
 - Elegir entre sitios estáticos, SSR, Node.js y Python.
 - Configurar dominios y certificados SSL.
 - Administrar variables de entorno y secretos.
-- Consultar el consumo de recursos por contenedor, aplicación y proyecto.
-- Administrar redes, volúmenes e imágenes.
+- Consultar CPU/RAM de contenedores activos, agrupados por proyecto o servicio.
+- Consultar redes, volúmenes e imágenes.
 - Consultar logs y estados de ejecución.
 - Gestionar backups y restauraciones.
-- Detectar servicios instalados manualmente.
-- Reiniciar, actualizar y administrar servicios.
-- Recuperar automáticamente servicios después de reiniciar el servidor.
+- Detectar recursos Docker, incluso los que se crearon fuera del panel.
+- Reiniciar o escalar los servicios que permite administrar.
+- Usar Docker Swarm para mantener activos los servicios administrados después de un reinicio o fallo del contenedor.
 
 La plataforma no requiere instalar un servidor Git propio. Las fuentes externas, como GitHub, serán opcionales.
 
@@ -56,33 +131,25 @@ La plataforma no debe convertirse en una implementación propia de Docker. Debe 
 ```mermaid
 flowchart TD
     U[Usuario / Navegador]
-    G[Traefik]
-    F[Frontend HTML + CSS + JavaScript]
-    A[API Node.js + JavaScript]
+    T[Traefik: dominios y HTTPS]
+    P[Panel web: Astro + React + JavaScript]
+    API[API Node.js]
     DB[(PostgreSQL)]
-    AG[Agente de administración]
-    D[Docker Engine]
-    S[Docker Swarm]
-    B[Motor de Build]
-    M[Prometheus]
-    C[cAdvisor]
-    N[Node Exporter]
-    MON[Motor de monitoreo]
+    DP[Proxy limitado de Docker]
+    DOCKER[Docker Engine y Swarm]
+    AG[Agente host vía systemd]
+    BK[BuildKit]
+    APP[Servicios y proyectos]
 
-    U --> G
-    G --> F
-    G --> A
-    A --> DB
-    A --> AG
-    AG --> D
-    D --> S
-    A --> B
-    B --> D
-    C --> M
-    N --> M
-    D --> C
-    M --> MON
-    MON --> A
+    U --> T --> P
+    P --> API
+    API --> DB
+    API --> DP --> DOCKER
+    API --> AG
+    AG --> DOCKER
+    AG --> BK --> DOCKER
+    DOCKER --> APP
+    T --> APP
 ```
 
 ## 2.2. Componentes principales
@@ -92,29 +159,35 @@ flowchart TD
 | Sistema operativo | Ubuntu 24.04 LTS | Sistema base |
 | Instalador | Bash | Preparación automatizada del VPS |
 | Proxy inverso | Traefik | Dominios y HTTPS |
-| Frontend | HTML, CSS y JavaScript nativo | Dashboard sin proceso de compilación |
-| Backend | Node.js con módulos JavaScript (`.mjs`) | API y lógica de negocio |
+| Interfaz web | Astro, React, JavaScript y CSS | Dashboard estático generado durante el build; React hidrata la navegación por pestañas |
+| Backend | Node.js con módulos JavaScript (`.mjs`) | API, autenticación, validación, tareas y lógica de negocio |
 | Base de datos | PostgreSQL | Persistencia de información |
-| Contenedores | Docker Engine | Ejecución |
-| Orquestación | Docker Swarm | Administración de servicios |
-| Build | Docker Buildx / BuildKit | Construcción de imágenes |
-| Monitoreo | Prometheus | Almacenamiento de métricas |
-| Métricas de contenedores | cAdvisor | CPU, RAM y red |
-| Métricas del servidor | Node Exporter | Recursos generales |
-| Logs | Docker Engine y sistema propio | Consulta e historial |
+| Contenedores y orquestación | Docker Engine y Docker Swarm | Ejecución y recuperación de servicios |
+| Acceso a Docker desde la API | Proxy de socket con permisos limitados | Permite solo los grupos de operaciones habilitados; no concede acceso irrestricto al socket |
+| Agente del host | Script Bash y unidades systemd | Ejecuta operaciones de infraestructura permitidas y builds de proyectos |
+| Build | Docker Buildx / BuildKit | Construcción de imágenes Docker |
+| Métricas de contenedores | Docker Engine Stats API | CPU y memoria actual por contenedor activo; el histórico se guarda en PostgreSQL |
+| Alertas e histórico | Módulos propios del manager | Umbrales, disponibilidad, tareas y muestras históricas |
+| Logs | Docker Engine y sistema propio | Consulta de registros de contenedores y operaciones |
 | Backups | `pg_dump`/`pg_restore` y AES-256-GCM | Respaldo cifrado y restauración de PostgreSQL del panel |
+
+**Nota sobre monitoreo:** Prometheus, cAdvisor y Node Exporter aparecen en el
+roadmap, pero no son dependencias del monitoreo actual. La vista actual obtiene
+CPU/RAM directamente de Docker para los contenedores activos visibles en el
+host del manager. No equivale a monitorear todos los procesos del sistema
+operativo ni a agregar automáticamente métricas de todos los nodos Swarm.
 
 ## 2.3. Separación de responsabilidades
 
-El sistema tendrá cuatro capas:
+El sistema tiene cuatro partes principales:
 
-**Frontend**
+**Interfaz web**
 - Mostrar información.
 - Recibir configuraciones.
 - Mostrar estados y resultados.
 - Solicitar operaciones a la API.
 
-**Backend**
+**API**
 - Validar solicitudes.
 - Gestionar usuarios y permisos.
 - Mantener la base de datos.
@@ -127,7 +200,7 @@ El sistema tendrá cuatro capas:
 - Consultar el estado del servidor.
 - Ejecutar operaciones de infraestructura.
 - Gestionar despliegues.
-- Evitar que la API exponga directamente un acceso irrestricto al socket Docker.
+- Complementar el acceso de la API a Docker para operaciones de host y builds.
 
 **Infraestructura**
 - Ejecutar contenedores.
@@ -135,7 +208,10 @@ El sistema tendrá cuatro capas:
 - Mantener redes y volúmenes.
 - Ejecutar aplicaciones.
 
-El agente tendrá una interfaz interna restringida, autenticada y con operaciones permitidas explícitamente. No debe aceptar comandos arbitrarios enviados por el navegador.
+Las solicitudes del navegador pasan por la API, que valida la sesión, el origen
+y los datos. El agente recibe operaciones definidas, no una línea de comandos
+arbitraria enviada por el navegador. El proxy Docker también limita qué grupos
+de endpoints puede utilizar la API.
 
 ---
 
@@ -397,7 +473,18 @@ Mostrar:
 Configurar, construir y desplegar proyectos propios desde GitHub o archivos ZIP.
 Cada proyecto tiene una vista `/projects/<id>` con pestañas de despliegue, configuración, archivos, variables, dominios e historial. Los ZIP subidos muestran el árbol de nombres sin leer ni exponer el contenido de sus archivos.
 La importación incluye plantillas predeterminadas para HTML/CSS/JavaScript vanilla, un servidor Node.js con `node:http` y un servidor Python con la biblioteca estándar. Node y Python escuchan en `0.0.0.0:3000`, leen el puerto de `PORT` y exponen `/health`; no requieren manifiestos ni dependencias. Al elegir una plantilla, crea el proyecto y luego usa **Construir** y **Desplegar** desde su vista para publicarlo.
+Para proyectos Python con dependencias, el puerto sugerido depende del framework detectado: FastAPI y Django usan `8000`, Flask `5000`; los proyectos Python genéricos conservan `3000`. Verifica que el servidor de la aplicación escuche en el puerto configurado.
 Los builds se cargan localmente en el nodo principal, por lo que no requieren un registro privado. Cada proyecto se ejecuta en su propio servicio Swarm; los dominios asociados se enrutan a ese servicio mediante Traefik.
+Mientras un build está en cola o en ejecución, el botón **Construir** queda deshabilitado. La vista del proyecto actualiza el estado automáticamente y muestra las últimas líneas de BuildKit, también cuando falla.
+
+Si los logs muestran un error de resolución DNS como `lookup auth.docker.io` o
+`127.0.0.53:53: socket: address family not supported by protocol`, el VPS puede
+resolver DNS desde el host y los contenedores, pero no desde el builder integrado
+de Docker. El instalador configura un builder BuildKit aislado en la red bridge
+con servidores DNS ascendentes obtenidos del VPS; los builds no usan la red host.
+Comprueba `getent ahostsv4 auth.docker.io`, `resolvectl query auth.docker.io` y
+`sudo docker buildx inspect vps-manager-projects --bootstrap`. Si el host no
+resuelve `auth.docker.io`, corrige el DNS ascendente o consulta al proveedor.
 
 ### Aplicaciones
 
@@ -465,8 +552,11 @@ Se admiten dos fuentes:
   `repo` y `admin:repo_hook` para leer repositorios privados y crear webhooks.
 - **Archivos:** arrastra una carpeta o un ZIP para crear un proyecto con los
   archivos incluidos. Las carpetas se convierten en ZIP en el navegador; el
-  límite del archivo resultante es 32 MiB. El ZIP debe contener una sola carpeta
-  raíz.
+  límite del archivo resultante es 32 MiB. El nombre se sugiere a partir de la
+carpeta o el ZIP y se puede elegir antes de crear el proyecto. Si hay una
+zona de Cloudflare conectada, también se puede asignar automáticamente un
+subdominio derivado del nombre; su ruta se activa al construir y desplegar el
+proyecto. El ZIP debe contener una sola carpeta raíz.
 
 El Client Secret de OAuth y el secreto de webhook se cifran con AES-256-GCM
 usando la llave de respaldos del VPS Manager y se guardan fuera de PostgreSQL.
@@ -483,6 +573,11 @@ Cada proyecto ofrece uno de estos perfiles:
 - **Estático:** publica los archivos existentes con Nginx.
 - **Dinámico:** usa un Dockerfile configurable o la autodetección de Railpack 0.43.0 para iniciar un servidor.
 - **Build + despliegue:** instala dependencias según `package-lock.json`, `pnpm-lock.yaml` o `yarn.lock`, ejecuta el comando configurado (por defecto `npm run build`) y publica la carpeta de salida (por defecto `dist`) con Nginx. Requiere `package.json`.
+
+Si un `pnpm-lock.yaml` no coincide con `package.json`, el agente regenera solo el
+lockfile con los scripts de dependencias desactivados, lo valida de nuevo con
+`--frozen-lockfile` y conserva esa resolución en el VPS para repetir builds de
+la misma revisión. La instalación de paquetes del build sigue siendo congelada.
 
 El agente del VPS obtiene el código, construye con Docker Buildx/BuildKit y
 carga la imagen localmente en el nodo manager. Cada proyecto se despliega como
@@ -562,6 +657,13 @@ reserva para VPS Manager y Cloudflare Tunnel lo enruta directamente al servicio
 privado del panel, separado de las rutas de proyectos. Sin Tunnel, el panel usa la IPv4 pública
 configurada para crear registros A. La asignación de dominios a proyectos y
 aplicaciones se realiza desde sus respectivos flujos.
+
+Después de configurar Tunnel por primera vez, VPS Manager comprueba al iniciar
+y durante la ejecución que exista el servicio Swarm `vps-manager_cloudflared`.
+Si falta tras una instalación o actualización, reaplica los CNAME y las rutas
+guardadas y vuelve a crear el conector utilizando las credenciales protegidas.
+La primera configuración todavía requiere conectar una cuenta y una zona
+Cloudflare desde el panel; sin esas credenciales no se puede autorizar un túnel.
 
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
@@ -932,37 +1034,36 @@ El usuario debe poder:
 
 # 10. Monitoreo y consumo de recursos
 
-Este módulo permitirá conocer cuánto consume cada contenedor, aplicación, proyecto y el servidor completo.
+La pestaña **Monitoreo** obtiene métricas actuales de Docker al abrir la pestaña
+o pulsar **Actualizar CPU/RAM**. Muestra una suma total, subtotales por
+proyecto/servicio y una fila por contenedor activo. Si Docker no puede entregar
+las métricas de un contenedor, aparece como no disponible.
+
+El total se limita a contenedores activos que puede consultar el Docker Engine
+del manager. No incluye procesos del sistema que no estén en contenedores,
+contenedores detenidos ni suma automáticamente otros nodos Swarm.
 
 ## 10.1. Métricas
 
 ### CPU
-- Porcentaje de utilización.
-- Consumo por contenedor.
-- Consumo por aplicación.
-- Consumo total.
-- Histórico.
+- Porcentaje calculado a partir de dos lecturas del Docker Engine.
+- Uso por contenedor activo y suma del consumo visible para el manager.
+- La suma puede superar 100% si los contenedores usan varios núcleos; no es el
+  porcentaje total de CPU del VPS.
+- Histórico de muestras guardadas por el panel.
 
 ### RAM
-- Memoria utilizada.
-- Memoria disponible.
-- Límite configurado.
-- Porcentaje utilizado.
-- Histórico.
+- Memoria usada por contenedor y límite que Docker reporta para ese contenedor.
+- Total de memoria de contenedores comparado con la memoria total reportada por
+  Docker para el host.
+- Histórico de muestras guardadas por el panel.
 
 ### Almacenamiento
-- Uso del disco del VPS.
-- Espacio disponible.
-- Tamaño de imágenes.
-- Tamaño de volúmenes.
-- Consumo por aplicación cuando pueda atribuirse de forma confiable.
+- La alerta de disco usa el filesystem visible en `/` dentro del contenedor del
+  manager. No muestra el uso por proyecto, imagen o volumen.
 
 ### Red
-- Tráfico entrante.
-- Tráfico saliente.
-- Bytes transmitidos.
-- Bytes recibidos.
-- Consumo por contenedor.
+- El tráfico de red por contenedor aún no aparece en esta vista.
 
 ## 10.2. Agrupación
 
@@ -992,29 +1093,29 @@ Aplicación: Supabase
     RAM: 2.2 GB
 ```
 
-Los valores anteriores son ilustrativos.
+Los valores anteriores son ilustrativos; la interfaz actual no muestra este
+desglose interno por componente.
 
-El sistema debe asociar contenedores a aplicaciones mediante identificadores y etiquetas consistentes.
+El panel agrupa el consumo por nombre de proyecto administrado cuando puede
+identificarlo. Los demás contenedores se agrupan por servicio, stack Docker,
+proyecto Compose o nombre del contenedor. Esa agrupación no equivale al consumo
+de todos los procesos de una aplicación fuera de Docker.
 
 ## 10.3. Tecnologías
 
-- cAdvisor: métricas de contenedores.
-- Prometheus: recolección e histórico.
-- Node Exporter: recursos generales del VPS.
+- Docker Engine Stats API: métricas actuales de los contenedores.
+- PostgreSQL: almacenamiento del histórico y datos necesarios para alertas.
 
-Grafana puede utilizarse para desarrollo y diagnóstico, pero el dashboard propio debe presentar las métricas principales mediante su propia interfaz.
+Prometheus, cAdvisor, Node Exporter y Grafana no son dependencias del monitoreo
+actual; aparecen como posibles herramientas futuras.
 
 ## 10.4. Intervalos e históricos
 
-Configurar:
+El muestreo histórico configurable se ejecuta en segundo plano. La vista obtiene
+además una muestra puntual cuando se abre o se actualiza manualmente. La
+retención predeterminada es de siete días.
 
-- Recolección periódica.
-- Visualización en tiempo real aproximado.
-- Histórico de corto plazo.
-- Histórico de largo plazo configurable.
-- Retención de datos.
-
-El sistema debe evitar un consumo excesivo de almacenamiento por métricas.
+Los intervalos y umbrales de alertas se pueden cambiar desde el panel.
 
 ## 10.5. Alertas
 
@@ -1224,345 +1325,288 @@ Registrar:
 
 ---
 
-# 14. Estructura del repositorio
+# 14. Cómo está organizado el código
 
-Propuesta inicial:
+Este es el mapa de las carpetas y archivos que existen actualmente:
 
 ```text
-vps-manager/
-│
-├── README.md
-├── LICENSE
-├── .gitignore
-│
-├── installer/
-│   ├── install.sh
-│   ├── uninstall.sh
-│   ├── update.sh
-│   ├── diagnostics.sh
-│   └── modules/
-│       ├── system.sh
-│       ├── docker.sh
-│       ├── swarm.sh
-│       ├── firewall.sh
-│       ├── directories.sh
-│       ├── networking.sh
-│       ├── traefik.sh
-│       ├── database.sh
-│       ├── monitoring.sh
-│       └── application.sh
-│
+vps-installer/
+├── readme.md                         # Esta guía
+├── install.sh                        # Instalador principal del VPS
 ├── apps/
-│   ├── frontend/
-│   │   ├── src/
-│   │   ├── public/
-│   │   └── package.json
-│   │
-│   ├── backend/
-│   │   ├── src/
-│   │   │   ├── modules/
-│   │   │   ├── services/
-│   │   │   ├── routes/
-│   │   │   ├── middleware/
-│   │   │   └── database/
-│   │   └── package.json
-│   │
-│   └── agent/
+│   └── manager/
+│       ├── server.mjs                # Servidor HTTP, API y rutas
+│       ├── db.mjs                    # Consultas PostgreSQL y acceso a tareas
+│       ├── task-queue.mjs            # Cola y ejecución de operaciones
+│       ├── service-operations.mjs    # Comunicación con el agente del VPS
+│       ├── project-manager.mjs       # Validación de datos de proyectos
+│       ├── project-health.mjs         # Comprobación de servicios y URLs
+│       ├── container-metrics.mjs     # Cálculo de métricas Docker por contenedor
+│       ├── metrics-sampler.mjs       # Muestreo periódico del histórico
+│       ├── public/                   # JavaScript del navegador y recursos públicos
 │       ├── src/
-│       └── package.json
-│
-├── packages/
-│   ├── shared/
-│   └── schemas/
-│
-├── catalog/
-│   ├── applications/
-│   │   ├── n8n/
-│   │   ├── supabase/
-│   │   ├── postgres/
-│   │   ├── redis/
-│   │   └── minio/
-│   │
-│   └── schemas/
-│
-├── infrastructure/
-│   ├── traefik/
-│   ├── monitoring/
-│   ├── database/
-│   └── stacks/
-│
-├── database/
-│   ├── migrations/
-│   └── seeds/
-│
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── installer/
-│   ├── deployment/
-│   └── recovery/
-│
-└── docs/
-    ├── architecture.md
-    ├── installation.md
-    ├── security.md
-    ├── deployment.md
-    ├── monitoring.md
-    ├── backups.md
-    └── development.md
+│       │   ├── pages/                # Páginas Astro
+│       │   ├── components/           # Paneles y formularios de interfaz
+│       │   ├── scripts/              # Hidratación/interacción del dashboard
+│       │   └── styles/               # Estilos
+│       ├── database/migrations/      # Cambios versionados del esquema PostgreSQL
+│       ├── test/                     # Pruebas automatizadas de módulos
+│       ├── package.json              # Dependencias y comandos del manager
+│       └── Dockerfile                # Build de interfaz e imagen de producción
+└── installer/
+    ├── stack.yml                     # Servicios Swarm del manager y su infraestructura
+    ├── stack.test.yml                # Stack para modo de prueba
+    ├── service-agent.sh              # Operaciones permitidas ejecutadas en el host
+    ├── vps-manager-service-agent.service
+    ├── vps-manager-service-agent.path
+    ├── configure-buildkit.sh         # Builder aislado para imágenes de proyectos
+    ├── swarm-node-enroll.sh          # Incorporación de nodos
+    ├── update.sh                     # Actualización
+    ├── diagnostics.sh                # Diagnóstico
+    └── uninstall.sh                  # Desinstalación
 ```
 
-Esta estructura es una propuesta inicial. El proyecto prioriza JavaScript nativo y evita un paso de compilación mientras no aporte un beneficio concreto.
+### ¿Dónde cambio cada cosa?
+
+| Quiero cambiar… | Empiezo por… |
+|---|---|
+| Una pantalla o formulario | `apps/manager/src/components/` |
+| La navegación o estructura de la página | `apps/manager/src/pages/` y `apps/manager/src/components/DashboardTabs.jsx` |
+| Interacciones del navegador | `apps/manager/public/app.js` |
+| Una ruta de la API o lógica de servidor | `apps/manager/server.mjs` |
+| Una tabla o datos persistentes | `apps/manager/database/migrations/` y `apps/manager/db.mjs` |
+| Builds y despliegues de proyectos | `apps/manager/task-queue.mjs`, `apps/manager/service-operations.mjs` e `installer/service-agent.sh` |
+| Servicios incluidos al instalar | `installer/stack.yml` |
+| Instalar o actualizar el VPS | `install.sh` e `installer/` |
+| Pruebas | `apps/manager/test/` |
+
+El panel no separa frontend y backend en repositorios distintos: Astro construye
+los recursos de la interfaz y el mismo proceso Node.js sirve esos recursos y
+la API.
 
 ---
 
-# 15. Modelo de datos
+# 15. Datos y persistencia
 
-Utilizar PostgreSQL.
+Esta sección describe la base de datos **real** que usa el código, no un diseño
+propuesto. PostgreSQL guarda los proyectos y la configuración del panel, las
+tareas, auditoría, métricas e información de las aplicaciones. El esquema se
+crea y actualiza automáticamente con los archivos SQL de
+`apps/manager/database/migrations/`.
 
-Entidades principales:
+## 15.1. Dónde corre PostgreSQL
 
-| Tabla | Responsabilidad |
+El instalador crea un servicio Swarm llamado `vps-manager_postgres`. El panel se
+conecta a él dentro de la red privada de Docker; PostgreSQL no publica el puerto
+5432 en Internet. Los valores predeterminados son:
+
+| Ajuste | Valor |
 |---|---|
-| users | Usuarios |
-| roles | Roles |
-| permissions | Permisos |
-| sessions | Sesiones |
-| projects | Proyectos |
-| git_repositories | Repositorios |
-| project_branches | Ramas |
-| deployments | Despliegues |
-| deployment_logs | Logs de despliegue |
-| applications | Aplicaciones instaladas |
-| application_templates | Plantillas |
-| services | Servicios Docker |
-| containers | Contenedores detectados |
-| stacks | Stacks Swarm |
-| domains | Dominios |
-| environment_variables | Variables de entorno |
-| secrets | Referencias a secretos |
-| networks | Redes |
-| volumes | Volúmenes |
-| images | Imágenes |
-| resource_metrics | Métricas |
-| tasks | Tareas |
-| backups | Respaldos |
-| alerts | Alertas |
-| audit_logs | Auditoría |
-| server_settings | Configuración general |
+| Host desde el panel | `postgres` |
+| Puerto interno | `5432` |
+| Base de datos | `vps_manager` |
+| Usuario | `vps_manager` |
+| Contraseña | Secreto Swarm `vps_manager_postgres_password`, montado como `/run/secrets/postgres_password` |
+| Persistencia | Volumen Docker `vps-manager-postgres-data`, montado en `/var/lib/postgresql/data` |
 
-## 15.1. Relaciones importantes
+El usuario y la contraseña administrativa del **panel** no son el usuario y la
+contraseña de PostgreSQL. Son credenciales distintas.
 
-- Un proyecto puede tener varios despliegues.
-- Un proyecto puede tener varios dominios.
-- Un proyecto puede tener varias variables.
-- Una aplicación puede contener varios servicios.
-- Un stack puede contener varios servicios.
-- Un servicio puede generar varios contenedores a lo largo del tiempo.
-- Una aplicación puede agrupar varios servicios.
-- Un despliegue pertenece a un proyecto.
-- Una tarea puede relacionarse con cualquier recurso administrado.
+## 15.2. Tablas que existen
 
-Los secretos deben almacenarse fuera de las columnas convencionales de variables y con controles de acceso propios.
+| Tabla | Qué guarda | Columnas o contenido importante |
+|---|---|---|
+| `schema_migrations` | Registro interno de migraciones aplicadas | `id` (nombre del archivo SQL), `applied_at` |
+| `users` | Usuario administrativo | `id`, `username`, `role`, `created_at`, `updated_at` |
+| `sessions` | Sesiones iniciadas | `id`, `user_id`, `token_hash`, `expires_at`, `created_at`; guarda el hash del token, no el token de sesión original |
+| `server_settings` | Ajustes del manager | `key` (PK), `value` JSONB, `updated_at` |
+| `tasks` | Operaciones pedidas y su resultado | `id`, `type`, `status`, `payload`/`result` JSONB, `error`, `created_at`/`updated_at`, `started_at`/`completed_at`, `attempts`, `max_attempts`, `next_attempt_at` y lease |
+| `audit_logs` | Registro de cambios administrativos | `id`, `action`, `actor`, `resource_type`, `resource_id`, `details` JSONB, `created_at` |
+| `projects` | Configuración de cada proyecto | `id`, nombre/descripción, fuente, repo/rama, instalación GitHub, tipo/framework, estrategia/contexto/Dockerfile de build, comando/salida, puerto, auto-deploy y fechas |
+| `project_domains` | Dominio asociado a proyecto o aplicación | `id`, proveedor/zona, hostname, `project_id` o `application_id`, `domain_zone_id`, puerto, proxy, ID del registro DNS y fechas |
+| `domain_zones` | Zonas conectadas a Cloudflare | `id`, proveedor, dominio, `zone_id`, `credential_id`, proxy, estado/error del chequeo y fechas |
+| `github_installations` | Instalaciones autorizadas de GitHub | `installation_id`, `account_login`, `account_type`, fechas |
+| `github_webhook_deliveries` | Entregas de webhooks de GitHub recibidas | `delivery_id`, evento, repositorio, ref, SHA del commit y fecha |
+| `gitea_webhook_deliveries` | Entregas de webhooks de Gitea recibidas | `delivery_id`, evento, repositorio, ref, commit y fecha |
+| `project_source_uploads` | Metadatos de fuentes ZIP cargadas | `project_id`, SHA-256 de la fuente, tamaño y fecha; el ZIP como tal no se guarda en PostgreSQL |
+| `application_catalog` | Catálogo de aplicaciones | `id`, nombre, categoría, descripción, versión, `enabled`, esquema de configuración y manifiesto JSONB |
+| `application_instances` | Instancias configuradas del catálogo | `id`, `application_id`, nodo/hostname, nombre, configuración JSONB, estado, `service_id`, tarea de instalación y fechas |
+| `container_metrics` | Muestras históricas de CPU/RAM | `sampled_at`, `container_id`, nombre/grupo, CPU %, bytes de memoria usada y límite |
+| `container_restart_samples` | Muestras del contador de reinicios Docker | `sampled_at`, `container_id`, nombre/grupo y `restart_count` |
+
+Las migraciones `010` a `019` amplían `projects`; no crean diez tablas nuevas.
+La fila actual de `projects` también incluye:
+
+```text
+id, name, description, repository, production_branch, source_type,
+github_installation_id, deployment_type, build_strategy, build_context,
+dockerfile_path, build_command, build_output_directory, internal_port,
+framework, auto_deploy, created_at, updated_at
+```
+
+Valores permitidos importantes: `source_type` es `github`, `upload` o `legacy`;
+`deployment_type` es `static`, `dynamic` o `build`; `build_strategy` es
+`dockerfile` o `railpack`. Los intentos e historial de despliegue **no** viven
+en una tabla `deployments`: se guardan como filas de `tasks`.
+
+## 15.3. Relaciones principales
+
+```text
+users 1 ── * sessions
+projects 1 ── * project_domains
+projects 1 ── * project_source_uploads
+github_installations 1 ── * projects
+domain_zones 1 ── * project_domains
+application_catalog 1 ── * application_instances
+tasks          (builds, deploys, instalaciones y otras operaciones)
+audit_logs     (registro separado de acciones administrativas)
+```
+
+`project_domains.project_id` y `application_id` son excluyentes: un dominio
+pertenece a un proyecto o a una aplicación compatible, no a ambos. Las tablas
+de recursos Docker (`containers`, `services`, `stacks`, `networks` o `images`)
+**no existen** en PostgreSQL: el panel consulta Docker Engine cada vez que los
+necesita.
+
+## 15.4. Ajustes guardados en `server_settings`
+
+La columna `value` es JSONB y su forma depende de la clave. Entre las claves
+utilizadas están:
+
+| `key` | Contenido |
+|---|---|
+| `initialized_at` | Fecha de inicialización |
+| `metrics_sampling_interval_minutes` | Frecuencia del muestreo de métricas (valor inicial: 15 minutos) |
+| `metrics_alert_thresholds` | Umbrales de CPU, memoria, disco, reinicios, HTTP y certificados |
+| `backup_interval_hours` | Frecuencia de respaldo (valor inicial: 24 horas) |
+| `domains_ingress_ipv4` | IPv4 de ingreso configurada para dominios, si aplica |
+| `cloudflare_tunnel` | Metadatos de configuración del túnel Cloudflare |
+
+## 15.5. Cómo ver los datos en el VPS
+
+Conéctate por SSH al nodo donde está el servicio PostgreSQL. Para abrir `psql`
+desde su contenedor:
+
+```bash
+POSTGRES_CONTAINER="$(docker ps \
+  --filter label=com.docker.swarm.service.name=vps-manager_postgres \
+  --format '{{.ID}}' | head -n 1)"
+test -n "${POSTGRES_CONTAINER}" || { echo "No se encontró el contenedor PostgreSQL"; exit 1; }
+docker exec -it "${POSTGRES_CONTAINER}" psql -U vps_manager -d vps_manager
+```
+
+Dentro de `psql`, estos comandos muestran qué hay:
+
+```sql
+\dt
+\d+ projects
+\d+ tasks
+```
+
+Ejemplos de consultas de solo lectura:
+
+```sql
+-- Proyectos guardados, sin variables ni secretos
+SELECT id, name, source_type, repository, production_branch, framework,
+       deployment_type, build_strategy, internal_port, created_at
+FROM projects
+ORDER BY created_at DESC;
+
+-- Tareas recientes: build, deploy y operaciones del panel
+SELECT id, type, status, error, created_at, started_at, completed_at
+FROM tasks
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Conteo de los datos principales
+SELECT 'projects' AS table_name, count(*) FROM projects
+UNION ALL SELECT 'tasks', count(*) FROM tasks
+UNION ALL SELECT 'application_instances', count(*) FROM application_instances
+UNION ALL SELECT 'project_domains', count(*) FROM project_domains
+UNION ALL SELECT 'audit_logs', count(*) FROM audit_logs;
+
+-- Migraciones aplicadas
+SELECT id, applied_at FROM schema_migrations ORDER BY id;
+```
+
+No consultes o compartas `tasks.payload`, `tasks.result`, todas las filas de
+`server_settings` ni configuraciones JSON sin revisarlas: dependiendo de la
+función podrían contener datos operativos o identificadores que conviene
+mantener privados. Los tokens API de Cloudflare y las variables de proyectos
+se guardan en archivos protegidos fuera de PostgreSQL; `domain_zones` guarda
+solo el ID que permite encontrar el archivo de credencial. La contraseña
+PostgreSQL tampoco está en una tabla: está en el secreto Swarm.
+
+## 15.6. Inicialización, migraciones y copias
+
+Al arrancar, `apps/manager/db.mjs` lee la contraseña del secreto, abre el pool
+de PostgreSQL y aplica en orden cada archivo `.sql` que todavía no aparezca en
+`schema_migrations`. Cada archivo y su registro se confirman en una transacción.
+Si PostgreSQL aún no está listo, el manager vuelve a intentarlo y no declara la
+base lista hasta que las migraciones concluyan.
+
+Los respaldos del manager se crean mediante `pg_dump` y se cifran antes de
+guardarse. El volumen `vps-manager-postgres-data` mantiene los datos entre
+reinicios y actualizaciones normales del servicio; no elimines ese volumen al
+actualizar o desinstalar si quieres conservar la base.
 
 ---
 
 # 16. API
 
-El backend debe ofrecer una API organizada por módulos.
+El servidor en `apps/manager/server.mjs` implementa la API HTTP que utiliza el
+panel. Las rutas requieren sesión de administrador salvo las rutas públicas
+necesarias para iniciar sesión, health checks y webhooks firmados.
 
-Rutas orientativas:
+Rutas principales implementadas:
 
-## Autenticación
+| Grupo | Rutas de ejemplo | Para qué sirven |
+|---|---|---|
+| Sesión | `POST /api/auth/login`, `GET /api/auth/session`, `POST /api/auth/logout` | Entrar, comprobar sesión y salir |
+| Proyectos | `GET/POST /api/projects`, `POST /api/projects/:id/build`, `GET /api/projects/:id/build-status`, `POST /api/projects/:id/deploy`, `GET /api/projects/:id/health` | Crear/listar, construir, desplegar y comprobar proyectos |
+| Docker | `GET /api/docker/containers`, `GET /api/docker/services`, `GET /api/docker/stacks`, `GET /api/docker/container-metrics` | Consultar recursos y consumo de contenedores |
+| Monitoreo | `GET /api/system/metrics-history`, `GET /api/system/metric-alerts` | Consultar histórico y alertas |
+| Operaciones | `GET /api/system/tasks`, `GET /api/system/audit-log` | Consultar tareas e historial administrativo |
 
-```text
-POST /api/auth/login
-POST /api/auth/logout
-GET  /api/auth/session
-```
-
-## Dashboard
-
-```text
-GET /api/dashboard
-GET /api/dashboard/resources
-GET /api/dashboard/activity
-```
-
-## Proyectos
-
-Las rutas de registro, build y despliegue de proyectos no están disponibles en
-esta etapa.
-
-## Dominios
-
-```text
-GET    /api/domains
-POST   /api/domains
-PUT    /api/domains/ingress-ip
-PUT    /api/domains/:id
-DELETE /api/domains/:id
-POST   /api/domain-zones
-PUT    /api/domain-zones/:id
-DELETE /api/domain-zones/:id
-```
-
-La conexión de zona requiere el dominio raíz y un token API de Cloudflare. Sus
-credenciales no se incluyen en respuestas, auditoría ni tareas. La vista no
-asigna dominios a proyectos; las zonas que tengan asignaciones previas no se
-pueden desconectar.
-
-## Aplicaciones
-
-```text
-GET    /api/applications/catalog
-GET    /api/applications
-POST   /api/applications/install
-GET    /api/applications/:id
-PATCH  /api/applications/:id
-POST   /api/applications/:id/update
-DELETE /api/applications/:id
-```
-
-La instalación de n8n acepta `POST /api/system/applications/n8n` con
-`{ "zoneId": "<id de una zona conectada>", "subdomain": "automatizacion" }`.
-Usa `""` o `"@"` como subdominio para instalarlo en el dominio raíz.
-
-## Docker
-
-```text
-GET  /api/docker/containers
-GET  /api/docker/services
-GET  /api/docker/info
-GET  /api/docker/stacks
-GET  /api/docker/container-metrics
-GET  /api/docker/containers/:id/logs
-GET  /api/docker/services/:id/logs
-GET  /api/docker/networks
-GET  /api/docker/volumes
-GET  /api/docker/images
-POST /api/docker/containers/:id/restart
-POST /api/docker/containers/:id/stop
-POST /api/docker/containers/:id/start
-```
-
-## Métricas e histórico
-
-```text
-GET   /api/system/metrics-settings
-PATCH /api/system/metrics-settings
-GET   /api/system/metrics-history
-GET   /api/system/metric-alerts
-```
-
-La frecuencia de muestreo se configura en minutos (1–1440) y se guarda en PostgreSQL; el valor inicial es 15. Las muestras se recogen automáticamente y también al solicitar CPU/RAM. El panel muestra las últimas 24 horas y elimina datos con más de 7 días. Los umbrales de CPU por contenedor (1–10000%), RAM respecto al límite del contenedor (1–100%), disco libre (1–99%), y reinicios (1–100 en una ventana de 5–1440 minutos) se editan en el panel. CPU/RAM se activan al superar el umbral en dos muestras consecutivas; disco alerta al llegar o bajar del umbral, los servicios cuando hay menos tareas activas que las deseadas y reinicios al alcanzar el conteo dentro de la ventana. Las alertas son internas al panel y se actualizan automáticamente cada minuto mientras está abierto. El espacio en disco se obtiene con `statfs("/")` desde el contenedor del panel; no representa por separado otros puntos de montaje del VPS.
-
-Las rutas web se descubren de las reglas `Host(...)` en las etiquetas de routers Traefik de los servicios Swarm; no se aceptan URLs arbitrarias desde el navegador. Cada comprobación solicita la raíz `/`, no sigue redirecciones y considera sanos los estados 200–399. El timeout por ruta se configura entre 1 y 30 segundos. La fecha de vencimiento de certificados TLS se comprueba con un handshake TLS y el aviso se configura entre 1 y 90 días. Los valores iniciales son 5 segundos y 14 días. Los probes se ejecutan al actualizar el dashboard y durante su refresco periódico de alertas.
-
-## Monitoreo
-
-```text
-GET /api/metrics/server
-GET /api/metrics/containers
-GET /api/metrics/applications
-GET /api/metrics/projects
-GET /api/metrics/history
-```
-
-## Dominios
-
-```text
-GET    /api/domains
-POST   /api/domains
-PATCH  /api/domains/:id
-DELETE /api/domains/:id
-```
-
-## Tareas
-
-```text
-GET /api/tasks
-GET /api/tasks/:id
-GET /api/tasks/:id/logs
-```
-
-Las rutas son contratos iniciales, no una obligación de implementar todo simultáneamente.
-
-`GET /api/system/tasks` requiere sesión de administrador y devuelve las 50 tareas más recientes, guardadas en PostgreSQL. Cada tarea contiene su identificador, tipo, estado (`pending`, `in_progress`, `completed` o `failed`), contador de intentos, fechas de creación/inicio/fin y el resultado o error disponible; no expone las cargas útiles internas de handlers.
-
-```text
-POST /api/docker/services/:id/restart
-POST /api/docker/services/:id/scale  {"replicas": 1..100}
-```
-
-Ambas rutas requieren sesión y origen válido; solo admiten servicios administrados por VPS Manager. El escalado exige modo replicado, registra en auditoría las réplicas originales y deseadas y rechaza el servicio API si el objetivo no es exactamente una réplica. El worker reclama tareas con leases y tokens de propietario; recupera leases vencidas tras reiniciar el backend y reintenta errores recuperables, con cinco intentos por defecto y un límite de diez. Todo handler que admita reintentos debe ser idempotente usando el ID duradero de su tarea. El agente host valida una allowlist fija y los IDs de tarea hacen idempotentes los reenvíos. El escalado confirma que Swarm aceptó la configuración deseada; no garantiza que todas las réplicas puedan programarse con los recursos disponibles.
-
-El panel expone consultas Docker de solo lectura y muestra detalles de imagen, estado, puertos publicados, modo de servicio y réplicas. Permite buscar por nombre, imagen o ID y filtrar contenedores por estado, servicios por modo y stacks por cantidad de servicios. Consulta CPU y RAM por contenedor en ejecución cada 15 minutos por defecto; el intervalo (1–1440 minutos) puede cambiarse desde el panel y se guarda en PostgreSQL. Las muestras también se guardan al solicitar CPU/RAM, se agrupan por stack/proyecto usando las etiquetas Docker y se muestran como gráficos de las últimas 24 horas; los contenedores sin etiquetas compatibles se agrupan como "Sin grupo". Se eliminan muestras con más de 7 días y se limitan a cuatro las consultas Docker simultáneas. Esto no añade Prometheus, cAdvisor ni dependencias de aplicación adicionales. También permite consultar las últimas 100 líneas de logs por contenedor o servicio, con un límite de respuesta de 1 MiB. La disponibilidad de logs de servicios depende del driver de logging de Docker. Las escrituras Docker incluyen el reinicio y el escalado restringidos y auditados de servicios administrados, además de crear/actualizar y retirar los servicios Swarm internos de proyectos mediante tareas manuales y un agente host de operaciones fijas. Estos servicios no publican puertos ni reciben configuración de Traefik en esta fase.
+La tabla es un mapa breve, no una lista completa. Los métodos y validaciones
+exactos están en `server.mjs`; no se debe asumir que una ruta que aparecía en
+versiones antiguas de esta documentación siga existiendo.
 
 ---
 
 # 17. Administración de configuraciones Docker
 
-El sistema debe generar configuraciones compatibles con Docker Swarm.
-
-No debe depender de ejecutar directamente archivos Compose arbitrarios.
+VPS Manager crea y actualiza servicios de Docker Swarm a través de tareas y del
+agente del host. No ejecuta archivos Compose arbitrarios que alguien cargue al
+panel.
 
 ## 17.1. Build y despliegue
 
-Docker Swarm no construye imágenes a partir de la propiedad `build` de Compose mediante `docker stack deploy`.
+El flujo implementado para un proyecto es:
 
-Por ello, el flujo futuro será:
+1. Obtener la fuente de GitHub o el ZIP guardado en el VPS.
+2. Construir la imagen con Docker Buildx/BuildKit en el nodo manager.
+3. Cargar la imagen local en el Docker Engine del manager y etiquetarla con el
+   identificador de la fuente.
+4. Crear o actualizar el servicio Swarm del proyecto en el manager.
+5. Esperar el resultado del agente y comprobar el estado del servicio y la URL.
 
-1. Descargar código.
-2. Construir imagen mediante BuildKit.
-3. Etiquetar imagen con commit.
-4. Publicar la imagen en un registro accesible al nodo.
-5. Validar el stack.
-6. Ejecutar el despliegue.
-7. Comprobar el resultado.
+El servicio del proyecto tiene una tarea fijada al nodo manager y no publica
+puertos del host. Si tiene un dominio, Traefik le envía el tráfico HTTPS.
+Swarm aplica su política de reinicio si el proceso del contenedor se detiene.
+La imagen no se distribuye automáticamente a otros nodos. Por eso el
+despliegue de proyectos en varios nodos requiere un registro compartido.
 
-El registro privado dedicado se configura después de instalar, desde el
-navegador. El formulario crea un servicio Swarm autenticado por HTTPS detrás de
-Traefik y con volumen persistente; su dominio DNS debe apuntar al VPS.
-
-BuildKit permite solicitar construcciones manuales desde los repositorios
-registrados y carga las imágenes localmente en el manager. El panel despliega
-manualmente cada proyecto como servicio Swarm de una tarea, fijado al manager.
-Desde el panel también se pueden incorporar VPS
-Ubuntu 24.04 por SSH y consultar el estado de los nodos. Variables y dominios
-configurados para un proyecto se aplican en el siguiente despliegue.
-Los pushes autenticados a la rama de producción de proyectos registrados
-disparan un build y despliegue automáticos; otras ramas no despliegan.
+Los proyectos GitHub pueden desplegarse manualmente o al recibir un push
+autenticado en su rama configurada, si el despliegue automático está activado.
+Los proyectos importados desde ZIP se publican manualmente.
 
 ## 17.2. Configuración declarativa
 
-Cada instalación administrada debe tener una configuración reproducible.
-
-Ejemplo conceptual:
-
-```yaml
-project:
-  name: ownmind
-  type: web
-
-git:
-  repository: ownmind/ownmind-web
-  branch: main
-  autoDeploy: true
-
-build:
-  dockerfile: Dockerfile
-
-domain:
-  host: app.ejemplo.com
-  internalPort: 4321
-
-resources:
-  cpus: 1.0
-  memory: 1024M
-```
-
-El archivo anterior representa la configuración propia de VPS Manager. No es un archivo Docker Compose listo para desplegar.
+La configuración del proyecto se guarda como datos del manager; su
+configuración de despliegue protegida se escribe en archivos restringidos del
+VPS para que la consuma el agente. El ejemplo YAML de versiones anteriores de
+esta guía no correspondía a un archivo aceptado por el producto y se retiró.
 
 ---
 
@@ -1701,7 +1745,9 @@ Repetir las pruebas con Supabase, considerando su arquitectura multicontenedor.
 
 ## 19.7. Criterios de aceptación
 
-El MVP no estará completo hasta que pueda:
+La siguiente lista es el objetivo original de aceptación, no una descripción
+exacta de lo que ya está terminado. La cobertura real y sus límites se indican
+en las secciones anteriores y deben comprobarse con pruebas y en un VPS:
 
 1. Instalarse en Ubuntu 24.04 mediante un solo comando.
 2. Publicar el panel con HTTPS.
@@ -1723,7 +1769,9 @@ El MVP no estará completo hasta que pueda:
 
 # 20. Fases de desarrollo
 
-El desarrollo debe ser incremental.
+Este es el plan inicial de desarrollo, conservado como referencia histórica.
+Las fases y sus listas no son un tablero de estado actualizado; consulta el
+resumen inicial y las secciones funcionales anteriores para saber qué existe.
 
 ## Fase 0 — Preparación
 
@@ -1866,7 +1914,10 @@ El desarrollo debe ser incremental.
 
 # 22. Decisiones pendientes de implementación
 
-Estas decisiones no impiden iniciar el proyecto, pero deben resolverse antes de desarrollar sus módulos correspondientes.
+Esta tabla pertenece al plan inicial y contiene decisiones que pueden haber
+cambiado o haberse implementado. No la uses como descripción de la
+configuración actual; consulta las secciones de arquitectura, límites y
+despliegue de proyectos.
 
 | Tema | Decisión inicial |
 |---|---|
@@ -1904,7 +1955,3 @@ El flujo ideal será:
 12. Mantener y respaldar toda la infraestructura.
 
 **La meta no es solamente instalar Docker: es crear un centro de administración de infraestructura propio, extensible y completamente controlado por el usuario.**
-
-```bash
-.\reset-test-password.ps1 -PasswordFile .\password-test.txt
-```

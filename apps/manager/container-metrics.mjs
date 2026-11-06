@@ -46,7 +46,8 @@ export async function collectContainerMetrics(containers, getStats, concurrency 
         metrics.push({
           id: container.Id.slice(0, 12),
           name: (container.Names?.[0] ?? "").replace(/^\//, ""),
-          group: container.Labels?.["com.docker.stack.namespace"]
+          group: container.group
+            ?? container.Labels?.["com.docker.stack.namespace"]
             ?? container.Labels?.["com.docker.compose.project"]
             ?? "Sin grupo",
           ...calculateContainerMetrics(stats),
@@ -55,6 +56,10 @@ export async function collectContainerMetrics(containers, getStats, concurrency 
         errors.push({
           id: container.Id.slice(0, 12),
           name: (container.Names?.[0] ?? "").replace(/^\//, ""),
+          group: container.group
+            ?? container.Labels?.["com.docker.stack.namespace"]
+            ?? container.Labels?.["com.docker.compose.project"]
+            ?? "Sin grupo",
           message: error instanceof Error ? error.message : "Unknown Docker error.",
         });
       }

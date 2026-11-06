@@ -2,94 +2,132 @@
 import ProjectSettingsForm from "./ProjectSettingsForm.astro";
 ---
 <section id="project-detail-view" class="hidden" hidden aria-labelledby="project-detail-title">
-  <header class="card project-detail-header">
-    <a class="project-back-link" href="/#tab-projects">← Volver a proyectos</a>
-    <div class="card-heading">
+  <header class="project-detail-header">
+    <a class="project-back-link" href="/#tab-projects">← Proyectos</a>
+    <div class="project-detail-title-row">
       <div>
-        <p class="eyebrow">ESPACIO DE TRABAJO · PROYECTO</p>
+        <p class="eyebrow">PROYECTO</p>
         <h2 id="project-detail-title">Cargando proyecto…</h2>
+        <p id="project-detail-summary" class="muted"></p>
       </div>
-      <span id="project-detail-state" class="badge"></span>
+      <div class="project-header-actions">
+        <span id="project-detail-state" class="badge"></span>
+        <a id="project-header-open" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Abrir sitio</a>
+      </div>
     </div>
-    <p id="project-detail-summary" class="muted"></p>
   </header>
   <div id="project-detail-operation-status" class="project-operation-status" role="status" aria-live="polite"></div>
   <nav class="project-tabs" role="tablist" aria-label="Secciones del proyecto">
-    <button class="project-tab" type="button" role="tab" aria-selected="true" aria-controls="project-tab-deploy" data-project-tab="deploy">Publicación</button>
-    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-settings" data-project-tab="settings">Ajustes</button>
-    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-files" data-project-tab="files">Archivos</button>
-    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-environment" data-project-tab="environment">Variables</button>
-    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-domains" data-project-tab="domains">Dominios</button>
-    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-history" data-project-tab="history">Actividad</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="true" aria-controls="project-tab-deploy" data-project-tab="deploy">Implementaciones</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-settings" data-project-tab="settings">Configuración</button>
+    <button class="project-tab" type="button" role="tab" aria-selected="false" aria-controls="project-tab-domains" data-project-tab="domains">Dominios personalizados</button>
   </nav>
-  <section id="project-tab-deploy" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="deploy">
+  <section id="project-tab-deploy" class="project-tab-panel" role="tabpanel" data-project-tab-panel="deploy">
     <div class="project-panel-heading">
       <div>
-        <p class="eyebrow">PUBLICACIÓN</p>
-        <h3>Construye y despliega</h3>
-        <p class="muted">Construye la imagen localmente en el VPS y despliega una tarea aislada para este proyecto.</p>
+        <p class="eyebrow">PRODUCCIÓN</p>
+        <h3>Implementaciones</h3>
+        <p class="muted">Cada publicación crea una versión nueva. Los cambios en la rama de producción pueden desplegarse automáticamente.</p>
       </div>
       <button class="button secondary guide-trigger" type="button" data-guide-target="#guide-deployment-types" data-guide-title="Tipos de despliegue" aria-label="Ayuda sobre los tipos de despliegue" aria-haspopup="dialog" aria-controls="guide-dialog" title="Ayuda">?</button>
     </div>
-    <div class="project-release-status">
-      <div id="project-detail-build-info" class="project-release-card"></div>
-      <div id="project-detail-deployment-info" class="project-release-card"></div>
+    <section class="project-production-overview" aria-label="Estado de producción">
+      <div class="project-production-main">
+        <p class="eyebrow">ENTORNO DE PRODUCCIÓN</p>
+        <a id="project-production-domain" target="_blank" rel="noopener noreferrer" hidden></a>
+        <strong id="project-production-domain-empty">Sin dominio personalizado</strong>
+        <p id="project-production-source" class="muted"></p>
+      </div>
+      <div class="project-production-meta">
+        <span id="project-production-status" class="badge" data-state="unknown">Consultando estado</span>
+        <span id="project-production-trigger" class="muted"></span>
+      </div>
+    </section>
+    <section class="project-runtime-card" aria-labelledby="project-runtime-title">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">CONFIGURACIÓN ACTIVA</p>
+          <h3 id="project-runtime-title">Cómo se ejecuta</h3>
+        </div>
+        <button class="button secondary" type="button" data-project-open-settings>Editar configuración</button>
+      </div>
+      <dl id="project-runtime-summary" class="project-runtime-summary"></dl>
+    </section>
+    <div class="project-deployment-grid">
+      <div class="project-deployment-main">
+        <div class="project-release-status">
+          <div id="project-detail-build-info" class="project-release-card"></div>
+          <div id="project-detail-deployment-info" class="project-release-card"></div>
+        </div>
+        <section id="project-detail-build-operation" class="project-build-operation" hidden aria-live="polite">
+          <div class="card-heading">
+            <h4 id="project-detail-build-operation-title"></h4>
+            <span id="project-detail-build-operation-updated" class="muted"></span>
+          </div>
+          <progress id="project-detail-build-operation-progress" class="project-build-progress" aria-label="Progreso de la construcción"></progress>
+          <p id="project-detail-build-operation-message" class="muted"></p>
+          <p id="project-detail-build-operation-diagnostic" class="project-build-diagnostic" hidden></p>
+					
+          <div class="project-build-log-heading">
+            <h4>Registro de BuildKit (últimos 1 MiB)</h4>
+            <button id="project-detail-build-operation-copy" class="button secondary resource-action" type="button">Copiar salida</button>
+          </div>
+          <pre id="project-detail-build-operation-logs"></pre>
+          <p id="project-detail-build-operation-copy-status" class="muted" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+      <aside class="project-deployment-aside">
+        <p class="eyebrow">ORIGEN</p>
+        <p id="project-production-source" class="muted"></p>
+        <p class="eyebrow">DESPLIEGUE AUTOMÁTICO</p>
+        <p id="project-production-trigger" class="muted"></p>
+      </aside>
     </div>
     <template id="guide-deployment-types">
-      <p>Los sitios con <code>index.html</code> se sirven con Nginx; <code>server.js</code> y <code>main.py</code> sueltos tienen un runtime básico. <code>package.json</code> y manifiestos compatibles usan Railpack. C++ requiere un Dockerfile que compile el código y exponga un servidor HTTP.</p>
+      <p>Los sitios con <code>index.html</code> se sirven con Nginx. Las aplicaciones Node, Python y otros servidores usan una imagen de runtime adecuada; puedes dejar que Railpack detecte la configuración o usar un Dockerfile propio. Los sitios compilados se construyen y luego se sirven como archivos estáticos.</p>
       <p>La imagen se construye en el VPS principal y Swarm ejecuta una tarea por proyecto en ese nodo. No necesitas configurar un registro privado para este modo; para distribuir proyectos entre varios nodos se necesitaría un registro accesible por todos.</p>
     </template>
     <div class="project-release-actions" id="project-detail-actions"></div>
+    <details id="project-detail-history" class="project-history-panel">
+      <summary>Historial de implementaciones</summary>
+    </details>
   </section>
-  <section id="project-tab-settings" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="settings" hidden>
+  <section id="project-tab-settings" class="project-tab-panel" role="tabpanel" data-project-tab-panel="settings" hidden>
     <div class="project-panel-heading">
       <div>
-        <p class="eyebrow">PERSONALIZACIÓN</p>
-        <h3>Ajustes del proyecto</h3>
-        <p class="muted">Define cómo se construye y en qué puerto escucha tu aplicación.</p>
+        <p class="eyebrow">CONFIGURACIÓN</p>
+        <h3>Build y runtime</h3>
+        <p class="muted">Configura cómo se compila y ejecuta este proyecto. Los valores actuales se conservan al guardar.</p>
+        <p id="project-framework-summary" class="project-detection-profile muted" role="status"></p>
       </div>
     </div>
-    <ProjectSettingsForm />
-  </section>
-  <section id="project-tab-files" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="files" hidden>
-    <div class="project-panel-heading">
-      <div>
-        <p class="eyebrow">CÓDIGO FUENTE</p>
-        <h3>Archivos</h3>
+    <div class="project-settings-layout">
+      <section class="project-settings-build">
+        <ProjectSettingsForm />
+      </section>
+      <div class="project-settings-supporting">
+        <details id="project-settings-source" class="project-settings-card">
+          <summary>Código fuente</summary>
+          <p id="project-detail-source-info" class="muted"></p>
+          <ul id="project-detail-file-tree" class="project-file-tree"></ul>
+          <div id="project-detail-upload"></div>
+        </details>
+        <details id="project-settings-environment" class="project-settings-card">
+          <summary>Variables de entorno</summary>
+          <p class="muted">Se muestran como una lista de nombre y valor; los valores están ocultos por defecto. Solo las aplicaciones dinámicas reciben estas variables al desplegar.</p>
+          <div id="project-detail-environment"></div>
+        </details>
       </div>
     </div>
-    <p id="project-detail-source-info" class="muted"></p>
-    <ul id="project-detail-file-tree" class="project-file-tree"></ul>
-    <div id="project-detail-upload"></div>
   </section>
-  <section id="project-tab-environment" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="environment" hidden>
+  <section id="project-tab-domains" class="project-tab-panel" role="tabpanel" data-project-tab-panel="domains" hidden>
     <div class="project-panel-heading">
       <div>
-        <p class="eyebrow">CONFIGURACIÓN RUNTIME</p>
-        <h3>Variables de entorno</h3>
-        <p class="muted">Guarda valores que tu aplicación necesita al ejecutarse. Evita compartir secretos.</p>
-      </div>
-    </div>
-    <div id="project-detail-environment"></div>
-  </section>
-  <section id="project-tab-domains" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="domains" hidden>
-    <div class="project-panel-heading">
-      <div>
-        <p class="eyebrow">ACCESO PÚBLICO</p>
-        <h3>Dominios</h3>
-        <p class="muted">Asocia un hostname para acceder a tu aplicación.</p>
+        <p class="eyebrow">DOMINIOS</p>
+        <h3>Dominios personalizados</h3>
+        <p class="muted">Conecta un hostname existente o asigna uno nuevo. Las rutas se activan automáticamente.</p>
       </div>
     </div>
     <div id="project-detail-domains"></div>
-  </section>
-  <section id="project-tab-history" class="card project-tab-panel" role="tabpanel" data-project-tab-panel="history" hidden>
-    <div class="project-panel-heading">
-      <div>
-        <p class="eyebrow">VERSIONES</p>
-        <h3>Actividad</h3>
-        <p class="muted">Consulta las últimas construcciones y publicaciones.</p>
-      </div>
-    </div>
-    <div id="project-detail-history"></div>
   </section>
 </section>

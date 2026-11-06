@@ -33,6 +33,7 @@ export default function DashboardTabs() {
           panel.classList.toggle("hidden", id !== selectedTab);
         }
       }
+      window.dispatchEvent(new CustomEvent("dashboardtabchange", { detail: { tabId: selectedTab } }));
     };
 
     const syncFromHash = () => activate(getTabFromHash());
@@ -50,6 +51,7 @@ export default function DashboardTabs() {
         panel.classList.toggle("hidden", id !== tabId);
       }
     }
+    window.dispatchEvent(new CustomEvent("dashboardtabchange", { detail: { tabId } }));
 
     const hash = `#tab-${tabId}`;
     if (location.hash !== hash) history.replaceState(null, "", hash);

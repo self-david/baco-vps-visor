@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { detectProjectBuildProfile, isIgnoredProjectFile } from "./public/project-archive.mjs";
 
 const accountIdPattern = /^[1-9][0-9]{0,15}$/;
 const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -369,6 +370,45 @@ export function createGithubOAuth({
     return commit.sha.toLowerCase();
   }
 
+  async function inspectRepository(accountId, repository, reference) {
+    if (!branchPattern.test(reference ?? "")) throw new TypeError("La rama de GitHub no es válida.");
+    const treeResponse = await withRepository(
+      accountId,
+      repository,
+      `git/trees/${encodeURIComponent(reference)}?recursive=1`,
+    );
+    const treeResult = await treeResponse.json();
+    if (!Array.isArray(treeResult.tree) || treeResult.truncated) {
+      throw githubError("GITHUB_TREE_TOO_LARGE", "No se pudo analizar el repositorio completo; configura el build manualmente.");
+    }
+    const paths = treeResult.tree
+      .filter((entry) => entry.type === "blob" && typeof entry.path === "string")
+      .map((entry) => entry.path)
+      .filter((path) => !isIgnoredProjectFile(path));
+    if (paths.length > 100_000) {
+      throw githubError("GITHUB_TREE_TOO_LARGE", "El repositorio contiene demasiados archivos para analizar automáticamente.");
+    }
+    const rootMetadata = new Set(["package.json", "requirements.txt", "pyproject.toml"]);
+    const files = {};
+    let metadataCount = 0;
+    for (const path of paths) {
+      if (!rootMetadata.has(path.split("/").at(-1).toLowerCase()) || metadataCount >= 10) continue;
+      const fileResponse = await withRepository(
+        accountId,
+        repository,
+        `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(reference)}`,
+      );
+      const file = await fileResponse.json();
+      if (file.encoding !== "base64" || typeof file.content !== "string"
+        || !Number.isSafeInteger(file.size) || file.size > 256 * 1024) continue;
+      const content = Buffer.from(file.content.replace(/\s/g, ""), "base64");
+      if (content.length !== file.size || content.length > 256 * 1024) continue;
+      files[path.toLowerCase()] = content.toString("utf8");
+      metadataCount += 1;
+    }
+    return detectProjectBuildProfile(paths, files);
+  }
+
   async function downloadArchive(accountId, repository, commitSha) {
     if (!repositoryPattern.test(repository ?? "") || !/^[a-f0-9]{40}$/i.test(commitSha ?? "")) {
       throw new TypeError("El repositorio o commit de GitHub no es válido.");
@@ -450,6 +490,7 @@ export function createGithubOAuth({
     listRepositories,
     listBranches,
     getCommit,
+    inspectRepository,
     downloadArchive,
     configurePushWebhook,
   };

@@ -40,26 +40,122 @@
                     </div>
                     <template id="guide-project-files">
                       <p>Arrastra un archivo ZIP o una carpeta, o usa los botones para seleccionar ZIP, carpeta o archivos individuales. El ZIP puede contener una carpeta superior o tener los archivos directamente en la raíz; el límite es 32 MiB.</p>
-                      <p>Elige el tipo de despliegue según el contenido: estático para HTML/CSS/JavaScript, dinámico para un servidor como Node o Python, y Build para compilar y publicar la carpeta de salida.</p>
+                      <p>VPS Manager analiza manifiestos y archivos para sugerir el framework, método de build, puerto y directorio de contexto. Excluye dependencias, cachés de build y archivos .env locales; revisa o edita la configuración detectada antes de crear el proyecto.</p>
                     </template>
                   </div>
-                  <div id="project-selection" class="project-selection hidden" aria-live="polite">
-                    <strong id="project-selection-name"></strong>
-                    <span id="project-selection-details" class="muted"></span>
-                    <label for="project-import-deployment-type">Tipo de despliegue</label>
-                    <select id="project-import-deployment-type">
-                      <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
-                      <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
-                      <option value="build">Build + despliegue (compilar e iniciar automáticamente)</option>
-                    </select>
-                    <span class="muted">El perfil Build detecta manifiestos, instala dependencias, ejecuta la compilación y publica la carpeta de salida.</span>
-                    <details id="project-selection-files" open>
-                      <summary>Archivos incluidos</summary>
-                      <ul id="project-selection-tree" class="project-file-tree"></ul>
-                    </details>
-                    <button id="project-import-files" class="button" type="button">Continuar y crear proyecto</button>
-                  </div>
-                  <p id="project-upload-status" class="muted" role="status" aria-live="polite"></p>
+                  <dialog id="project-import-dialog" class="logs-dialog restore-dialog project-import-dialog" aria-labelledby="project-import-dialog-title">
+                    <div class="logs-heading">
+                      <div>
+                        <p class="eyebrow">NUEVO PROYECTO</p>
+                        <h2 id="project-import-dialog-title">Revisar archivos</h2>
+                        <p id="project-import-step-label" class="muted">Paso 1 de 2 · Revisa los archivos seleccionados</p>
+                      </div>
+                      <button id="project-import-close" class="button secondary" type="button">Cerrar</button>
+                    </div>
+                    <ol class="project-import-steps" aria-label="Pasos para crear un proyecto">
+                      <li id="project-import-step-files" aria-current="step">Archivos</li>
+                      <li id="project-import-step-settings">Nombre y despliegue</li>
+                    </ol>
+                    <div id="project-selection" class="project-selection" aria-live="polite">
+                      <section id="project-import-files-step">
+                        <strong id="project-selection-name"></strong>
+                        <span id="project-selection-details" class="muted"></span>
+                        <details id="project-selection-files" open>
+                          <summary>Archivos incluidos</summary>
+                          <ul id="project-selection-tree" class="project-file-tree"></ul>
+                        </details>
+                      </section>
+                      <section id="project-import-settings-step" hidden>
+                        <label for="project-import-name">Nombre del proyecto</label>
+                        <input
+                          id="project-import-name"
+                          name="name"
+                          type="text"
+                          maxlength="100"
+                          pattern="[A-Za-z0-9][A-Za-z0-9._\x2d ]{0,99}"
+                          aria-describedby="project-import-name-help"
+                          required
+                        >
+                        <p id="project-import-name-help" class="muted">Puedes cambiar el nombre sugerido antes de crear el proyecto.</p>
+                        <fieldset class="project-import-domain">
+                          <legend>Dominio automático (opcional)</legend>
+                          <label>
+                            <input id="project-import-create-domain" type="checkbox" disabled>
+                            Asignar un subdominio basado en el nombre del proyecto
+                          </label>
+                          <div class="form-stack">
+                            <label for="project-import-domain-zone">Dominio raíz conectado</label>
+                            <select id="project-import-domain-zone" required disabled>
+                              <option value="">Consultando dominios conectados…</option>
+                            </select>
+                            <label for="project-import-domain-subdomain">Subdominio</label>
+                            <input
+                              id="project-import-domain-subdomain"
+                              type="text"
+                              maxlength="63"
+                              pattern="[a-z0-9](?:[a-z0-9\x2d]{0,61}[a-z0-9])?"
+                              autocomplete="off"
+                              spellcheck="false"
+                              aria-describedby="project-import-domain-preview"
+                              required
+                              disabled
+                            >
+                            <p id="project-import-domain-preview" class="muted" role="status" aria-live="polite"></p>
+                          </div>
+                          <p id="project-import-domain-status" class="muted" role="status" aria-live="polite">Los dominios conectados se consultarán al iniciar.</p>
+                        </fieldset>
+                        <p id="project-detection-profile" class="project-detection-profile" role="status"></p>
+                        <label for="project-import-deployment-type">Tipo de despliegue</label>
+                        <select id="project-import-deployment-type">
+                          <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
+                          <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
+                          <option value="build">Build estático (compilar y servir con Nginx)</option>
+                        </select>
+                        <details id="project-import-build-settings">
+                          <summary>Configuración detectada y campos usados</summary>
+                          <div class="form-stack">
+                            <div id="project-import-build-strategy-field">
+                              <label for="project-import-build-strategy">Método para aplicaciones dinámicas</label>
+                              <select id="project-import-build-strategy">
+                                <option value="railpack">Railpack (detección automática)</option>
+                                <option value="dockerfile">Dockerfile (personalizado)</option>
+                              </select>
+                            </div>
+                            <div id="project-import-build-context-field">
+                              <label for="project-import-build-context">Directorio de contexto</label>
+                              <input id="project-import-build-context" value=".">
+                            </div>
+                            <div id="project-import-dockerfile-field">
+                              <label for="project-import-dockerfile">Ruta del Dockerfile</label>
+                              <input id="project-import-dockerfile" value="Dockerfile">
+                            </div>
+                            <div id="project-import-port-field">
+                              <label for="project-import-port">Puerto interno de la aplicación</label>
+                              <input id="project-import-port" type="number" min="1" max="65535" value="3000">
+                            </div>
+                            <div id="project-import-build-output-fields">
+                              <label for="project-import-build-command">Comando de compilación</label>
+                              <input id="project-import-build-command" maxlength="255" value="npm run build">
+                              <label for="project-import-output-directory">Directorio de salida estática</label>
+                              <input id="project-import-output-directory" maxlength="255" value="dist">
+                            </div>
+                            <p id="project-import-field-help" class="muted"></p>
+                          </div>
+                        </details>
+                      </section>
+                      <section id="project-import-success" class="project-import-success" hidden>
+                        <h3>Proyecto creado</h3>
+                        <p id="project-import-success-message" class="muted"></p>
+                      </section>
+                    </div>
+                    <p id="project-upload-status" class="muted" role="status" aria-live="polite"></p>
+                    <div class="dialog-actions project-import-actions">
+                      <button id="project-import-back" class="button secondary" type="button" hidden>Volver a archivos</button>
+                      <button id="project-import-next" class="button" type="button">Continuar</button>
+                      <button id="project-import-files" class="button" type="button" hidden>Crear proyecto</button>
+                      <a id="project-import-open-project" class="button" href="#" hidden>Ver proyecto</a>
+                    </div>
+                  </dialog>
                 </section>
               </section>
 
@@ -101,8 +197,29 @@
                     <select id="github-deployment-type" name="deploymentType">
                       <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
                       <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
-                      <option value="build">Build + despliegue (Railpack)</option>
+                      <option value="build">Build estático (compilar y servir con Nginx)</option>
                     </select>
+                    <p id="github-detection-profile" class="project-detection-profile muted" role="status">Selecciona un repositorio y rama para detectar su framework.</p>
+                    <details id="github-import-build-settings">
+                      <summary>Revisar o editar la configuración detectada</summary>
+                      <div class="form-stack">
+                        <label for="github-import-build-strategy">Método para aplicaciones dinámicas</label>
+                        <select id="github-import-build-strategy">
+                          <option value="railpack">Railpack (detección automática)</option>
+                          <option value="dockerfile">Dockerfile (personalizado)</option>
+                        </select>
+                        <label for="github-import-build-context">Directorio de contexto</label>
+                        <input id="github-import-build-context" value=".">
+                        <label for="github-import-dockerfile">Ruta del Dockerfile</label>
+                        <input id="github-import-dockerfile" value="Dockerfile">
+                        <label for="github-import-port">Puerto interno</label>
+                        <input id="github-import-port" type="number" min="1" max="65535" value="3000">
+                        <label for="github-import-build-command">Comando de compilación</label>
+                        <input id="github-import-build-command" maxlength="255" value="npm run build">
+                        <label for="github-import-output-directory">Directorio de salida estática</label>
+                        <input id="github-import-output-directory" maxlength="255" value="dist">
+                      </div>
+                    </details>
                     <button id="github-import-project" class="button" type="submit">Importar y desplegar</button>
                     <p id="github-import-status" class="muted" role="status" aria-live="polite"></p>
                   </form>

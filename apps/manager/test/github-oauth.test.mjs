@@ -33,6 +33,24 @@ test("encrypts OAuth credentials, authorizes a GitHub account, and configures pu
       if (target.includes("/branches?")) {
         return Response.json([{ name: "main", commit: { sha: "a".repeat(40) } }]);
       }
+      if (target.endsWith("/git/trees/main?recursive=1")) {
+        return Response.json({
+          tree: [
+            { path: "package.json", type: "blob" },
+            { path: "next.config.mjs", type: "blob" },
+            { path: "node_modules/next/package.json", type: "blob" },
+            { path: "app/page.tsx", type: "blob" },
+          ],
+        });
+      }
+      if (target.endsWith("/contents/package.json?ref=main")) {
+        const content = JSON.stringify({ dependencies: { next: "15.0.0" } });
+        return Response.json({
+          encoding: "base64",
+          size: Buffer.byteLength(content),
+          content: Buffer.from(content).toString("base64"),
+        });
+      }
       if (target.endsWith("/commits/main")) return Response.json({ sha: "a".repeat(40) });
       if (target.endsWith(`/zipball/${"a".repeat(40)}`)) {
         return new Response(null, {
@@ -81,6 +99,10 @@ test("encrypts OAuth credentials, authorizes a GitHub account, and configures pu
     assert.deepEqual(await oauth.listBranches(12345, "example-user/site"), [
       { name: "main", commitSha: "a".repeat(40) },
     ]);
+    const detectedProfile = await oauth.inspectRepository(12345, "example-user/site", "main");
+    assert.equal(detectedProfile.framework, "Next.js");
+    assert.equal(detectedProfile.recommendedDeploymentType, "dynamic");
+    assert.equal(detectedProfile.buildStrategy, "railpack");
     assert.equal(await oauth.getCommit(12345, "example-user/site", "main"), "a".repeat(40));
     assert.deepEqual(
       [...await oauth.downloadArchive(12345, "example-user/site", "a".repeat(40))],

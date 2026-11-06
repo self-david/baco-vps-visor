@@ -19,12 +19,14 @@ const allowedOperations = new Set([
   "configure-cloudflare-tunnel",
   "build-project",
   "deploy-project",
+  "update-project-routes",
   "remove-project",
   "deploy-application",
   "enroll-swarm-node",
 ]);
 const activeStates = new Set(["queued", "running"]);
 const statusStates = new Set(["running", "succeeded", "failed"]);
+const staleOperationThresholdMs = 20 * 60 * 1000;
 const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 const registryUsernamePattern = /^[A-Za-z0-9._-]{1,64}$/;
 const registryPasswordPattern = /^[A-Za-z0-9._-]{20,72}$/;
@@ -139,6 +141,8 @@ function validateStatus(status) {
       : status.operation === "build-project"
         ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
           || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+          || (status.logs !== undefined
+            && (typeof status.logs !== "string" || Buffer.byteLength(status.logs) > 1_048_576))
           || !["static", "dynamic", "build"].includes(status.deploymentType)
           || !["dockerfile", "railpack"].includes(status.buildStrategy)
           || (status.deploymentType === "static" && status.buildStrategy !== "dockerfile")
@@ -151,10 +155,13 @@ function validateStatus(status) {
             && (!safeProjectCommand(status.buildCommand) || !safeProjectPath(status.buildOutputDirectory)))
           || (status.state === "succeeded" && typeof status.image !== "string"))
         : status.operation === "deploy-project"
-          ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
-            || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
-            || (status.state === "succeeded"
-              && (!serviceIdPattern.test(status.serviceId ?? "") || typeof status.image !== "string")))
+              ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+                || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(status.commitSha ?? "")
+                || (status.state === "succeeded"
+                  && (!serviceIdPattern.test(status.serviceId ?? "") || typeof status.image !== "string")))
+          : status.operation === "update-project-routes"
+            ? (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
+              || !/^[a-f0-9]{64}$/.test(status.domainsHash ?? ""))
           : status.operation === "remove-project"
             ? !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(status.projectId ?? "")
             : status.operation === "deploy-application"
@@ -178,7 +185,9 @@ function validateStatus(status) {
                   return true;
                 }
               })()
-            : status.operation !== "configure-gitea-token" && !serviceIdPattern.test(status.serviceId ?? ""))
+            : status.operation !== "configure-gitea-token"
+              && status.operation !== "update-project-routes"
+              && !serviceIdPattern.test(status.serviceId ?? ""))
     || (status.operation === "scale-service"
       && (!Number.isInteger(status.replicas) || status.replicas < 1 || status.replicas > 100))
     || ((status.operation === "stop-container" || status.operation === "restart-container")
@@ -188,7 +197,10 @@ function validateStatus(status) {
         !== ["domain", "id", "message", "operation", "state", "updatedAt", "username"].sort().join(","))
     || (status.operation === "configure-cloudflare-tunnel"
       && Object.keys(status).sort().join(",")
-        !== ["id", "message", "operation", "state", "tunnelId", "updatedAt"].sort().join(","))) {
+        !== ["id", "message", "operation", "state", "tunnelId", "updatedAt"].sort().join(","))
+    || (status.operation === "update-project-routes"
+      && Object.keys(status).sort().join(",")
+        !== ["domainsHash", "id", "message", "operation", "projectId", "state", "updatedAt"].sort().join(","))) {
     throw new Error("The service operation status file has an invalid format.");
   }
   return status;
@@ -204,6 +216,7 @@ export function createServiceOperationAgent({
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
   const postgresqlCredentialsPath = (requestId) => join(directory, `postgresql-credentials-${requestId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
+  const projectBuildStatusPath = (requestId) => join(directory, `project-build-status-${requestId}.json`);
   const applicationDeploymentPath = (requestId) => join(directory, `application-deploy-${requestId}.json`);
   const registryCredentialsPath = (requestId) => join(directory, `registry-credentials-${requestId}.json`);
   const cloudflareTunnelCredentialsPath = (requestId) => join(directory, `cloudflare-tunnel-token-${requestId}.txt`);
@@ -230,6 +243,17 @@ export function createServiceOperationAgent({
     ]);
     let status;
     if (statusContents !== undefined) status = validateStatus(JSON.parse(statusContents));
+
+    if (requestContents === undefined && status?.state === "running") {
+      const lastUpdate = Date.parse(status.updatedAt);
+      if (Number.isFinite(lastUpdate) && Date.now() - lastUpdate > staleOperationThresholdMs) {
+        status = {
+          ...status,
+          state: "failed",
+          message: "La operación anterior quedó obsoleta: el agente no actualiza su estado desde hace más de 20 minutos.",
+        };
+      }
+    }
 
     if (requestContents !== undefined) {
       let queuedRequest;
@@ -271,7 +295,10 @@ export function createServiceOperationAgent({
               : queuedRequest.operation === "deploy-project"
                 ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                   && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(queuedRequest.commitSha ?? "")
-                : queuedRequest.operation === "remove-project"
+                  : queuedRequest.operation === "update-project-routes"
+                    ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
+                      && /^[a-f0-9]{64}$/.test(queuedRequest.domainsHash ?? "")
+                  : queuedRequest.operation === "remove-project"
                   ? /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(queuedRequest.projectId ?? "")
                   : queuedRequest.operation === "deploy-application"
                     ? applicationIdPattern.test(queuedRequest.applicationId ?? "")
@@ -320,6 +347,8 @@ export function createServiceOperationAgent({
             ]
           : queuedRequest.operation === "deploy-project"
             ? ["id", "operation", "projectId", "commitSha"]
+            : queuedRequest.operation === "update-project-routes"
+              ? ["id", "operation", "projectId", "domainsHash"]
             : queuedRequest.operation === "remove-project"
               ? ["id", "operation", "projectId"]
               : queuedRequest.operation === "deploy-application"
@@ -363,6 +392,8 @@ export function createServiceOperationAgent({
                 }
                 : queuedRequest.operation === "deploy-project"
                   ? { projectId: queuedRequest.projectId, commitSha: queuedRequest.commitSha }
+                  : queuedRequest.operation === "update-project-routes"
+                    ? { projectId: queuedRequest.projectId, domainsHash: queuedRequest.domainsHash }
                   : queuedRequest.operation === "remove-project"
                     ? { projectId: queuedRequest.projectId }
                     : queuedRequest.operation === "deploy-application"
@@ -394,6 +425,8 @@ export function createServiceOperationAgent({
                 ? "Construcción aceptada; esperando al agente BuildKit del VPS."
                 : queuedRequest.operation === "deploy-project"
                   ? "Despliegue aceptado; esperando al agente Swarm del VPS."
+              : queuedRequest.operation === "update-project-routes"
+                ? "Actualización de rutas aceptada; esperando al agente Swarm del VPS."
                   : queuedRequest.operation === "remove-project"
                     ? "Retiro aceptado; esperando al agente Swarm del VPS."
                     : queuedRequest.operation === "deploy-application"
@@ -411,6 +444,19 @@ export function createServiceOperationAgent({
       }
     }
     return status ?? null;
+  }
+
+  async function getProjectBuildStatus(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("The project build request identifier is invalid.");
+    }
+    const contents = await readOptional(projectBuildStatusPath(requestId));
+    if (contents === undefined) return null;
+    const status = validateStatus(JSON.parse(contents));
+    if (status.id !== requestId || status.operation !== "build-project") {
+      throw new Error("The saved project build status does not match its request.");
+    }
+    return status;
   }
 
   async function requestOperation(operation, serviceId, requestId, replicas, containerId) {
@@ -649,9 +695,11 @@ export function createServiceOperationAgent({
     if (!requestIdPattern.test(requestId ?? "")) {
       throw new TypeError("The project build request identifier is invalid.");
     }
-    await unlink(projectBuildArchivePath(requestId)).catch((error) => {
-      if (!isMissing(error)) throw error;
-    });
+    for (const path of [projectBuildArchivePath(requestId), projectBuildStatusPath(requestId)]) {
+      await unlink(path).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
   }
 
   async function requestProjectBuild(projectId, commitSha, requestId, configuration = {}) {
@@ -741,12 +789,14 @@ export function createServiceOperationAgent({
     };
   }
 
-  async function requestProjectServiceOperation(operation, projectId, commitSha, requestId) {
+  async function requestProjectServiceOperation(operation, projectId, commitSha, requestId, domainsHash) {
     const validProjectId = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-    if (!["deploy-project", "remove-project"].includes(operation)
+    if (!["deploy-project", "update-project-routes", "remove-project"].includes(operation)
       || !validProjectId.test(projectId ?? "")
       || (operation === "deploy-project" && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commitSha ?? ""))
-      || (operation === "remove-project" && commitSha !== undefined)
+      || (operation !== "deploy-project" && commitSha !== undefined)
+      || (operation === "update-project-routes" && !/^[a-f0-9]{64}$/i.test(domainsHash ?? ""))
+      || (operation !== "update-project-routes" && domainsHash !== undefined)
       || !requestIdPattern.test(requestId ?? "")) {
       throw new TypeError("Project service operation fields are invalid.");
     }
@@ -754,7 +804,8 @@ export function createServiceOperationAgent({
     if (currentStatus?.id === requestId) {
       if (currentStatus.operation !== operation
         || currentStatus.projectId !== projectId
-        || (operation === "deploy-project" && currentStatus.commitSha !== commitSha)) {
+        || (operation === "deploy-project" && currentStatus.commitSha !== commitSha)
+        || (operation === "update-project-routes" && currentStatus.domainsHash !== domainsHash)) {
         throw new Error("The task identifier already belongs to a different project operation.");
       }
       return currentStatus;
@@ -766,6 +817,7 @@ export function createServiceOperationAgent({
     }
     const requestData = { id: requestId, operation, projectId };
     if (operation === "deploy-project") requestData.commitSha = commitSha.toLowerCase();
+    if (operation === "update-project-routes") requestData.domainsHash = domainsHash.toLowerCase();
     const temporaryPath = join(directory, `.request-${requestId}.tmp`);
     try {
       await writeFile(temporaryPath, `${JSON.stringify(requestData)}\n`, { flag: "wx", mode: 0o600 });
@@ -788,9 +840,12 @@ export function createServiceOperationAgent({
       state: "queued",
       projectId,
       ...(operation === "deploy-project" ? { commitSha: commitSha.toLowerCase() } : {}),
+      ...(operation === "update-project-routes" ? { domainsHash: domainsHash.toLowerCase() } : {}),
       message: operation === "deploy-project"
         ? "Despliegue aceptado; el servicio se mantendrá sin puertos publicados."
-        : "Retiro aceptado; el agente validará la propiedad del servicio.",
+        : operation === "update-project-routes"
+          ? "Actualización de rutas aceptada; no se reiniciará el contenedor."
+          : "Retiro aceptado; el agente validará la propiedad del servicio.",
     };
   }
 
@@ -1232,6 +1287,7 @@ export function createServiceOperationAgent({
 
   return {
     getStatus,
+    getProjectBuildStatus,
     hasGiteaCredentials,
     consumeGiteaCredentials,
     hasPostgresqlCredentials,
@@ -1249,6 +1305,8 @@ export function createServiceOperationAgent({
     requestProjectBuild,
     requestProjectDeploy: (projectId, commitSha, requestId = createId()) =>
       requestProjectServiceOperation("deploy-project", projectId, commitSha, requestId),
+    requestProjectRouteUpdate: (projectId, domainsHash, requestId = createId()) =>
+      requestProjectServiceOperation("update-project-routes", projectId, undefined, requestId, domainsHash),
     stageApplicationDeployment,
     removeApplicationDeployment,
     requestApplicationDeploy,

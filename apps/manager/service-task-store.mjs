@@ -81,8 +81,12 @@ function mapTask(row, { includePayload = false } = {}) {
       }
       : {}),
     result: typeof row.result?.message === "string"
+      || (row.type === "project.build" && typeof row.result?.logs === "string")
       ? {
-        message: row.result.message,
+        ...(typeof row.result?.message === "string" ? { message: row.result.message } : {}),
+        ...(row.type === "project.build" && typeof row.result?.logs === "string"
+          ? { logs: row.result.logs }
+          : {}),
         ...(row.type === "application.gitea.install" && row.result.credentialsAvailable === true
           ? {
             url: row.result.url,
@@ -103,6 +107,24 @@ function mapTask(row, { includePayload = false } = {}) {
             image: row.result.image,
             commitSha: row.result.commitSha,
             branch: row.result.branch,
+            ...(typeof row.result.deploymentType === "string"
+              ? { deploymentType: row.result.deploymentType }
+              : {}),
+            ...(typeof row.result.buildStrategy === "string"
+              ? { buildStrategy: row.result.buildStrategy }
+              : {}),
+            ...(typeof row.result.buildContext === "string"
+              ? { buildContext: row.result.buildContext }
+              : {}),
+            ...(typeof row.result.dockerfilePath === "string"
+              ? { dockerfilePath: row.result.dockerfilePath }
+              : {}),
+            ...(typeof row.result.buildCommand === "string"
+              ? { buildCommand: row.result.buildCommand }
+              : {}),
+            ...(typeof row.result.buildOutputDirectory === "string"
+              ? { buildOutputDirectory: row.result.buildOutputDirectory }
+              : {}),
           }
           : {}),
         ...(row.type === "project.push-deploy" && typeof row.result.image === "string"
@@ -620,10 +642,11 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     }
   }
 
-  async function failTask(id, workerId, message, retryable = true) {
+  async function failTask(id, workerId, message, retryable = true, taskResult = null) {
     if (!uuidPattern.test(id) || !uuidPattern.test(workerId)
       || typeof message !== "string" || message.length < 1 || message.length > 500
-      || typeof retryable !== "boolean") {
+      || typeof retryable !== "boolean"
+      || (taskResult !== null && (!taskResult || typeof taskResult !== "object" || Array.isArray(taskResult)))) {
       throw new TypeError("Task failure fields are invalid.");
     }
     const client = await pool.connect();
@@ -632,7 +655,7 @@ export function createTaskStore({ pool, insertAuditEvent }) {
       const updated = await client.query(
         `UPDATE tasks
          SET status = CASE WHEN $3 AND attempts < max_attempts THEN 'pending' ELSE 'failed' END,
-             error = $4,
+             error = $4, result = COALESCE($5::jsonb, result),
              completed_at = CASE WHEN $3 AND attempts < max_attempts THEN NULL ELSE now() END,
              next_attempt_at = CASE
                WHEN $3 AND attempts < max_attempts
@@ -642,7 +665,7 @@ export function createTaskStore({ pool, insertAuditEvent }) {
              lease_token = NULL, lease_expires_at = NULL, updated_at = now()
          WHERE id = $1 AND status = 'in_progress' AND lease_token = $2
          RETURNING type, status, attempts, max_attempts`,
-        [id, workerId, retryable, message],
+        [id, workerId, retryable, message, taskResult === null ? null : JSON.stringify(taskResult)],
       );
       if (updated.rowCount === 1 && updated.rows[0].status === "failed") {
         await insertAuditEvent(client, {
@@ -728,6 +751,24 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     return result.rows.map((row) => mapTask(row));
   }
 
+  async function getLatestProjectBuildOperations(projectIds) {
+    if (!Array.isArray(projectIds) || projectIds.some((id) => typeof id !== "string" || !uuidPattern.test(id))) {
+      throw new TypeError("The project identifiers are invalid.");
+    }
+    if (projectIds.length === 0) return [];
+    const result = await pool.query(
+      `SELECT DISTINCT ON (payload->>'projectId')
+         id, type, status, payload, result, error, attempts, max_attempts, next_attempt_at,
+         created_at, updated_at, started_at, completed_at
+       FROM tasks
+       WHERE type IN ('project.build', 'project.push-deploy')
+         AND payload->>'projectId' = ANY($1::text[])
+       ORDER BY payload->>'projectId', created_at DESC, id DESC`,
+      [projectIds],
+    );
+    return result.rows.map((row) => mapTask(row));
+  }
+
   async function getRecentProjectDeployments(projectIds) {
     if (!Array.isArray(projectIds) || projectIds.some((id) => typeof id !== "string" || !uuidPattern.test(id))) {
       throw new TypeError("The project identifiers are invalid.");
@@ -756,6 +797,7 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     getTaskById,
     getLatestTaskByType,
     getLatestProjectBuilds,
+    getLatestProjectBuildOperations,
     getRecentProjectDeployments,
     recordGiteaWebhookDelivery,
     recordGithubWebhookDelivery,

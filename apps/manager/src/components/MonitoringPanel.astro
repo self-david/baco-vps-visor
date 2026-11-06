@@ -9,7 +9,18 @@
                   </div>
                 </div>
                 <p id="metrics-status" class="muted metrics-status" aria-live="polite"></p>
+                <div id="metrics-total" class="metrics-total hidden" aria-live="polite"></div>
                 <div id="metrics-groups" class="metrics-groups hidden" aria-live="polite"></div>
+                <section class="metrics-individual" aria-labelledby="metrics-individual-title">
+                  <h4 id="metrics-individual-title">Consumo por contenedor</h4>
+                  <div class="resource-list-scroll">
+                    <table class="metrics-table">
+                      <thead><tr><th>Contenedor</th><th>Grupo / proyecto</th><th>CPU</th><th>Memoria</th></tr></thead>
+                      <tbody id="metrics-containers"></tbody>
+                    </table>
+                  </div>
+                  <p id="metrics-empty" class="muted">Actualiza CPU/RAM para consultar los contenedores activos.</p>
+                </section>
                 <section class="metrics-history" aria-labelledby="metrics-history-title">
                   <div class="history-heading"><h4 id="metrics-history-title">Histórico · últimas 24 horas</h4></div>
                   <form id="metrics-settings-form" class="metrics-settings">

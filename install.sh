@@ -277,7 +277,10 @@ if ! docker secret inspect vps_manager_backup_key >/dev/null 2>&1; then
   rm -f "${BACKUP_KEY_FILE}"
 fi
 
-docker buildx build --pull --load --tag "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
+DOCKER_CONFIG=/var/lib/vps-manager/service-operations/buildx-config \
+  bash "${SOURCE_DIR}/installer/configure-buildkit.sh"
+DOCKER_CONFIG=/var/lib/vps-manager/service-operations/buildx-config \
+  docker buildx build --builder vps-manager-projects --pull --load --tag "${IMAGE_NAME}" "${SOURCE_DIR}/apps/manager"
 umask 077
 install -d -m 0700 "${INSTALL_DIR}"
 install -d -o 1000 -g 1000 -m 0700 /var/lib/vps-manager/backups
@@ -320,7 +323,8 @@ else
   PANEL_SCHEME="https"
   export VPS_MANAGER_DOMAIN="${DOMAIN}" VPS_MANAGER_EMAIL="${EMAIL}" VPS_MANAGER_TEST_MODE=false
 fi
-docker stack deploy --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
+docker stack deploy --detach=true --with-registry-auth -c "${STACK_FILE}" "${STACK_NAME}"
+log "El despliegue de Swarm fue enviado; esperando que ${STACK_NAME}_manager inicie ${IMAGE_NAME} (hasta 180 segundos)."
 manager_image_ready=false
 for attempt in $(seq 1 90); do
   service_image="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "${STACK_NAME}_manager" 2>/dev/null || true)"
@@ -335,7 +339,7 @@ for attempt in $(seq 1 90); do
     done < <(docker service ps "${STACK_NAME}_manager" --format '{{.CurrentState}}|{{.Image}}' 2>/dev/null || true)
   fi
   if [[ "${manager_image_ready}" == "true" ]]; then break; fi
-  if (( attempt % 10 == 0 )); then
+  if (( attempt % 5 == 0 )); then
     log "Esperando que Swarm inicie ${IMAGE_NAME} (${attempt}/90)."
   fi
   sleep 2
@@ -361,7 +365,7 @@ while IFS= read -r managed_service_name; do
   fi
 done <<< "${managed_service_names}"
 
-log "Esperando que los servicios de Swarm inicien."
+log "El manager inició; esperando que los servicios de Swarm estén listos (hasta 180 segundos)."
 service_total=0
 service_count=0
 service_status=""
@@ -373,7 +377,7 @@ for attempt in $(seq 1 90); do
   if [[ "${service_total}" -ge 4 && "${service_count}" == "${service_total}" ]]; then
     break
   fi
-  if (( attempt % 10 == 0 )); then
+  if (( attempt % 5 == 0 )); then
     log "Servicios Swarm listos: ${service_count}/${service_total} (${attempt}/90). Estado actual:"
     if [[ -n "${service_status}" ]]; then
       while IFS= read -r service_line; do

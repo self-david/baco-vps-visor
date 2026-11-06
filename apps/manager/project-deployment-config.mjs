@@ -124,8 +124,11 @@ export async function getProjectDeploymentConfig(directory, projectId) {
   const sortedDomains = [...domains].sort((left, right) =>
     left.hostname < right.hostname ? -1 : left.hostname > right.hostname ? 1 : 0);
   const canonical = JSON.stringify({ deploymentType, environment: sortedEnvironment, domains: sortedDomains });
+  const environmentHash = createHash("sha256")
+    .update(JSON.stringify({ deploymentType, environment: sortedEnvironment })).digest("hex");
+  const domainsHash = createHash("sha256").update(JSON.stringify(sortedDomains)).digest("hex");
   const configHash = createHash("sha256").update(canonical).digest("hex");
-  return { deploymentType, environment, domains, configHash };
+  return { deploymentType, environment, domains, configHash, environmentHash, domainsHash };
 }
 
 export async function saveProjectDeploymentType(directory, projectId, deploymentType) {

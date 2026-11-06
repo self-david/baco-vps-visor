@@ -6,38 +6,42 @@
   <textarea id="project-description" name="description" rows="2" maxlength="500"></textarea>
   <label for="project-deployment-type">Tipo de despliegue</label>
   <select id="project-deployment-type" name="deploymentType">
-    <option value="static">Estático (HTML, CSS y JavaScript vanilla)</option>
-    <option value="dynamic">Dinámico (Node, Python u otro servidor)</option>
-    <option value="build">Build + despliegue (compilar e iniciar automáticamente)</option>
+    <option value="static">Archivos estáticos (HTML, CSS y JavaScript)</option>
+    <option value="dynamic">Aplicación dinámica (Node, Python u otro servidor)</option>
+    <option value="build">Sitio compilado (comando de build y salida estática)</option>
   </select>
   <p id="project-deployment-type-help" class="muted">Elige el perfil que mejor describe cómo debe publicarse el proyecto.</p>
   <div id="project-dynamic-build-fields">
-  <div id="project-build-strategy-field">
-    <label for="project-build-strategy">Método de build</label>
-    <select id="project-build-strategy" name="buildStrategy">
-      <option value="dockerfile">Dockerfile</option>
-      <option value="railpack">Railpack (autodetección)</option>
-    </select>
+    <div id="project-build-strategy-field">
+      <label for="project-build-strategy">Método de build</label>
+      <select id="project-build-strategy" name="buildStrategy">
+        <option value="dockerfile">Dockerfile</option>
+        <option value="railpack">Railpack (autodetección)</option>
+      </select>
+    </div>
+    <div id="project-build-context-field">
+      <label for="project-build-context">Directorio de contexto</label>
+      <input id="project-build-context" name="buildContext" value="." pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+    </div>
+    <div id="project-build-output-fields">
+      <label for="project-build-command">Comando de compilación</label>
+      <input id="project-build-command" name="buildCommand" value="npm run build" maxlength="255" required>
+      <label for="project-build-output-directory">Directorio de salida</label>
+      <input id="project-build-output-directory" name="buildOutputDirectory" value="dist" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+      <p class="muted">Solo para sitios compilados: instala dependencias según el lockfile, ejecuta el comando y publica la carpeta con Nginx.</p>
+    </div>
+    <div id="project-dockerfile-field">
+      <label for="project-dockerfile">Ruta del Dockerfile</label>
+      <input id="project-dockerfile" name="dockerfilePath" value="Dockerfile" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
+    </div>
+    <div id="project-port-field">
+      <label for="project-port">Puerto interno de la aplicación</label>
+      <input id="project-port" name="internalPort" type="number" min="1" max="65535" value="3000" required>
+      <div id="project-port-usage" class="project-port-usage" aria-live="polite"></div>
+    </div>
   </div>
-  <div id="project-build-context-field">
-    <label for="project-build-context">Directorio de contexto</label>
-    <input id="project-build-context" name="buildContext" value="." pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
-  </div>
-  <div id="project-build-output-fields">
-    <label for="project-build-command">Comando de compilación</label>
-    <input id="project-build-command" name="buildCommand" value="npm run build" maxlength="255" required>
-    <label for="project-build-output-directory">Directorio de salida</label>
-    <input id="project-build-output-directory" name="buildOutputDirectory" value="dist" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
-    <p class="muted">Build instala dependencias según el lockfile, ejecuta este comando y publica el directorio con Nginx (puerto 80).</p>
-  </div>
-  <div id="project-dockerfile-field">
-    <label for="project-dockerfile">Ruta del Dockerfile</label>
-    <input id="project-dockerfile" name="dockerfilePath" value="Dockerfile" pattern="[A-Za-z0-9._\x2f\x2d]{1,255}" required>
-  </div>
-  <label for="project-port">Puerto interno de la aplicación</label>
-  <input id="project-port" name="internalPort" type="number" min="1" max="65535" value="3000" required>
-  </div>
-  <label class="checkbox-label"><input id="project-auto-deploy" name="autoDeploy" type="checkbox" checked> Desplegar automáticamente al recibir pushes en la rama</label>
+  <label class="checkbox-label"><input id="project-auto-deploy" name="autoDeploy" type="checkbox" checked> Compilar y desplegar automáticamente al recibir cambios en la rama de producción</label>
+  <p id="project-auto-deploy-help" class="muted">Disponible para proyectos conectados a GitHub. Los proyectos cargados por ZIP se publican manualmente.</p>
   <p id="project-form-status" class="muted" role="status" aria-live="polite"></p>
   <div class="project-actions">
     <button id="project-save" class="button" type="submit">Guardar proyecto</button>

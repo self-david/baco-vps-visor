@@ -132,12 +132,13 @@ function createFakePool({ projects = [] } = {}) {
             return { rowCount: 1, rows: [{ type: task.type }] };
           }
           if (sql.includes("SET status = CASE")) {
-            const [id, token, retryable, message] = values;
+            const [id, token, retryable, message, result] = values;
             const task = tasks.get(id);
             if (!task || task.status !== "in_progress" || task.lease_token !== token) {
               return { rowCount: 0, rows: [] };
             }
             task.error = message;
+            if (result !== null) task.result = JSON.parse(result);
             task.lease_token = null;
             task.lease_expires_at = null;
             if (retryable && task.attempts < task.max_attempts) {
@@ -209,6 +210,20 @@ function createFakePool({ projects = [] } = {}) {
               && projectIds.includes(candidate.payload.projectId))
             .sort((left, right) => right.created_at - left.created_at || right.id.localeCompare(left.id)),
         };
+      }
+      if (sql.includes("SELECT DISTINCT ON (payload->>'projectId')")
+        && !sql.includes("AND status = 'completed'")) {
+        const projectIds = values[0];
+        const latestByProject = new Map();
+        for (const candidate of [...tasks.values()]
+          .filter((task) => ["project.build", "project.push-deploy"].includes(task.type)
+            && projectIds.includes(task.payload.projectId))
+          .sort((left, right) => right.created_at - left.created_at || right.id.localeCompare(left.id))) {
+          if (!latestByProject.has(candidate.payload.projectId)) {
+            latestByProject.set(candidate.payload.projectId, candidate);
+          }
+        }
+        return { rows: [...latestByProject.values()] };
       }
       if (sql.includes("SELECT DISTINCT ON (payload->>'projectId')")) {
         const projectIds = values[0];
@@ -516,6 +531,7 @@ test("returns complete deployment history for selected projects", async () => {
   const history = await store.getRecentProjectDeployments([projectId]);
   assert.equal(history.length, 2);
   assert.equal(history[0].status, "failed");
+  assert.equal(history[0].commitSha, "b".repeat(40));
   assert.equal(history[1].result.commitSha, "a".repeat(40));
   assert.deepEqual(await store.getRecentProjectDeployments([]), []);
   await assert.rejects(store.getRecentProjectDeployments(["invalid"]), /identifiers are invalid/);
@@ -542,6 +558,11 @@ test("validates and serializes project image build tasks without allowing duplic
     id: workerId,
   }), { code: "PROJECT_BUILD_IN_PROGRESS" });
   assert.equal((await store.claimNextTask(workerId, 60)).projectName, "project");
+  const [activeBuild] = await store.getLatestProjectBuildOperations([projectId]);
+  assert.equal(activeBuild.status, "in_progress");
+  assert.equal(activeBuild.projectId, projectId);
+  assert.deepEqual(await store.getLatestProjectBuildOperations([]), []);
+  await assert.rejects(store.getLatestProjectBuildOperations(["invalid"]), /identifiers are invalid/);
 });
 
 test("serializes project deploy and removal tasks and lists the latest successful image", async () => {
@@ -580,10 +601,22 @@ test("serializes project deploy and removal tasks and lists the latest successfu
     image: `registry.example.com/vps-manager-project-${projectId.replaceAll("-", "")}:${"b".repeat(40)}`,
     commitSha: "b".repeat(40),
     branch: "main",
+    deploymentType: "build",
+    buildStrategy: "dockerfile",
+    buildContext: ".",
+    dockerfilePath: "Dockerfile",
+    buildCommand: "npm run build",
+    buildOutputDirectory: "dist",
   });
   const [latestBuild] = await store.getLatestProjectBuilds([projectId]);
   assert.equal(latestBuild.projectId, projectId);
   assert.equal(latestBuild.result.commitSha, "b".repeat(40));
+  assert.equal(latestBuild.result.deploymentType, "build");
+  assert.equal(latestBuild.result.buildStrategy, "dockerfile");
+  assert.equal(latestBuild.result.buildContext, ".");
+  assert.equal(latestBuild.result.dockerfilePath, "Dockerfile");
+  assert.equal(latestBuild.result.buildCommand, "npm run build");
+  assert.equal(latestBuild.result.buildOutputDirectory, "dist");
   assert.deepEqual(await store.getLatestProjectBuilds([]), []);
   await assert.rejects(store.getLatestProjectBuilds(["invalid"]), /identifiers are invalid/);
 });
@@ -701,6 +734,28 @@ test("retries recoverable failures and makes terminal failures auditable", async
   assert.equal(auditEvents.at(-1).action, "service.restart.failed");
   assert.equal(auditEvents.at(-1).details.attempts, 2);
   assert.equal((await store.listRecentTasks())[0].completedAt, "2026-11-03T18:02:00.000Z");
+});
+
+test("retains project build logs when a task fails", async () => {
+  const { store, tasks } = createFakePool();
+  const projectId = "9a7f51bd-13bf-4c7a-9b03-9ba000000002";
+  await store.createTask({
+    id: taskId,
+    type: "project.build",
+    payload: { projectId, projectName: "project", repository: "owner/project", branch: "main" },
+    maxAttempts: 1,
+  });
+  await store.claimNextTask(workerId);
+  const logs = "#1 loading build definition\nERROR: failed";
+  await store.failTask(taskId, workerId, "BuildKit failed.", false, {
+    message: "BuildKit failed.",
+    logs,
+  });
+
+  const failedTask = await store.getTaskById(taskId);
+  assert.equal(failedTask.status, "failed");
+  assert.deepEqual(failedTask.result, { message: "BuildKit failed.", logs });
+  assert.equal(tasks.get(taskId).result.logs, logs);
 });
 
 test("validates task fields, attempt bounds, lease parameters and history limits", async () => {

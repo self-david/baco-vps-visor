@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,6 +55,14 @@ test("persists project variables and domains in private host-side files", async 
         { hostname: "admin.example.com", port: 8080 },
       ],
       configHash: "ca7f199ea0c7f56052544b6b8ebd5b762bb692ad9a88c71b9e19037d2a74e872",
+      environmentHash: createHash("sha256").update(JSON.stringify({
+        deploymentType: "dynamic",
+        environment: { API_URL: "https://api.example.com", MULTILINE: "one\ntwo" },
+      })).digest("hex"),
+      domainsHash: createHash("sha256").update(JSON.stringify([
+        { hostname: "admin.example.com", port: 8080 },
+        { hostname: "app.example.com", port: 3000 },
+      ])).digest("hex"),
     });
     const metadata = await stat(join(directory, `project-config-${projectId}.json`));
     if (process.platform !== "win32") assert.equal(metadata.mode & 0o077, 0);
@@ -63,6 +72,8 @@ test("persists project variables and domains in private host-side files", async 
     const staticDeploymentConfig = await getProjectDeploymentConfig(directory, projectId);
     assert.equal(staticDeploymentConfig.deploymentType, "static");
     assert.notEqual(staticDeploymentConfig.configHash, deploymentConfig.configHash);
+    assert.notEqual(staticDeploymentConfig.environmentHash, deploymentConfig.environmentHash);
+    assert.equal(staticDeploymentConfig.domainsHash, deploymentConfig.domainsHash);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

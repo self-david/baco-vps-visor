@@ -15,6 +15,5 @@ StandardError=journal
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-PrivateNetwork=true
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/vps-manager/service-operations /var/lib/vps-manager/registry
