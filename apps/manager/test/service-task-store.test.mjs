@@ -8,17 +8,20 @@ const serviceId = "7p9aac885t16uxz1f5gdftz17";
 
 function createFakePool({ projects = [] } = {}) {
   const tasks = new Map();
+  const applicationInstances = new Map();
   const deliveries = new Set();
   const auditEvents = [];
   const pool = {
     async connect() {
       let snapshot;
+      let applicationInstancesSnapshot;
       let deliverySnapshot;
       let auditSize;
       return {
         async query(sql, values = []) {
           if (sql === "BEGIN") {
             snapshot = structuredClone(tasks);
+            applicationInstancesSnapshot = structuredClone(applicationInstances);
             deliverySnapshot = new Set(deliveries);
             auditSize = auditEvents.length;
             return { rowCount: 0 };
@@ -27,10 +30,25 @@ function createFakePool({ projects = [] } = {}) {
           if (sql === "ROLLBACK") {
             tasks.clear();
             for (const [id, task] of snapshot ?? []) tasks.set(id, task);
+            applicationInstances.clear();
+            for (const [id, instance] of applicationInstancesSnapshot ?? []) applicationInstances.set(id, instance);
             deliveries.clear();
             for (const id of deliverySnapshot ?? []) deliveries.add(id);
             auditEvents.length = auditSize ?? auditEvents.length;
             return { rowCount: 0 };
+          }
+          if (sql.includes("UPDATE application_instances") && sql.includes("deployment_task_id")) {
+            let rowCount = 0;
+            for (const instance of applicationInstances.values()) {
+              const task = tasks.get(instance.deployment_task_id);
+              if (instance.application_id === "supabase" && instance.status === "installing"
+                && task?.type === "application.custom.deploy"
+                && task.payload.applicationId === "supabase" && task.status === "failed") {
+                instance.status = "failed";
+                rowCount += 1;
+              }
+            }
+            return { rowCount };
           }
           if (sql.includes("pg_advisory_xact_lock")) return { rowCount: 1 };
           if (sql.includes("INSERT INTO gitea_webhook_deliveries")
@@ -243,7 +261,7 @@ function createFakePool({ projects = [] } = {}) {
     pool,
     insertAuditEvent: async (_client, event) => auditEvents.push(event),
   });
-  return { pool, store, tasks, deliveries, auditEvents };
+  return { pool, store, tasks, applicationInstances, deliveries, auditEvents };
 }
 
 test("persists service requests and audit events in one transaction", async () => {
@@ -704,6 +722,27 @@ test("claims tasks with a lease, records attempts and recovers expired work", as
   const recovered = await store.claimNextTask(workerId, 60);
   assert.equal(recovered.id, taskId);
   assert.equal(recovered.attempts, 2);
+});
+
+test("marks a Supabase instance failed when its deployment task was interrupted", async () => {
+  const instanceId = "f3a5e0bb-4911-4d38-8846-04bd9c917134";
+  const { store, tasks, applicationInstances } = createFakePool();
+  await store.createTask({
+    id: taskId,
+    type: "application.custom.deploy",
+    payload: { applicationId: "supabase", applicationName: "Supabase test", instanceId },
+    maxAttempts: 1,
+  });
+  tasks.get(taskId).status = "failed";
+  applicationInstances.set(instanceId, {
+    id: instanceId,
+    application_id: "supabase",
+    status: "installing",
+    deployment_task_id: taskId,
+  });
+
+  assert.equal(await store.claimNextTask(workerId), null);
+  assert.equal(applicationInstances.get(instanceId).status, "failed");
 });
 
 test("records completion and only accepts updates from the current lease owner", async () => {

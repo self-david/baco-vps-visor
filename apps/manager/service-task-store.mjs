@@ -566,6 +566,17 @@ export function createTaskStore({ pool, insertAuditEvent }) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(`
+        UPDATE application_instances AS instance
+        SET status = 'failed', updated_at = now()
+        FROM tasks
+        WHERE instance.application_id = 'supabase'
+          AND instance.status = 'installing'
+          AND instance.deployment_task_id = tasks.id
+          AND tasks.type = 'application.custom.deploy'
+          AND tasks.payload->>'applicationId' = 'supabase'
+          AND tasks.status = 'failed'
+      `);
       const exhausted = await client.query(
         `UPDATE tasks
          SET status = 'failed', error = 'La tarea agotó sus intentos durante una interrupción.',
