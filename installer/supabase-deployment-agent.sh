@@ -330,6 +330,19 @@ PY
   fi
   cp -a "${source_directory}/docker/." "${application_directory}/"
 
+  for init_script in "${application_directory}"/volumes/db/*.sql; do
+    if [[ -L "${init_script}" || ! -f "${init_script}" ]]; then
+      write_status "failed" "Falta un archivo SQL seguro de inicialización de Supabase."
+      rm -rf -- "${temporary_directory}"
+      return 1
+    fi
+    if ! chmod 0644 -- "${init_script}"; then
+      write_status "failed" "No se pudieron habilitar permisos de lectura para los SQL de inicialización de Supabase."
+      rm -rf -- "${temporary_directory}"
+      return 1
+    fi
+  done
+
   if ! python3 - "${temporary_directory}/metadata.json" "${application_directory}" "${compose_project}" "${request_id}" "${instance_id}" "${credentials_temp_path}" <<'PY'
 import base64
 import hashlib
@@ -447,7 +460,7 @@ values = {
     "STUDIO_DEFAULT_ORGANIZATION": configuration["organizationName"],
     "STUDIO_DEFAULT_PROJECT": configuration["projectName"],
     "SMTP_HOST": "",
-    "SMTP_PORT": "",
+    "SMTP_PORT": "2500",
     "SMTP_USER": "",
     "SMTP_PASS": "",
     "SMTP_ADMIN_EMAIL": "",

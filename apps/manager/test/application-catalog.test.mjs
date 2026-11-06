@@ -56,6 +56,8 @@ test("Supabase source files are readable in containers despite the service agent
 
   assert.match(agent, /if ! \(\s*umask 022[\s\S]*git init[\s\S]*git -C "\$\{clone_directory\}" checkout/);
   assert.match(agent, /chmod -R a\+rX -- "\$\{source_directory\}\/docker"/);
+  assert.match(agent, /for init_script in "\$\{application_directory\}"\/volumes\/db\/\*\.sql; do[\s\S]*chmod 0644 -- "\$\{init_script\}"/);
+  assert.match(agent, /"SMTP_PORT": "2500"/);
   assert.match(agent, /compose_error="\$\("\$\{compose_command\[@\]\}" up --detach --remove-orphans 2>&1\)"/);
   assert.match(agent, /Docker Compose no pudo iniciar el stack self-hosted de Supabase\. Detalle:/);
 });
