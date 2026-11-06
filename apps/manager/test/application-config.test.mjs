@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getN8nDefaultConfiguration,
   getSupabaseDefaultConfiguration,
+  validateN8nInstanceConfiguration,
   validateSupabaseInstanceConfiguration,
 } from "../application-config.mjs";
 
@@ -14,6 +16,29 @@ function validConfiguration(overrides = {}) {
     ...overrides,
   };
 }
+
+test("validates n8n version, timezone, and resource limits with safe defaults", () => {
+  assert.deepEqual(validateN8nInstanceConfiguration({}), getN8nDefaultConfiguration());
+  assert.deepEqual(validateN8nInstanceConfiguration({
+    version: "2.50.1",
+    timezone: "America/Mexico_City",
+    cpus: 2,
+    memoryMb: 3072,
+  }), {
+    version: "2.50.1",
+    timezone: "America/Mexico_City",
+    cpus: 2,
+    memoryMb: 3072,
+  });
+});
+
+test("rejects unpinned versions, invalid timezones, and unsafe n8n resource limits", () => {
+  assert.throws(() => validateN8nInstanceConfiguration({ version: "latest" }), /versión estable fijada/);
+  assert.throws(() => validateN8nInstanceConfiguration({ timezone: "Mars/Olympus" }), /zona horaria IANA/);
+  assert.throws(() => validateN8nInstanceConfiguration({ cpus: 0 }), /límite de CPU/);
+  assert.throws(() => validateN8nInstanceConfiguration({ memoryMb: 128 }), /memoria de n8n/);
+  assert.throws(() => validateN8nInstanceConfiguration({ encryptionKey: "not-allowed" }), /campos no permitidos/);
+});
 
 test("validates and normalizes a complete Supabase instance configuration", () => {
   const configuration = validateSupabaseInstanceConfiguration(validConfiguration({

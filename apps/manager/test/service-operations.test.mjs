@@ -127,8 +127,14 @@ test("stages SSH credentials separately from the Swarm node request", async () =
 
 test("queues n8n installation without including generated encryption material", async () => {
   const fixture = await createFixture();
+  const configuration = {
+    version: "2.46.4",
+    timezone: "America/Mexico_City",
+    cpus: 1.5,
+    memoryMb: 2048,
+  };
   try {
-    const operation = await fixture.agent.requestN8nInstall("automation.example.com", requestId);
+    const operation = await fixture.agent.requestN8nInstall("automation.example.com", configuration, requestId);
     const requestContents = await readFile(join(fixture.directory, "request.json"), "utf8");
 
     assert.deepEqual(operation, {
@@ -142,6 +148,7 @@ test("queues n8n installation without including generated encryption material", 
       id: requestId,
       operation: "install-n8n",
       domain: "automation.example.com",
+      configuration,
     });
     await assert.rejects(fixture.agent.requestN8nInstall("automation.example.com;id"), /hostname público válido/);
   } finally {

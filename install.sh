@@ -42,11 +42,13 @@ trap 'cleanup; on_error "$LINENO"' ERR
 trap cleanup EXIT
 
 [[ "${EUID}" -eq 0 ]] || fail "Ejecuta como root: curl -fsSL <URL>/install.sh | sudo bash"
-command -v apt-get >/dev/null 2>&1 || fail "Este instalador solo admite Ubuntu Server 24.04 LTS."
+command -v apt-get >/dev/null 2>&1 || fail "Se requiere apt-get para instalar las dependencias del VPS."
 command -v ss >/dev/null 2>&1 || fail "No se encontró ss (iproute2); instala iproute2 y vuelve a intentar."
 [[ -r /etc/os-release ]] || fail "No se pudo identificar el sistema operativo."
 . /etc/os-release
-[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || fail "Sistema no compatible. Se requiere Ubuntu 24.04 LTS."
+if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
+  log "ADVERTENCIA: el sistema no es Ubuntu Server 24.04 LTS; la instalación continuará, pero esta plataforma no está validada."
+fi
 
 case "$(uname -m)" in
   x86_64) DOCKER_ARCH="amd64" ;;

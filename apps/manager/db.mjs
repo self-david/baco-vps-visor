@@ -863,7 +863,7 @@ export async function createN8nInstallTask(task) {
   return createTask({
     id: task.id,
     type: "application.n8n.install",
-    payload: { domain: task.domain },
+    payload: { domain: task.domain, configuration: task.configuration, instanceId: task.instanceId },
     maxAttempts: 1,
   });
 }
@@ -999,6 +999,26 @@ export async function updateManualApplicationDeployment(instanceId, taskId, { st
     UPDATE application_instances
     SET status = $3, service_id = $4, updated_at = now()
     WHERE id = $1 AND deployment_task_id = $2
+    RETURNING id
+  `, [instanceId, taskId, status, serviceId]);
+  return result.rowCount === 1;
+}
+
+export async function beginApplicationInstanceDeployment(instanceId, taskId) {
+  const result = await pool.query(`
+    UPDATE application_instances
+    SET status = 'installing', deployment_task_id = $2, updated_at = now()
+    WHERE id = $1 AND application_id = 'n8n'
+    RETURNING id
+  `, [instanceId, taskId]);
+  return result.rowCount === 1;
+}
+
+export async function updateApplicationInstanceDeployment(instanceId, taskId, { status, serviceId = null }) {
+  const result = await pool.query(`
+    UPDATE application_instances
+    SET status = $3, service_id = $4, updated_at = now()
+    WHERE id = $1 AND deployment_task_id = $2 AND application_id = 'n8n'
     RETURNING id
   `, [instanceId, taskId, status, serviceId]);
   return result.rowCount === 1;

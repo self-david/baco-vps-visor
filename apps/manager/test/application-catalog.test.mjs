@@ -26,6 +26,19 @@ test("the project service agent can reach external registries inside its systemd
   assert.doesNotMatch(serviceUnit, /^PrivateNetwork=true$/m);
 });
 
+test("Ubuntu 24.04 compatibility checks warn and continue in both installation flows", async () => {
+  const [installer, nodeEnrollment] = await Promise.all([
+    readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/swarm-node-enroll.sh", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(installer, /if \[\[ "\$\{ID:-\}" != "ubuntu" \|\| "\$\{VERSION_ID:-\}" != "24\.04" \]\]; then\s+log "ADVERTENCIA:/);
+  assert.doesNotMatch(installer, /\[\[ "\$\{ID:-\}" == "ubuntu" && "\$\{VERSION_ID:-\}" == "24\.04" \]\] \|\| fail/);
+  assert.match(nodeEnrollment, /if \[\[ "\\\$\{ID:-\}" != "ubuntu" \|\| "\\\$\{VERSION_ID:-\}" != "24\.04" \]\]; then\s+printf 'ADVERTENCIA:/);
+  assert.doesNotMatch(nodeEnrollment, /\\\[\[ "\\\$\{ID:-\}" == "ubuntu" && "\\\$\{VERSION_ID:-\}" == "24\.04" \]\] \\\s+\|\| fail/);
+  assert.match(nodeEnrollment, /if \[\[ "\\\$\{codename\}" != "noble" \]\]; then\s+printf 'ADVERTENCIA:/);
+});
+
 test("the project deployment agent is installed and loaded separately from general service operations", async () => {
   const [serviceAgent, installer] = await Promise.all([
     readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8"),
@@ -293,8 +306,8 @@ test("project file selection displays a nested filename tree and project cards o
   assert.match(application, /HTTP \$\{response\.status\}: \$\{responseMessage\}/);
   assert.match(application, /deploymentType: githubDeploymentTypeSelect\.value/);
   assert.match(application, /function updateProjectDeploymentFields\(\)/);
-  assert.match(application, /project\.deployment\?\.mode === "replicated"/);
-  assert.match(application, /instancia independiente en el VPS principal/);
+  assert.doesNotMatch(application, /function renderLegacyProjects\(\)/);
+  assert.doesNotMatch(application, /projectEnvironmentJson/);
   assert.match(application, /connectDomains\.href = "\/#tab-domains"/);
   assert.match(projectDetailView, /data-project-tab-panel="deploy"/);
   assert.match(projectDetailView, /id="project-detail-file-tree"/);
@@ -433,7 +446,7 @@ test("manager serves browser ES modules with a JavaScript content type", async (
   assert.match(server, /"\.mjs":\s*"text\/javascript; charset=utf-8"/);
 });
 
-test("n8n is pinned to a versioned image and declares managed persistence and HTTPS", async () => {
+test("n8n uses a validated versioned image and declares managed persistence and HTTPS", async () => {
   const n8n = applicationCatalog.find((application) => application.id === "n8n");
   const serviceAgent = await readFile(new URL("../../../installer/service-agent.sh", import.meta.url), "utf8");
 
@@ -441,7 +454,7 @@ test("n8n is pinned to a versioned image and declares managed persistence and HT
   assert.equal(n8n.installation.status, "optional");
   assert.equal(n8n.installation.enabled, true);
   assert.match(n8n.image, /^n8nio\/n8n:\d+\.\d+\.\d+$/);
-  assert.ok(serviceAgent.includes(`readonly N8N_IMAGE="${n8n.image}"`));
+  assert.ok(serviceAgent.includes('readonly N8N_IMAGE="n8nio/n8n:${n8n_version}"'));
   assert.match(n8n.features.join(" "), /volumen persistente administrado/);
   assert.match(n8n.features.join(" "), /HTTPS/);
   assert.match(n8n.features.join(" "), /secreto Swarm/);

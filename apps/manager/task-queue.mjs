@@ -243,44 +243,60 @@ export function createGiteaInstallHandler(agent, { pollIntervalMs = 1000 } = {})
   };
 }
 
-export function createN8nInstallHandler(agent, { pollIntervalMs = 1000 } = {}) {
+export function createN8nInstallHandler(agent, { updateInstance, pollIntervalMs = 1000 } = {}) {
   if (!agent || typeof agent.requestN8nInstall !== "function" || typeof agent.getStatus !== "function"
+    || (updateInstance !== undefined && typeof updateInstance !== "function")
     || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 100) {
     throw new TypeError("The n8n installation task handler configuration is invalid.");
   }
 
   return async (task, signal) => {
     const domain = task.payload?.domain;
+    const configuration = task.payload?.configuration;
+    const instanceId = task.payload?.instanceId;
     if (task.type !== "application.n8n.install"
       || typeof domain !== "string"
       || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)
-      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)) {
-      throw new TaskExecutionError("La tarea contiene un dominio de n8n inválido.", { retryable: false });
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain)
+      || !configuration || typeof configuration !== "object" || Array.isArray(configuration)
+      || typeof instanceId !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(instanceId)) {
+      throw new TaskExecutionError("La tarea contiene una configuración de n8n inválida.", { retryable: false });
     }
-    if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
-    await agent.requestN8nInstall(domain, task.id);
+    try {
+      if (signal.aborted) throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+      await agent.requestN8nInstall(domain, configuration, task.id);
 
-    while (!signal.aborted) {
-      const operation = await agent.getStatus();
-      if (operation?.id === task.id) {
-        if (operation.operation !== "install-n8n" || operation.domain !== domain) {
-          throw new TaskExecutionError("El agente devolvió un resultado de instalación de n8n inconsistente.", {
-            retryable: false,
-          });
+      while (!signal.aborted) {
+        const operation = await agent.getStatus();
+        if (operation?.id === task.id) {
+          if (operation.operation !== "install-n8n" || operation.domain !== domain) {
+            throw new TaskExecutionError("El agente devolvió un resultado de instalación de n8n inconsistente.", {
+              retryable: false,
+            });
+          }
+          if (operation.state === "succeeded") {
+            if (updateInstance && !await updateInstance(instanceId, task.id, { status: "installed" })) {
+              throw new Error("No se pudo guardar el estado instalado de la instancia n8n.");
+            }
+            return {
+              message: `n8n está disponible en https://${domain}/.`,
+              url: `https://${domain}/`,
+            };
+          }
+          if (operation.state === "failed") {
+            throw new TaskExecutionError(operation.message, { retryable: false });
+          }
         }
-        if (operation.state === "succeeded") {
-          return {
-            message: `n8n está disponible en https://${domain}/.`,
-            url: `https://${domain}/`,
-          };
-        }
-        if (operation.state === "failed") {
-          throw new TaskExecutionError(operation.message, { retryable: false });
-        }
+        await waitForRetry(signal, pollIntervalMs);
       }
-      await waitForRetry(signal, pollIntervalMs);
+      throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
+    } catch (error) {
+      if (updateInstance && !await updateInstance(instanceId, task.id, { status: "failed" })) {
+        throw new AggregateError([error], "No se pudo guardar el estado fallido de la instancia n8n.");
+      }
+      throw error;
     }
-    throw signal.reason ?? new Error("La ejecución de la tarea fue interrumpida.");
   };
 }
 

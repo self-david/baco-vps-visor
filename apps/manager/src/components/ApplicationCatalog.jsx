@@ -114,7 +114,7 @@ export default function ApplicationCatalog() {
         <p className="muted">Automatiza flujos de trabajo con una instancia privada y persistente.</p>
         <ul className="roadmap-list">
           <li>Instancia única con SQLite y volumen persistente administrado</li>
-          <li>Acceso HTTPS con dominio raíz y subdominio elegidos al instalar</li>
+          <li>Versión, zona horaria y límites de recursos configurables desde el panel</li>
           <li>Clave de cifrado generada automáticamente y guardada como secreto Swarm</li>
         </ul>
         <label htmlFor="n8n-domain-zone">Dominio raíz</label>
@@ -124,6 +124,14 @@ export default function ApplicationCatalog() {
         <label htmlFor="n8n-subdomain">Subdominio (opcional)</label>
         <input id="n8n-subdomain" name="subdomain" type="text" placeholder="automatizacion" autoComplete="off" />
         <p className="muted">Déjalo vacío para usar el dominio raíz. Ejemplo: automatizacion.midominio.com.</p>
+        <label htmlFor="n8n-version">Versión de n8n</label>
+        <input id="n8n-version" name="version" type="text" pattern="[0-9]+\.[0-9]+\.[0-9]+" maxLength="32" defaultValue="2.46.4" required />
+        <label htmlFor="n8n-timezone">Zona horaria IANA</label>
+        <input id="n8n-timezone" name="timezone" type="text" maxLength="100" defaultValue="UTC" placeholder="America/Mexico_City" required />
+        <label htmlFor="n8n-cpus">Límite de CPU</label>
+        <input id="n8n-cpus" name="cpus" type="number" min="0.25" max="8" step="0.25" defaultValue="1" required />
+        <label htmlFor="n8n-memory">Memoria (MB)</label>
+        <input id="n8n-memory" name="memoryMb" type="number" min="256" max="16384" step="256" defaultValue="1536" required />
         <p id="n8n-status" className="application-status" role="status" aria-live="polite">
           Consultando disponibilidad…
         </p>

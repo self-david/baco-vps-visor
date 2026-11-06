@@ -61,6 +61,49 @@ export function getSupabaseDefaultConfiguration() {
   };
 }
 
+export function getN8nDefaultConfiguration() {
+  return {
+    version: "2.46.4",
+    timezone: "UTC",
+    cpus: 1,
+    memoryMb: 1536,
+  };
+}
+
+export function validateN8nInstanceConfiguration(input) {
+  const defaults = getN8nDefaultConfiguration();
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).some((key) => !Object.hasOwn(defaults, key))) {
+    throw new TypeError("La configuración de n8n contiene campos no permitidos.");
+  }
+  const configuration = { ...defaults, ...input };
+  if (typeof configuration.version !== "string"
+    || !/^\d+\.\d+\.\d+$/.test(configuration.version)) {
+    throw new TypeError("La versión de n8n debe ser una versión estable fijada como X.Y.Z.");
+  }
+  let validTimezone = false;
+  if (typeof configuration.timezone === "string" && configuration.timezone.length <= 100) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: configuration.timezone });
+      validTimezone = true;
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+    }
+  }
+  if (!validTimezone) {
+    throw new TypeError("Selecciona una zona horaria IANA válida para n8n.");
+  }
+  if (typeof configuration.cpus !== "number" || !Number.isFinite(configuration.cpus)
+    || configuration.cpus < 0.25 || configuration.cpus > 8) {
+    throw new RangeError("El límite de CPU de n8n debe estar entre 0.25 y 8.");
+  }
+  if (!Number.isInteger(configuration.memoryMb)
+    || configuration.memoryMb < 256 || configuration.memoryMb > 16384) {
+    throw new RangeError("La memoria de n8n debe estar entre 256 y 16384 MB.");
+  }
+  return configuration;
+}
+
 export function validateSupabaseInstanceConfiguration(input) {
   const defaults = getSupabaseDefaultConfiguration();
   const allowedFields = new Set([

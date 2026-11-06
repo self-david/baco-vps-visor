@@ -454,12 +454,22 @@ test("serializes n8n installation tasks without persisting encryption secrets", 
   const n8nTask = {
     id: taskId,
     type: "application.n8n.install",
-    payload: { domain: "automation.example.com" },
+    payload: {
+      domain: "automation.example.com",
+      configuration: {
+        version: "2.46.4",
+        timezone: "UTC",
+        cpus: 1,
+        memoryMb: 1536,
+      },
+      instanceId: workerId,
+    },
     maxAttempts: 1,
   };
   await store.createTask(n8nTask);
   assert.deepEqual(tasks.get(taskId).payload, n8nTask.payload);
   assert.equal((await store.getTaskById(taskId)).domain, n8nTask.payload.domain);
+  assert.deepEqual((await store.getTaskById(taskId)).configuration, n8nTask.payload.configuration);
   await assert.rejects(store.createTask({ ...n8nTask, id: workerId }), {
     code: "APPLICATION_TASK_IN_PROGRESS",
   });

@@ -73,6 +73,10 @@ const n8nUrl = document.querySelector("#n8n-url");
 const installN8nButton = document.querySelector("#install-n8n");
 const n8nDomainZoneSelect = document.querySelector("#n8n-domain-zone");
 const n8nSubdomainInput = document.querySelector("#n8n-subdomain");
+const n8nVersionInput = document.querySelector("#n8n-version");
+const n8nTimezoneInput = document.querySelector("#n8n-timezone");
+const n8nCpusInput = document.querySelector("#n8n-cpus");
+const n8nMemoryInput = document.querySelector("#n8n-memory");
 const postgresqlStatus = document.querySelector("#postgresql-status");
 const installPostgresqlButton = document.querySelector("#install-postgresql");
 const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
@@ -91,22 +95,15 @@ const manualApplicationSubmit = document.querySelector("#manual-app-submit");
 const manualApplicationsList = document.querySelector("#manual-applications-list");
 const manualApplicationsStatus = document.querySelector("#manual-applications-status");
 const manualApplicationServerSelect = document.querySelector("#manual-app-server");
-const projectApplicationsList = document.querySelector("#project-applications-list");
-const projectApplicationsStatus = document.querySelector("#project-applications-status");
 const revealGiteaCredentialsButton = document.querySelector("#reveal-gitea-credentials");
-const giteaCredentialsDialog = document.querySelector("#gitea-credentials-dialog");
 const giteaTokenForm = document.querySelector("#gitea-token-form");
-const giteaApiTokenInput = document.querySelector("#gitea-api-token");
 const giteaApiTokenStatus = document.querySelector("#gitea-api-token-status");
 const giteaRepositoryForm = document.querySelector("#gitea-repository-form");
-const giteaRepositoryStatus = document.querySelector("#gitea-repository-status");
-const giteaRepositoryResult = document.querySelector("#gitea-repository-result");
 const giteaBranchManagement = document.querySelector("#gitea-branch-management");
 const giteaBranchRepository = document.querySelector("#gitea-branch-repository");
 const giteaBranchRefresh = document.querySelector("#gitea-branch-refresh");
 const giteaWebhookConfigure = document.querySelector("#gitea-webhook-configure");
 const giteaWebhookStatus = document.querySelector("#gitea-webhook-status");
-const giteaDefaultBranchForm = document.querySelector("#gitea-default-branch-form");
 const giteaDefaultBranchSelect = document.querySelector("#gitea-default-branch");
 const giteaDefaultBranchSubmit = document.querySelector("#gitea-default-branch-submit");
 const giteaBranchStatus = document.querySelector("#gitea-branch-status");
@@ -148,11 +145,6 @@ const projectDetailView = document.querySelector("#project-detail-view");
 const guideDialog = document.querySelector("#guide-dialog");
 const guideDialogTitle = document.querySelector("#guide-dialog-title");
 const guideDialogContent = document.querySelector("#guide-dialog-content");
-const projectEnvironmentDialog = document.querySelector("#project-environment-dialog");
-const projectEnvironmentForm = document.querySelector("#project-environment-form");
-const projectEnvironmentId = document.querySelector("#project-environment-id");
-const projectEnvironmentJson = document.querySelector("#project-environment-json");
-const projectEnvironmentStatus = document.querySelector("#project-environment-status");
 const domainZoneForm = document.querySelector("#domain-zone-form");
 const domainZoneIdInput = document.querySelector("#domain-zone-id");
 const domainZoneNameInput = document.querySelector("#domain-zone-name");
@@ -1635,205 +1627,6 @@ async function loadGiteaBranches() {
     if (requestId !== giteaBranchRequestId || giteaBranchRepository.value !== repository.fullName) return;
     giteaDefaultBranchSelect.replaceChildren(new Option("No se pudieron consultar ramas", ""));
     giteaBranchStatus.textContent = error.message;
-  }
-}
-
-function renderLegacyProjects() {
-  projectsList.replaceChildren();
-  if (projects.length === 0) {
-    projectsStatus.textContent = "Todavía no hay proyectos registrados.";
-    return;
-  }
-  projectsStatus.textContent = `${projects.length} proyecto${projects.length === 1 ? "" : "s"} registrado${projects.length === 1 ? "" : "s"}. Los pushes a la rama de producción se construyen y despliegan automáticamente cuando el webhook de Gitea está configurado.`;
-  for (const project of projects) {
-    const row = document.createElement("div");
-    row.className = "resource";
-    const main = document.createElement("div");
-    main.className = "resource-main";
-    const name = document.createElement("div");
-    name.className = "resource-name";
-    name.textContent = project.name;
-    const details = document.createElement("div");
-    details.className = "resource-detail";
-    const latestBuild = project.latestBuild
-      ? `Último build: ${project.latestBuild.commitSha.slice(0, 12)}`
-      : "Sin builds exitosos";
-    const deployment = project.deployment
-      ? `Servicio ${project.deployment.serviceName} · ${project.deployment.runningReplicas}/${project.deployment.desiredReplicas} nodos activos · ${project.deployment.commitSha?.slice(0, 12) ?? "commit desconocido"}`
-      : "Sin servicio desplegado";
-    details.textContent = `${project.repository} · ${project.productionBranch}${project.description ? ` · ${project.description}` : ""} · ${latestBuild} · ${deployment} · ${projectHealthSummary(project.health)}`;
-    main.append(name, details);
-
-    const actions = document.createElement("div");
-    actions.className = "resource-actions";
-    const edit = document.createElement("button");
-    edit.className = "button secondary resource-action";
-    edit.type = "button";
-    edit.textContent = "Editar";
-    edit.disabled = !giteaCanManageProjects;
-    edit.addEventListener("click", async () => {
-      projectIdInput.value = project.id;
-      projectNameInput.value = project.name;
-      projectDescriptionInput.value = project.description;
-      projectRepositorySelect.value = project.repository;
-      projectSaveButton.textContent = "Guardar cambios";
-      await loadProjectBranches(project.productionBranch);
-      projectForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-
-    const configureEnvironment = document.createElement("button");
-    configureEnvironment.className = "button secondary resource-action";
-    configureEnvironment.type = "button";
-    configureEnvironment.textContent = "Variables";
-    configureEnvironment.disabled = !giteaCanManageProjects;
-    configureEnvironment.addEventListener("click", async () => {
-      configureEnvironment.disabled = true;
-      projectEnvironmentStatus.textContent = `Consultando variables de ${project.name}…`;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/environment`);
-        projectEnvironmentId.value = project.id;
-        projectEnvironmentJson.value = JSON.stringify(result.environment, null, 2);
-        projectEnvironmentStatus.textContent = "";
-        projectEnvironmentDialog.showModal();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-      } finally {
-        configureEnvironment.disabled = !giteaCanManageProjects;
-      }
-    });
-
-    const build = document.createElement("button");
-    build.className = "button secondary resource-action";
-    build.type = "button";
-    build.textContent = "Construir imagen";
-    build.disabled = !giteaCanManageProjects;
-    build.addEventListener("click", async () => {
-      if (!confirm(`¿Construir una imagen local de ${project.name} desde ${project.repository} · ${project.productionBranch}? No se desplegará automáticamente.`)) return;
-      build.disabled = true;
-      projectsStatus.textContent = `Solicitando construcción de ${project.name}…`;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/build`, {
-          method: "POST",
-          body: JSON.stringify({ branch: project.productionBranch }),
-        });
-        projectsStatus.textContent = result.message;
-        await loadTaskHistory();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-      } finally {
-        build.disabled = !giteaCanManageProjects;
-      }
-    });
-
-    const deploy = document.createElement("button");
-    deploy.className = "button secondary resource-action";
-    deploy.type = "button";
-    const deploymentMatchesLatestBuild = Boolean(project.latestBuild)
-      && project.deployment?.commitSha === project.latestBuild.commitSha;
-    const deploymentIsCurrent = deploymentMatchesLatestBuild
-      && project.deployment?.mode === "replicated"
-      && project.deployment.desiredReplicas > 0
-      && project.deployment.runningReplicas === project.deployment.desiredReplicas
-      && project.deployment.configurationCurrent === true;
-    deploy.textContent = deploymentIsCurrent
-      ? "Ya desplegado"
-      : deploymentMatchesLatestBuild
-        ? project.deployment.configurationCurrent === false
-          ? "Aplicar configuración"
-          : "Reintentar despliegue"
-      : "Desplegar imagen";
-    deploy.disabled = !project.latestBuild || deploymentIsCurrent;
-    deploy.addEventListener("click", async () => {
-      if (!confirm(`¿Desplegar en Swarm la imagen ${project.latestBuild.commitSha.slice(0, 12)} de ${project.name}? Se ejecutará una instancia independiente en el VPS principal. Se aplicarán las variables y rutas de dominio configuradas; no se publicarán puertos del host.`)) return;
-      deploy.disabled = true;
-      projectsStatus.textContent = `Solicitando despliegue de ${project.name}…`;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deploy`, {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        projectsStatus.textContent = result.message;
-        await loadTaskHistory();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-      } finally {
-        deploy.disabled = !project.latestBuild || deploymentIsCurrent;
-      }
-    });
-
-    const undeploy = document.createElement("button");
-    undeploy.className = "button secondary resource-action";
-    undeploy.type = "button";
-    undeploy.textContent = "Retirar servicio";
-    undeploy.disabled = !project.deployment;
-    undeploy.addEventListener("click", async () => {
-      if (!confirm(`¿Retirar el servicio Swarm de ${project.name}? La imagen publicada en el registro no se eliminará.`)) return;
-      undeploy.disabled = true;
-      projectsStatus.textContent = `Solicitando retiro del servicio de ${project.name}…`;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/deployment`, {
-          method: "DELETE",
-        });
-        projectsStatus.textContent = result.message;
-        await loadTaskHistory();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-        undeploy.disabled = !project.deployment;
-      }
-    });
-
-    const rollbackTarget = project.deploymentHistory
-      ?.find((deploymentItem) => deploymentItem.commitSha !== project.deployment?.commitSha);
-    const rollback = document.createElement("button");
-    rollback.className = "button secondary resource-action";
-    rollback.type = "button";
-    rollback.textContent = rollbackTarget
-      ? `Rollback · ${rollbackTarget.commitSha.slice(0, 12)}`
-      : "Rollback";
-    rollback.disabled = !project.deployment || !rollbackTarget || !giteaCanManageProjects;
-    rollback.title = rollbackTarget
-      ? `Volver al despliegue exitoso ${rollbackTarget.commitSha.slice(0, 12)}`
-      : "No hay un despliegue exitoso anterior.";
-    rollback.addEventListener("click", async () => {
-      if (!rollbackTarget
-        || !confirm(`¿Revertir ${project.name} al despliegue exitoso ${rollbackTarget.commitSha.slice(0, 12)}? Se conservarán las variables y dominios actuales.`)) return;
-      rollback.disabled = true;
-      projectsStatus.textContent = `Solicitando rollback de ${project.name}…`;
-      try {
-        const result = await request(`/api/projects/${encodeURIComponent(project.id)}/rollback`, {
-          method: "POST",
-          body: JSON.stringify({ commitSha: rollbackTarget.commitSha }),
-        });
-        projectsStatus.textContent = result.message;
-        await loadTaskHistory();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-        rollback.disabled = !project.deployment || !rollbackTarget || !giteaCanManageProjects;
-      }
-    });
-
-    const remove = document.createElement("button");
-    remove.className = "button secondary resource-action";
-    remove.type = "button";
-    remove.textContent = "Eliminar";
-    remove.disabled = Boolean(project.deployment);
-    remove.title = project.deployment ? "Retira primero el servicio desplegado." : "";
-    remove.addEventListener("click", async () => {
-      if (!confirm(`¿Eliminar la configuración del proyecto ${project.name}? El repositorio y su webhook de Gitea no se eliminarán.`)) return;
-      remove.disabled = true;
-      try {
-        await request(`/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
-        await loadProjects();
-      } catch (error) {
-        projectsStatus.textContent = error.message;
-        remove.disabled = false;
-      }
-    });
-    actions.append(edit, configureEnvironment, build, deploy, rollback);
-    if (project.deployment) actions.append(undeploy);
-    actions.append(remove);
-    row.append(main, actions);
-    projectsList.append(row);
   }
 }
 
@@ -3615,6 +3408,12 @@ async function loadN8nApplication() {
   try {
     const { application } = await request("/api/system/applications/n8n");
     const zones = application.domainZones ?? [];
+    if (application.configuration) {
+      n8nVersionInput.value = application.configuration.version;
+      n8nTimezoneInput.value = application.configuration.timezone;
+      n8nCpusInput.value = application.configuration.cpus;
+      n8nMemoryInput.value = application.configuration.memoryMb;
+    }
     const selectedZoneId = n8nDomainZoneSelect.value;
     n8nDomainZoneSelect.replaceChildren(
       new Option(zones.length ? "Selecciona un dominio raíz" : "Conecta primero un dominio raíz en Dominios", ""),
@@ -3637,7 +3436,14 @@ async function loadN8nApplication() {
     }
     n8nDomainZoneSelect.disabled = application.installed || application.installing || zones.length === 0;
     n8nSubdomainInput.disabled = application.installed || application.installing || zones.length === 0;
-    installN8nButton.classList.toggle("hidden", !application.available);
+    for (const input of [n8nVersionInput, n8nTimezoneInput, n8nCpusInput, n8nMemoryInput]) {
+      input.disabled = application.installed || application.installing;
+    }
+    const canInstall = !application.installed
+      && !application.installing
+      && !application.nameConflict
+      && zones.length > 0;
+    installN8nButton.classList.toggle("hidden", !canInstall);
     installN8nButton.disabled = application.installing;
     if (application.domain && application.installed) {
       n8nUrl.href = application.url;
@@ -3645,13 +3451,19 @@ async function loadN8nApplication() {
     } else {
       n8nUrl.classList.add("hidden");
     }
+    const selectedZone = zones.find((zone) => zone.id === n8nDomainZoneSelect.value);
+    const selectedHostname = selectedZone
+      ? `${n8nSubdomainInput.value.trim() && n8nSubdomainInput.value.trim() !== "@"
+        ? `${n8nSubdomainInput.value.trim()}.`
+        : ""}${selectedZone.zone}`
+      : null;
     n8nStatus.textContent = application.latestTask?.message
       ?? (application.installed
         ? `n8n está instalado en ${application.domain}.`
         : application.nameConflict
           ? "El nombre del servicio de n8n está ocupado por un servicio ajeno a VPS Manager."
-          : application.domain
-            ? `Dominio ${application.domain} listo. Puedes instalar n8n.`
+          : selectedHostname
+            ? `Dominio ${selectedHostname} listo. Puedes instalar n8n.`
             : zones.length
               ? "Elige un dominio raíz y un subdominio para instalar n8n."
               : "Conecta primero un dominio raíz en la pestaña Dominios.");
@@ -4470,7 +4282,16 @@ installN8nButton.addEventListener("click", async () => {
   try {
     await request("/api/system/applications/n8n", {
       method: "POST",
-      body: JSON.stringify({ zoneId: n8nDomainZoneSelect.value, subdomain }),
+      body: JSON.stringify({
+        zoneId: n8nDomainZoneSelect.value,
+        subdomain,
+        configuration: {
+          version: n8nVersionInput.value.trim(),
+          timezone: n8nTimezoneInput.value.trim(),
+          cpus: Number(n8nCpusInput.value),
+          memoryMb: Number(n8nMemoryInput.value),
+        },
+      }),
     });
     await Promise.all([loadN8nApplication(), loadTaskHistory()]);
   } catch (error) {

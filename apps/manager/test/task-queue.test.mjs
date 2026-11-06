@@ -210,12 +210,21 @@ test("installs Gitea through the fixed agent operation and stores no credentials
     const n8nTask = {
       id: task.id,
       type: "application.n8n.install",
-      payload: { domain: "automation.example.com" },
+      payload: {
+        domain: "automation.example.com",
+        instanceId: "a3f51b09-13bf-4c7a-9b03-9ba000000002",
+        configuration: {
+          version: "2.46.4",
+          timezone: "UTC",
+          cpus: 1,
+          memoryMb: 1536,
+        },
+      },
     };
     const requests = [];
     const handler = createN8nInstallHandler({
-      async requestN8nInstall(domain, requestId) {
-        requests.push({ domain, requestId });
+      async requestN8nInstall(domain, configuration, requestId) {
+        requests.push({ domain, configuration, requestId });
       },
       async getStatus() {
         return {
@@ -234,6 +243,7 @@ test("installs Gitea through the fixed agent operation and stores no credentials
     });
     assert.deepEqual(requests, [{
       domain: n8nTask.payload.domain,
+      configuration: n8nTask.payload.configuration,
       requestId: n8nTask.id,
     }]);
   });

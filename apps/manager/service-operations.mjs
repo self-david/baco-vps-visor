@@ -51,6 +51,17 @@ export function isPublicHostname(hostname) {
     && !/\.(?:localhost|local|internal|test|example|invalid|onion|home|lan)$/i.test(hostname);
 }
 
+function isValidTimezone(timezone) {
+  if (typeof timezone !== "string" || timezone.length > 100) return false;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone });
+    return true;
+  } catch (error) {
+    if (error instanceof RangeError) return false;
+    throw error;
+  }
+}
+
 export function findManagedService(services, requestedId) {
   if (typeof requestedId !== "string" || !/^[a-z0-9]{12,64}$/i.test(requestedId)) {
     throw new TypeError("A valid Docker Swarm service identifier is required.");
@@ -270,6 +281,16 @@ export function createServiceOperationAgent({
           ? isPublicHostname(queuedRequest.domain) || queuedRequest.domain === "localhost"
           : queuedRequest.operation === "install-n8n"
             ? isPublicHostname(queuedRequest.domain)
+              && queuedRequest.configuration && typeof queuedRequest.configuration === "object"
+              && !Array.isArray(queuedRequest.configuration)
+              && Object.keys(queuedRequest.configuration).sort().join(",") === "cpus,memoryMb,timezone,version"
+              && typeof queuedRequest.configuration.version === "string"
+              && /^\d+\.\d+\.\d+$/.test(queuedRequest.configuration.version)
+              && isValidTimezone(queuedRequest.configuration.timezone)
+              && Number.isFinite(queuedRequest.configuration.cpus)
+              && queuedRequest.configuration.cpus >= 0.25 && queuedRequest.configuration.cpus <= 8
+              && Number.isInteger(queuedRequest.configuration.memoryMb)
+              && queuedRequest.configuration.memoryMb >= 256 && queuedRequest.configuration.memoryMb <= 16384
           : queuedRequest.operation === "install-postgresql"
             ? true
           : queuedRequest.operation === "configure-gitea-token"
@@ -328,8 +349,10 @@ export function createServiceOperationAgent({
       }
       const validScaleRequest = queuedRequest.operation !== "scale-service"
         || (Number.isInteger(queuedRequest.replicas) && queuedRequest.replicas >= 1 && queuedRequest.replicas <= 100);
-      const expectedFields = queuedRequest.operation === "install-gitea" || queuedRequest.operation === "install-n8n"
+      const expectedFields = queuedRequest.operation === "install-gitea"
         ? ["id", "operation", "domain"]
+        : queuedRequest.operation === "install-n8n"
+          ? ["id", "operation", "domain", "configuration"]
         : queuedRequest.operation === "install-postgresql"
           ? ["id", "operation"]
         : queuedRequest.operation === "configure-gitea-token"
@@ -538,9 +561,20 @@ export function createServiceOperationAgent({
     };
   }
 
-  async function requestApplicationInstall(operation, domain, requestId, displayName) {
+  async function requestApplicationInstall(operation, domain, requestId, displayName, configuration) {
     if (!isPublicHostname(domain) && !(operation === "install-gitea" && domain === "localhost")) {
       throw new TypeError(`El dominio de ${displayName} debe ser un hostname público válido.`);
+    }
+    if (operation === "install-n8n") {
+      if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)
+        || Object.keys(configuration).sort().join(",") !== "cpus,memoryMb,timezone,version"
+        || typeof configuration.version !== "string" || !/^\d+\.\d+\.\d+$/.test(configuration.version)
+        || !isValidTimezone(configuration.timezone)
+        || !Number.isFinite(configuration.cpus) || configuration.cpus < 0.25 || configuration.cpus > 8
+        || !Number.isInteger(configuration.memoryMb)
+        || configuration.memoryMb < 256 || configuration.memoryMb > 16384) {
+        throw new TypeError("La configuración de n8n no es válida.");
+      }
     }
     if (!requestIdPattern.test(requestId)) {
       throw new Error("The service operation request identifier is invalid.");
@@ -563,6 +597,7 @@ export function createServiceOperationAgent({
         id: requestId,
         operation,
         domain,
+        ...(operation === "install-n8n" ? { configuration } : {}),
       })}\n`, { flag: "wx", mode: 0o600 });
       await link(temporaryPath, requestPath);
     } catch (error) {
@@ -591,8 +626,8 @@ export function createServiceOperationAgent({
     return requestApplicationInstall("install-gitea", domain, requestId, "Gitea");
   }
 
-  async function requestN8nInstall(domain, requestId = createId()) {
-    return requestApplicationInstall("install-n8n", domain, requestId, "n8n");
+  async function requestN8nInstall(domain, configuration, requestId = createId()) {
+    return requestApplicationInstall("install-n8n", domain, requestId, "n8n", configuration);
   }
 
   async function requestPostgresqlInstall(requestId = createId()) {

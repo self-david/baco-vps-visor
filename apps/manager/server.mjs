@@ -33,7 +33,10 @@ import {
   createTaskQueueWorker,
 } from "./task-queue.mjs";
 import { evaluateDeploymentAlerts } from "./deployment-alerts.mjs";
-import { validateSupabaseInstanceConfiguration } from "./application-config.mjs";
+import {
+  validateN8nInstanceConfiguration,
+  validateSupabaseInstanceConfiguration,
+} from "./application-config.mjs";
 import { createMetricsSampler } from "./metrics-sampler.mjs";
 import { collectWebServiceAlerts } from "./web-service-alerts.mjs";
 import { checkProjectHealth } from "./project-health.mjs";
@@ -99,6 +102,8 @@ import {
   recordGithubWebhookDelivery,
   createGiteaInstallTask,
   createN8nInstallTask,
+  beginApplicationInstanceDeployment,
+  updateApplicationInstanceDeployment,
   createPostgresqlInstallTask,
   getApplicationCatalog,
   getApplicationInstances,
@@ -294,7 +299,9 @@ const taskQueueWorker = createTaskQueueWorker({
     "service.restart": createServiceRestartHandler(serviceOperationAgent),
     "service.scale": createServiceScaleHandler(serviceOperationAgent),
     "container.operation": createContainerOperationHandler(serviceOperationAgent),
-    "application.n8n.install": createN8nInstallHandler(serviceOperationAgent),
+    "application.n8n.install": createN8nInstallHandler(serviceOperationAgent, {
+      updateInstance: updateApplicationInstanceDeployment,
+    }),
     "application.postgresql.install": createPostgresqlInstallHandler(serviceOperationAgent),
     "application.custom.deploy": createManualApplicationDeployHandler(serviceOperationAgent, {
       updateDeployment: updateManualApplicationDeployment,
@@ -987,11 +994,12 @@ async function getGiteaApplicationState() {
 }
 
 async function getN8nApplicationState() {
-  const [services, domains, savedDomainZones, latestTask] = await Promise.all([
+  const [services, domains, savedDomainZones, latestTask, instances] = await Promise.all([
     dockerGet("/services"),
     getProjectDomains(),
     getDomainZones(),
     getLatestTaskByType("application.n8n.install"),
+    getApplicationInstances("n8n"),
   ]);
   const domainZones = await Promise.all(savedDomainZones.map(async (domainZone) => ({
     ...domainZone,
@@ -999,6 +1007,7 @@ async function getN8nApplicationState() {
   }))).then((zones) => zones.filter((domainZone) =>
     domainZone.connectionStatus === "connected" && domainZone.tokenConfigured));
   const service = services.find((item) => item.Spec?.Name === "vps-manager-n8n");
+  const instance = instances[0] ?? null;
   const installed = service?.Spec?.Labels?.["vps-manager.component"] === "n8n"
     && service.Spec.Labels["vps-manager.managed"] === "true";
   const nameConflict = Boolean(service && !installed);
@@ -1009,6 +1018,8 @@ async function getN8nApplicationState() {
       id: "n8n",
       domain: domain?.hostname ?? null,
       url: domain ? `https://${domain.hostname}/` : null,
+      configuration: instance?.configuration ?? latestTask?.configuration ?? null,
+      instance,
       domainConfigured: Boolean(domain),
       available: (Boolean(domain) || domainZones.length > 0) && !testMode && !installed && !nameConflict && !installing,
       domainZones: domainZones.map((domainZone) => ({
@@ -3862,10 +3873,11 @@ const server = createServer(async (request, response) => {
         const hasBody = Number(request.headers["content-length"] ?? 0) > 0
           || request.headers["transfer-encoding"] !== undefined;
         const body = hasBody ? await readJson(request) : undefined;
+        const configuration = validateN8nInstanceConfiguration(body?.configuration ?? {});
         let hostname = application.domain;
         if (body !== undefined) {
           if (!body || typeof body !== "object" || Array.isArray(body)
-            || Object.keys(body).some((key) => !["zoneId", "subdomain"].includes(key))
+            || Object.keys(body).some((key) => !["zoneId", "subdomain", "configuration"].includes(key))
             || typeof body.zoneId !== "string"
             || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.zoneId)
             || typeof body.subdomain !== "string") {
@@ -3932,8 +3944,36 @@ const server = createServer(async (request, response) => {
             dnsRecordId: dnsRecord.id,
           });
         }
+        const [dockerInfo, nodes] = await Promise.all([dockerGet("/info"), dockerGet("/nodes")]);
+        const serverNodeId = dockerInfo.Swarm?.NodeID;
+        const serverNode = nodes.find((node) => node.ID === serverNodeId);
+        if (typeof serverNodeId !== "string" || !serverNode
+          || serverNode.Status?.State !== "ready" || serverNode.Spec?.Availability !== "active") {
+          respondJson(response, 409, { error: "El manager de Swarm no está listo para alojar n8n." });
+          return;
+        }
+        const instance = await saveApplicationInstanceConfiguration({
+          applicationId: "n8n",
+          serverNodeId,
+          serverHostname: serverNode.Description?.Hostname ?? "manager",
+          name: "n8n",
+          configuration: { ...configuration, domain: hostname },
+        });
         const taskId = randomUUID();
-        await createN8nInstallTask({ id: taskId, domain: hostname });
+        if (!await beginApplicationInstanceDeployment(instance.id, taskId)) {
+          throw new Error("No se pudo marcar la instancia n8n como en instalación.");
+        }
+        try {
+          await createN8nInstallTask({
+            id: taskId,
+            domain: hostname,
+            configuration,
+            instanceId: instance.id,
+          });
+        } catch (error) {
+          await updateApplicationInstanceDeployment(instance.id, taskId, { status: "configured" });
+          throw error;
+        }
         respondJson(response, 202, {
           task: {
             id: taskId,

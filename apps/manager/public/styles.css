@@ -86,13 +86,12 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .credentials-list code { color: #e1e9f5; user-select: all; }
 .project-source-options { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .project-list { display: grid; gap: 10px; margin-top: 12px; }
-.project-item { min-width: 0; padding: 13px 15px; border: 1px solid #2d3a50; border-radius: 10px; background: linear-gradient(125deg, #121c2c, #101722 55%); }
+.project-item { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; min-width: 0; padding: 13px 15px; border: 1px solid #2d3a50; border-radius: 10px; background: linear-gradient(125deg, #121c2c, #101722 55%); }
 .project-item h4 { margin: 0; overflow-wrap: anywhere; }
 .project-item p { margin: 8px 0 0; overflow-wrap: anywhere; }
 .project-health-status[data-state="online"] { color: #9fe2b5; }
 .project-health-status[data-state="degraded"], .project-health-status[data-state="http-error"] { color: #ffcb75; }
 .project-health-status[data-state="unavailable"] { color: #ff9292; }
-.project-item { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; }
 .project-item > .card-heading, .project-item > p, .project-item > .project-url-list, .project-item > .project-actions { grid-column: 1 / -1; }
 .project-item > p { margin: 0; }
 .project-item .card-heading { align-items: flex-start; }

@@ -33,7 +33,13 @@ function mapTask(row, { includePayload = false } = {}) {
       }
       : {}),
     ...(row.type === "application.gitea.install" ? { domain: row.payload.domain } : {}),
-    ...(row.type === "application.n8n.install" ? { domain: row.payload.domain } : {}),
+    ...(row.type === "application.n8n.install"
+      ? {
+        domain: row.payload.domain,
+        configuration: row.payload.configuration,
+        instanceId: row.payload.instanceId,
+      }
+      : {}),
     ...(row.type === "application.custom.deploy"
       ? {
         applicationId: row.payload.applicationId,
@@ -201,10 +207,22 @@ function validateTask({ id, type, payload, maxAttempts }) {
     throw new TypeError("Gitea application installation task fields are invalid.");
   }
   if (type === "application.n8n.install"
-    && (Object.keys(payload).length !== 1
+    && (Object.keys(payload).sort().join(",") !== "configuration,domain,instanceId"
       || typeof payload.domain !== "string"
       || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(payload.domain)
-      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain))) {
+      || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(payload.domain)
+      || typeof payload.instanceId !== "string" || !uuidPattern.test(payload.instanceId)
+      || !payload.configuration || typeof payload.configuration !== "object"
+      || Array.isArray(payload.configuration)
+      || Object.keys(payload.configuration).sort().join(",") !== "cpus,memoryMb,timezone,version"
+      || typeof payload.configuration.version !== "string"
+      || !/^\d+\.\d+\.\d+$/.test(payload.configuration.version)
+      || typeof payload.configuration.timezone !== "string"
+      || payload.configuration.timezone.length > 100
+      || !Number.isFinite(payload.configuration.cpus)
+      || payload.configuration.cpus < 0.25 || payload.configuration.cpus > 8
+      || !Number.isInteger(payload.configuration.memoryMb)
+      || payload.configuration.memoryMb < 256 || payload.configuration.memoryMb > 16384)) {
     throw new TypeError("n8n application installation task fields are invalid.");
   }
   if (type === "application.postgresql.install" && Object.keys(payload).length !== 0) {

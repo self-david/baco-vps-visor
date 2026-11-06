@@ -149,8 +149,9 @@ private_cidr="\$4"
 [[ "\${EUID}" -eq 0 ]] || fail "La cuenta SSH requiere sudo sin contraseña."
 [[ "\${role}" == "worker" || "\${role}" == "manager" ]] || fail "El rol de nodo no es válido."
 . /etc/os-release
-[[ "\${ID:-}" == "ubuntu" && "\${VERSION_ID:-}" == "24.04" ]] \
-  || fail "El VPS destino debe usar Ubuntu Server 24.04."
+if [[ "\${ID:-}" != "ubuntu" || "\${VERSION_ID:-}" != "24.04" ]]; then
+  printf 'ADVERTENCIA: el VPS destino no usa Ubuntu Server 24.04 LTS; el aprovisionamiento continuará, pero esta plataforma no está validada.\\n' >&2
+fi
 ufw_status="\$(ufw status 2>/dev/null)" || fail "UFW debe estar instalado y configurado en el VPS destino."
 grep -q '^Status: active$' <<< "\${ufw_status}" \
   || fail "UFW debe estar activo en el VPS destino; no se habilitó para evitar bloquear SSH."
@@ -167,7 +168,9 @@ curl -fsSL --retry 3 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/ke
 chmod a+r /etc/apt/keyrings/docker.asc
 architecture="\$(dpkg --print-architecture)"
 codename="\${UBUNTU_CODENAME:-\${VERSION_CODENAME:-}}"
-[[ "\${codename}" == "noble" ]] || fail "La versión Ubuntu del VPS destino no corresponde a noble."
+if [[ "\${codename}" != "noble" ]]; then
+  printf 'ADVERTENCIA: el VPS destino usa la suite APT %s en lugar de noble; se intentará instalar Docker con esa suite.\\n' "\${codename}" >&2
+fi
 printf 'Types: deb\\nURIs: https://download.docker.com/linux/ubuntu\\nSuites: %s\\nComponents: stable\\nArchitectures: %s\\nSigned-By: /etc/apt/keyrings/docker.asc\\n' \
   "\${codename}" "\${architecture}" > /etc/apt/sources.list.d/docker.sources
 apt-get update -qq || fail "No se pudo validar el repositorio oficial de Docker."

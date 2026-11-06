@@ -135,6 +135,10 @@ registry_username = "-"
 cloudflare_tunnel_id = "-"
 cloudflare_tunnel_token = "-"
 domains_hash = "-"
+n8n_version = "-"
+n8n_timezone = "-"
+n8n_cpus = "-"
+n8n_memory_mb = "-"
 node_address = "-"
 node_ssh_user = "-"
 node_ssh_port = "-"
@@ -163,10 +167,10 @@ elif request.get("operation") in {"stop-container", "restart-container"}:
         raise SystemExit("Invalid container operation request fields.")
     container_id = request["containerId"]
     replicas = "-"
-elif request.get("operation") in {"install-gitea", "install-n8n"}:
+elif request.get("operation") == "install-gitea":
     if set(request) != {"id", "operation", "domain"}:
         raise SystemExit("Invalid application installation request fields.")
-    local_gitea_domain = request.get("operation") == "install-gitea" and request.get("domain") == "localhost"
+    local_gitea_domain = request.get("domain") == "localhost"
     if not isinstance(request["domain"], str) or not local_gitea_domain and (
         not re.fullmatch(
             r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
@@ -174,6 +178,38 @@ elif request.get("operation") in {"install-gitea", "install-n8n"}:
         ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"])
     ):
         raise SystemExit("Invalid Gitea domain.")
+    service_id = "-"
+    replicas = "-"
+elif request.get("operation") == "install-n8n":
+    if set(request) != {"id", "operation", "domain", "configuration"}:
+        raise SystemExit("Invalid n8n installation request fields.")
+    if not isinstance(request["domain"], str) or not re.fullmatch(
+        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+        request["domain"],
+    ) or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", request["domain"]):
+        raise SystemExit("Invalid n8n domain.")
+    configuration = request["configuration"]
+    if not isinstance(configuration, dict) or set(configuration) != {"version", "timezone", "cpus", "memoryMb"}:
+        raise SystemExit("Invalid n8n configuration fields.")
+    if not isinstance(configuration["version"], str) or not re.fullmatch(r"\d+\.\d+\.\d+", configuration["version"]):
+        raise SystemExit("Invalid n8n version.")
+    if not isinstance(configuration["timezone"], str) or len(configuration["timezone"]) > 100:
+        raise SystemExit("Invalid n8n timezone.")
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(configuration["timezone"])
+    except (KeyError, ValueError):
+        raise SystemExit("Invalid n8n timezone.")
+    if isinstance(configuration["cpus"], bool) or not isinstance(configuration["cpus"], (int, float)) \
+        or not 0.25 <= configuration["cpus"] <= 8:
+        raise SystemExit("Invalid n8n CPU limit.")
+    if isinstance(configuration["memoryMb"], bool) or not isinstance(configuration["memoryMb"], int) \
+        or not 256 <= configuration["memoryMb"] <= 16384:
+        raise SystemExit("Invalid n8n memory limit.")
+    n8n_version = configuration["version"]
+    n8n_timezone = configuration["timezone"]
+    n8n_cpus = configuration["cpus"]
+    n8n_memory_mb = configuration["memoryMb"]
     service_id = "-"
     replicas = "-"
 elif request.get("operation") == "install-postgresql":
@@ -398,14 +434,14 @@ if request["operation"] in {"restart-service", "scale-service", "stop-container"
     r"[a-zA-Z0-9]{25,64}", str(request["serviceId"])
 ):
     raise SystemExit("Invalid Docker Swarm service identifier.")
-print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}\t{build_command}\t{build_output_directory}\t{cloudflare_tunnel_id}\t{domains_hash}')
+print(f'{request["id"]}\t{request["operation"]}\t{request.get("serviceId", "-")}\t{replicas}\t{request.get("domain", "-")}\t{request.get("token", "-")}\t{project_id}\t{commit_sha}\t{registry_domain}\t{registry_username}\t{node_address}\t{node_ssh_user}\t{node_ssh_port}\t{node_fingerprint}\t{node_private_cidr}\t{manager_private_address}\t{node_role}\t{application_id}\t{application_instance_id}\t{container_id}\t{deployment_type}\t{build_strategy}\t{build_context}\t{dockerfile_path}\t{build_command}\t{build_output_directory}\t{cloudflare_tunnel_id}\t{domains_hash}\t{n8n_version}\t{n8n_timezone}\t{n8n_cpus}\t{n8n_memory_mb}')
 PY
 )" || {
   rm -f -- "${REQUEST_FILE}"
   echo "Rejected an invalid VPS Manager service operation request." >&2
   exit 1
 }
-IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path build_command build_output_directory cloudflare_tunnel_id domains_hash <<< "${request_data}"
+IFS=$'\t' read -r request_id operation service_id replicas gitea_domain gitea_api_token project_id commit_sha registry_domain registry_username node_address node_ssh_user node_ssh_port node_fingerprint node_private_cidr manager_private_address node_role application_id application_instance_id container_id deployment_type build_strategy build_context dockerfile_path build_command build_output_directory cloudflare_tunnel_id domains_hash n8n_version n8n_timezone n8n_cpus n8n_memory_mb <<< "${request_data}"
 
 write_status() {
   local state="$1"
@@ -1389,12 +1425,13 @@ fi
 
 if [[ "${operation}" == "install-n8n" ]]; then
   readonly N8N_SERVICE="vps-manager-n8n"
-  readonly N8N_IMAGE="n8nio/n8n:2.46.4"
+  readonly N8N_IMAGE="n8nio/n8n:${n8n_version}"
   readonly N8N_SECRET="vps-manager-n8n-encryption"
   readonly N8N_VOLUME="vps-manager-n8n-data"
+  readonly N8N_DOMAIN="${gitea_domain}"
   readonly INSTALL_ENV="/opt/vps-manager/install.env"
   test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' "${INSTALL_ENV}" | head -n 1)"
-  if [[ "${test_mode}" == "true" || ! "${gitea_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+  if [[ "${test_mode}" == "true" || ! "${N8N_DOMAIN}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
     write_status "failed" "n8n requiere un hostname público y una instalación HTTPS de VPS Manager."
     exit 1
   fi
@@ -1409,7 +1446,7 @@ if [[ "${operation}" == "install-n8n" ]]; then
       write_status "failed" "Ya existe un servicio con el nombre reservado para n8n y no pertenece a VPS Manager."
       exit 1
     fi
-    if [[ "${router_rule}" != "Host(\`${gitea_domain}\`)" ]]; then
+    if [[ "${router_rule}" != "Host(\`${N8N_DOMAIN}\`)" ]]; then
       write_status "failed" "n8n ya está instalado con otro dominio; no se modificó el servicio ni sus datos."
       exit 1
     fi
@@ -1465,27 +1502,27 @@ if [[ "${operation}" == "install-n8n" ]]; then
     --network vps-manager-proxy \
     --mount "type=volume,source=${N8N_VOLUME},target=/home/node/.n8n" \
     --secret "source=${N8N_SECRET},target=n8n_encryption_key,uid=1000,gid=1000,mode=0400" \
-    --env "N8N_HOST=${gitea_domain}" \
+    --env "N8N_HOST=${N8N_DOMAIN}" \
     --env N8N_PROTOCOL=https \
-    --env "WEBHOOK_URL=https://${gitea_domain}/" \
-    --env "N8N_EDITOR_BASE_URL=https://${gitea_domain}/" \
+    --env "WEBHOOK_URL=https://${N8N_DOMAIN}/" \
+    --env "N8N_EDITOR_BASE_URL=https://${N8N_DOMAIN}/" \
     --env N8N_PROXY_HOPS=1 \
     --env N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key \
     --env N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true \
     --env N8N_DIAGNOSTICS_ENABLED=false \
     --env N8N_VERSION_NOTIFICATIONS_ENABLED=false \
-    --env GENERIC_TIMEZONE=UTC \
+    --env "GENERIC_TIMEZONE=${n8n_timezone}" \
     --label vps-manager.managed=true \
     --label vps-manager.component=n8n \
     --label traefik.enable=true \
     --label traefik.swarm.network=vps-manager-proxy \
-    --label "traefik.http.routers.vps-manager-n8n.rule=Host(\`${gitea_domain}\`)" \
+    --label "traefik.http.routers.vps-manager-n8n.rule=Host(\`${N8N_DOMAIN}\`)" \
     --label traefik.http.routers.vps-manager-n8n.entrypoints=websecure \
     --label traefik.http.routers.vps-manager-n8n.tls=true \
     --label traefik.http.routers.vps-manager-n8n.tls.certresolver=vpsmanager \
     --label traefik.http.services.vps-manager-n8n.loadbalancer.server.port=5678 \
-    --limit-cpu 1 \
-    --limit-memory 1536M \
+    --limit-cpu "${n8n_cpus}" \
+    --limit-memory "${n8n_memory_mb}M" \
     --restart-condition any \
     "${N8N_IMAGE}" >/dev/null; then
     write_status "failed" "Swarm no pudo crear el servicio n8n; el secreto y el volumen se conservaron."
@@ -1505,7 +1542,7 @@ if [[ "${operation}" == "install-n8n" ]]; then
     write_status "failed" "n8n no inició a tiempo. El volumen y la clave de cifrado se conservaron; revisa los logs del servicio."
     exit 1
   fi
-  write_status "succeeded" "n8n quedó listo en https://${gitea_domain}/ con almacenamiento persistente y clave de cifrado protegida."
+  write_status "succeeded" "n8n quedó listo en https://${N8N_DOMAIN}/ con almacenamiento persistente y clave de cifrado protegida."
   exit 0
 fi
 
