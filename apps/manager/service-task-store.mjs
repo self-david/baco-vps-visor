@@ -44,6 +44,7 @@ function mapTask(row, { includePayload = false } = {}) {
       ? {
         applicationId: row.payload.applicationId,
         applicationName: row.payload.applicationName,
+        instanceId: row.payload.instanceId,
       }
       : {}),
     ...(row.type === "registry.configure"
@@ -107,6 +108,10 @@ function mapTask(row, { includePayload = false } = {}) {
           : {}),
         ...(row.type === "application.custom.deploy" && typeof row.result.serviceId === "string"
           ? { serviceId: row.result.serviceId }
+          : {}),
+        ...(row.type === "application.custom.deploy" && row.payload.applicationId === "supabase"
+          && row.result.credentialsAvailable === true
+          ? { credentialsAvailable: true }
           : {}),
         ...(row.type === "project.build" && typeof row.result.image === "string"
           ? {

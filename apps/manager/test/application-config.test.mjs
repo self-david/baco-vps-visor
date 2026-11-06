@@ -66,8 +66,48 @@ test("validates and normalizes a complete Supabase instance configuration", () =
   assert.deepEqual(configuration.oauthProviders, {
     github: { enabled: true, clientId: "client-id" },
   });
-  assert.deepEqual(configuration.resourceLimits.db, { cpus: 2, memoryMb: 4096 });
-  assert.deepEqual(configuration.resourceLimits.analytics, { cpus: 1, memoryMb: 1024 });
+  assert.deepEqual(configuration.resourceLimits.db, { cpus: 2, memoryMb: 2048 });
+  assert.deepEqual(configuration.resourceLimits.analytics, { cpus: 1, memoryMb: 512 });
+});
+
+test("keeps all Supabase services within the compact VPS memory budget by default", () => {
+  const defaults = getSupabaseDefaultConfiguration();
+  const totalMemoryMb = defaults.enabledServices.reduce(
+    (total, service) => total + defaults.resourceLimits[service].memoryMb,
+    0,
+  );
+  assert.equal(totalMemoryMb, 6528);
+  assert.ok(totalMemoryMb <= 6800);
+});
+
+test("migrates previous default memory limits while retaining explicit resource overrides", () => {
+  const legacyMemory = {
+    db: 4096,
+    studio: 1024,
+    "api-gw": 512,
+    auth: 512,
+    rest: 512,
+    realtime: 1024,
+    storage: 1024,
+    imgproxy: 512,
+    meta: 256,
+    functions: 2048,
+    supavisor: 1024,
+    analytics: 1024,
+    vector: 512,
+  };
+  const defaults = getSupabaseDefaultConfiguration();
+  const resourceLimits = Object.fromEntries(
+    defaults.enabledServices.map((service) => [
+      service,
+      { ...defaults.resourceLimits[service], memoryMb: legacyMemory[service] },
+    ]),
+  );
+  resourceLimits.db.memoryMb = 3072;
+
+  const configuration = validateSupabaseInstanceConfiguration(validConfiguration({ resourceLimits }));
+  assert.equal(configuration.resourceLimits.db.memoryMb, 3072);
+  assert.equal(configuration.resourceLimits.analytics.memoryMb, 512);
 });
 
 test("validates the selected Supabase services and their required dependencies", () => {
@@ -86,6 +126,16 @@ test("validates the selected Supabase services and their required dependencies",
   assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
     enabledServices: defaults.enabledServices.filter((service) => service !== "analytics"),
   })), /Vector requiere Analytics/);
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "supavisor"),
+  })), /exposición pública de PostgreSQL requiere que Supavisor/);
+  assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "imgproxy"),
+  })), /procesamiento de imágenes requiere que imgproxy/);
+  assert.deepEqual(validateSupabaseInstanceConfiguration(validConfiguration({
+    enabledServices: defaults.enabledServices.filter((service) => service !== "imgproxy"),
+    enableImageTransformation: false,
+  })).enabledServices, defaults.enabledServices.filter((service) => service !== "imgproxy"));
   assert.throws(() => validateSupabaseInstanceConfiguration(validConfiguration({
     enabledServices: ["db", "db", "studio", "api-gw", "auth", "rest", "meta"],
   })), /servicios Supabase válidos/);

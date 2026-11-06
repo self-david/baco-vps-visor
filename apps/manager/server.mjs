@@ -103,6 +103,7 @@ import {
   createGiteaInstallTask,
   createN8nInstallTask,
   beginApplicationInstanceDeployment,
+  beginSupabaseInstanceDeployment,
   updateApplicationInstanceDeployment,
   createPostgresqlInstallTask,
   getApplicationCatalog,
@@ -127,6 +128,7 @@ import {
   updateBackupIntervalHours,
   updateMetricsSamplingIntervalMinutes,
 } from "./db.mjs";
+import { getSupabaseRuntimeServices } from "./supabase-runtime.mjs";
 import {
   deleteProjectConfig,
   getProjectEnvironment,
@@ -4575,6 +4577,46 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  const supabaseCredentialsMatch = request.method === "GET"
+    && url.pathname.match(/^\/api\/system\/applications\/supabase\/credentials\/([a-f0-9-]{36})$/i);
+  if (supabaseCredentialsMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    try {
+      const taskId = supabaseCredentialsMatch[1];
+      const task = await getTaskById(taskId);
+      if (task?.type !== "application.custom.deploy"
+        || task.payload?.applicationId !== "supabase"
+        || task.status !== "completed"
+        || task.result?.credentialsAvailable !== true) {
+        respondJson(response, 409, { error: "Las credenciales solo están disponibles tras completar el despliegue de Supabase." });
+        return;
+      }
+      const credentials = await serviceOperationAgent.consumeSupabaseCredentials(taskId);
+      try {
+        await recordAuditEvent({
+          action: "application.supabase.credentials.revealed",
+          resourceType: "application",
+          resourceId: task.payload.instanceId,
+          details: { taskId },
+        });
+      } catch (error) {
+        console.error("Supabase credentials were revealed, but the audit event could not be saved:", error);
+      }
+      respondJson(response, 200, { credentials });
+    } catch (error) {
+      if (error?.code === "CREDENTIALS_UNAVAILABLE") {
+        respondJson(response, 410, { error: error.message });
+        return;
+      }
+      console.error("Could not retrieve one-time Supabase credentials:", error);
+      respondJson(response, 503, { error: "No se pudieron consultar las credenciales de un solo uso." });
+    }
+    return;
+  }
+
   const giteaCredentialsMatch = request.method === "GET"
     && url.pathname.match(/^\/api\/system\/applications\/gitea\/credentials\/([a-f0-9-]{36})$/i);
   if (giteaCredentialsMatch) {
@@ -5106,15 +5148,24 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET") {
       try {
-        const [catalog, instances, nodes, projects] = await Promise.all([
+        const [catalog, instances, nodes, projects, containers] = await Promise.all([
           getApplicationCatalog(),
           getApplicationInstances(),
           dockerGet("/nodes"),
           getProjects(),
+          dockerGet("/containers/json?all=true"),
         ]);
+        const instancesWithRuntime = await Promise.all(instances.map(async (instance) => {
+          if (instance.applicationId !== "supabase") return instance;
+          return {
+            ...instance,
+            runtimeServices: getSupabaseRuntimeServices(instance, containers),
+            credentialsAvailable: await serviceOperationAgent.hasSupabaseCredentials(instance.deploymentTaskId),
+          };
+        }));
         respondJson(response, 200, {
           catalog,
-          instances,
+          instances: instancesWithRuntime,
           servers: nodes.map(mapSwarmNode),
           projects: await getProjectDeploymentState(projects),
         });
@@ -5442,6 +5493,87 @@ const server = createServer(async (request, response) => {
       }
       console.error("Could not save Supabase configuration:", error);
       respondJson(response, 503, { error: "No se pudo guardar la configuración de Supabase." });
+    }
+    return;
+  }
+
+  const supabaseDeployMatch = url.pathname.match(/^\/api\/applications\/supabase\/instances\/([a-f0-9-]{36})\/deploy$/i);
+  if (supabaseDeployMatch) {
+    if (!hasSession(request)) {
+      respondJson(response, 401, { error: "Sesión requerida." });
+      return;
+    }
+    if (request.method !== "POST") {
+      respondJson(response, 405, { error: "Método no permitido." }, { Allow: "POST" });
+      return;
+    }
+    if (!hasSameOrigin(request)) {
+      respondJson(response, 403, { error: "Origen de la solicitud no permitido." });
+      return;
+    }
+    try {
+      const instanceId = supabaseDeployMatch[1];
+      let instance = (await getApplicationInstances("supabase"))
+        .find((candidate) => candidate.id.toLowerCase() === instanceId.toLowerCase());
+      if (!instance) {
+        respondJson(response, 404, { error: "No se encontró la configuración de Supabase." });
+        return;
+      }
+      const info = await dockerGet("/info");
+      if (instance.serverNodeId !== info.Swarm?.NodeID) {
+        respondJson(response, 409, { error: "El agente de instalación solo puede desplegar Supabase en el VPS manager seleccionado." });
+        return;
+      }
+      if (instance.status === "installing") {
+        respondJson(response, 409, { error: "El despliegue de Supabase ya está en curso." });
+        return;
+      }
+      const configuration = validateSupabaseInstanceConfiguration(instance.configuration);
+      const resourceLimitsChanged = Object.entries(configuration.resourceLimits).some(([service, limits]) => {
+        const savedLimits = instance.configuration.resourceLimits?.[service];
+        return savedLimits?.cpus !== limits.cpus || savedLimits?.memoryMb !== limits.memoryMb;
+      });
+      if (resourceLimitsChanged) {
+        instance = await saveApplicationInstanceConfiguration({ ...instance, configuration });
+      }
+      const taskId = randomUUID();
+      if (!await beginSupabaseInstanceDeployment(instance.id, taskId)) {
+        throw new Error("No se pudo reservar la instancia Supabase para el despliegue.");
+      }
+      try {
+        await serviceOperationAgent.stageApplicationDeployment(taskId, {
+          applicationId: "supabase",
+          instanceId: instance.id,
+          applicationName: instance.name,
+          serverNodeId: instance.serverNodeId,
+          configuration,
+        });
+        await createManualApplicationDeployTask({
+          id: taskId,
+          instanceId: instance.id,
+          applicationId: "supabase",
+          applicationName: instance.name,
+        });
+      } catch (error) {
+        await serviceOperationAgent.removeApplicationDeployment(taskId);
+        await updateManualApplicationDeployment(instance.id, taskId, { status: "configured" });
+        throw error;
+      }
+      respondJson(response, 202, {
+        task: { id: taskId, status: "queued" },
+        message: `Se inició el despliegue de Supabase en ${instance.serverHostname}.`,
+      });
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) {
+        respondJson(response, 400, { error: error.message });
+        return;
+      }
+      if (error?.code === "OPERATION_IN_PROGRESS") {
+        respondJson(response, 409, { error: error.message });
+        return;
+      }
+      console.error("Could not start Supabase deployment:", error);
+      respondJson(response, 503, { error: "No se pudo iniciar el despliegue de Supabase." });
     }
     return;
   }

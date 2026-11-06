@@ -76,9 +76,11 @@ const postgresqlStatus = document.querySelector("#postgresql-status");
 const installPostgresqlButton = document.querySelector("#install-postgresql");
 const revealPostgresqlCredentialsButton = document.querySelector("#reveal-postgresql-credentials");
 const postgresqlCredentialsDialog = document.querySelector("#postgresql-credentials-dialog");
+const supabaseCredentialsDialog = document.querySelector("#supabase-credentials-dialog");
 const supabaseStatus = document.querySelector("#supabase-status");
 const supabaseInstancesList = document.querySelector("#supabase-instances");
 const configureSupabaseButton = document.querySelector("#configure-supabase");
+const refreshSupabaseStateButton = document.querySelector("#refresh-supabase-state");
 const supabaseConfigurationDialog = document.querySelector("#supabase-configuration-dialog");
 const supabaseConfigurationForm = document.querySelector("#supabase-configuration-form");
 const supabaseConfigurationStatus = document.querySelector("#supabase-configuration-status");
@@ -3642,6 +3644,71 @@ function renderSupabaseInstances(instances) {
     const detail = document.createElement("div");
     detail.className = "resource-detail";
     detail.textContent = `${instance.serverHostname} · ${instance.status} · API ${instance.configuration.apiDomain} · Studio ${instance.configuration.studioDomain}`;
+    const runtimeServices = instance.runtimeServices ?? [];
+    const enabledServices = runtimeServices.filter((service) => service.enabled);
+    const runningServices = enabledServices.filter((service) => service.running);
+    const summary = document.createElement("div");
+    summary.className = "resource-detail";
+    summary.textContent = `${runningServices.length}/${enabledServices.length} servicios seleccionados corriendo`;
+    const serviceDetails = document.createElement("details");
+    serviceDetails.className = "application-settings";
+    const serviceSummary = document.createElement("summary");
+    const installedCount = enabledServices.filter((service) => service.installed).length;
+    serviceSummary.textContent = `Estado del stack · ${installedCount}/${enabledServices.length} instalados · ${runningServices.length} corriendo`;
+    serviceDetails.open = installedCount > 0;
+    const serviceStatus = document.createElement("p");
+    serviceStatus.className = "application-status";
+    serviceStatus.setAttribute("role", "status");
+    serviceStatus.setAttribute("aria-live", "polite");
+    const partiallyInstalled = installedCount > 0 && runningServices.length < enabledServices.length;
+    serviceStatus.dataset.state = partiallyInstalled
+      ? "warning"
+      : enabledServices.length > 0 && runningServices.length === enabledServices.length
+        ? "success"
+        : "pending";
+    serviceStatus.textContent = partiallyInstalled
+      ? `Aviso: ${enabledServices.length - runningServices.length} de ${enabledServices.length} servicios seleccionados no están corriendo.`
+      : `${runningServices.length} de ${enabledServices.length} servicios seleccionados están corriendo.`;
+    const serviceList = document.createElement("div");
+    serviceList.className = "supabase-runtime-services";
+    for (const service of runtimeServices) {
+      const serviceRow = document.createElement("div");
+      serviceRow.className = "supabase-runtime-service";
+      const serviceName = document.createElement("span");
+      serviceName.className = "supabase-runtime-name";
+      serviceName.textContent = service.id;
+      const serviceState = document.createElement("span");
+      serviceState.className = "supabase-runtime-state";
+      serviceState.dataset.state = !service.enabled
+        ? "disabled"
+        : service.running
+          ? "running"
+          : service.installed
+            ? "stopped"
+            : "missing";
+      serviceState.textContent = !service.enabled
+        ? "Desactivado"
+        : service.running
+          ? `Corriendo (${service.runningContainers}/${service.containers})`
+          : service.installed
+            ? `Instalado, detenido${service.status ? ` · ${service.status}` : ""}`
+            : "No instalado";
+      serviceRow.append(serviceName, serviceState);
+      serviceList.append(serviceRow);
+    }
+    serviceDetails.append(serviceSummary, serviceList);
+    const actions = document.createElement("div");
+    actions.className = "container-heading-actions application-actions";
+    const deploy = document.createElement("button");
+    deploy.className = "button resource-action";
+    deploy.type = "button";
+    deploy.textContent = instance.status === "installing"
+      ? "Desplegando…"
+      : instance.status === "installed"
+        ? "Reaplicar configuración"
+        : "Instalar Supabase";
+    deploy.disabled = instance.status === "installing";
+    deploy.addEventListener("click", () => void deploySupabaseInstance(instance, deploy));
     const edit = document.createElement("button");
     edit.className = "button secondary resource-action";
     edit.type = "button";
@@ -3651,9 +3718,63 @@ function renderSupabaseInstances(instances) {
       fillSupabaseConfigurationForm(instance.serverNodeId);
       supabaseConfigurationDialog.showModal();
     });
-    main.append(name, detail);
-    row.append(main, edit);
+    actions.append(deploy, edit);
+    if (instance.credentialsAvailable && instance.deploymentTaskId) {
+      const revealCredentials = document.createElement("button");
+      revealCredentials.className = "button secondary resource-action";
+      revealCredentials.type = "button";
+      revealCredentials.textContent = "Mostrar credenciales una vez";
+      revealCredentials.addEventListener("click", () =>
+        void revealSupabaseCredentials(instance.deploymentTaskId, revealCredentials));
+      actions.append(revealCredentials);
+    }
+    main.append(name, detail, summary, serviceStatus, serviceDetails, actions);
+    row.append(main);
     supabaseInstancesList.append(row);
+  }
+}
+
+async function deploySupabaseInstance(instance, button) {
+  button.disabled = true;
+  button.textContent = "Iniciando despliegue…";
+  supabaseStatus.textContent = `Preparando el stack de Supabase para ${instance.name}…`;
+  try {
+    const result = await request(
+      `/api/applications/supabase/instances/${encodeURIComponent(instance.id)}/deploy`,
+      { method: "POST" },
+    );
+    supabaseStatus.textContent = result.message;
+    void pollSupabaseDeploymentTask(result.task.id, instance.name);
+  } catch (error) {
+    supabaseStatus.textContent = error.message;
+    button.disabled = false;
+    button.textContent = instance.status === "installed" ? "Reaplicar configuración" : "Instalar Supabase";
+  }
+}
+
+async function pollSupabaseDeploymentTask(taskId, instanceName) {
+  try {
+    const result = await request("/api/system/tasks");
+    const task = result.tasks.find((candidate) => candidate.id === taskId);
+    if (task?.status === "completed") {
+      await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
+      supabaseStatus.textContent = task.result?.message
+        ?? `${instanceName} se desplegó. Consulta el estado de cada servicio en la instalación.`;
+      return;
+    }
+    if (task?.status === "failed") {
+      await Promise.all([loadSupabaseApplications(), loadTaskHistory()]);
+      supabaseStatus.textContent = `No se pudo desplegar ${instanceName}: ${task.error ?? "revisa la tarea para ver el detalle."}`;
+      return;
+    }
+    const { operation } = await request("/api/system/service-operations");
+    supabaseStatus.textContent = operation?.id === taskId && operation.message
+      ? operation.message
+      : `Desplegando ${instanceName} y esperando que los servicios estén disponibles…`;
+    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName), 2500);
+  } catch (error) {
+    supabaseStatus.textContent = `No se pudo consultar el avance del despliegue: ${error.message}`;
+    setTimeout(() => void pollSupabaseDeploymentTask(taskId, instanceName), 5000);
   }
 }
 
@@ -3916,9 +4037,18 @@ function renderSupabaseCatalog(catalog, servers, instances) {
     supabaseServerNodeSelect.append(option);
   }
   configureSupabaseButton.disabled = !entry || readyServers.length === 0;
+  refreshSupabaseStateButton.disabled = !entry;
   renderSupabaseInstances(instances);
+  const runtimeServices = instances.flatMap((instance) => instance.runtimeServices ?? []);
+  const selectedServices = runtimeServices.filter((service) => service.enabled);
+  const installedServices = selectedServices.filter((service) => service.installed);
+  const runningServices = selectedServices.filter((service) => service.running);
   supabaseStatus.textContent = entry
-    ? `${entry.name} ${entry.version}: ${Object.keys(services).length} servicios. ${readyServers.length} VPS activos disponibles; ${instances.length} configuración${instances.length === 1 ? "" : "es"} guardada${instances.length === 1 ? "" : "s"}.`
+    ? `${entry.name} ${entry.version}: ${Object.keys(services).length} servicios en el catálogo. `
+      + (instances.length
+        ? `${installedServices.length}/${selectedServices.length} servicios instalados; ${runningServices.length} corriendo.`
+        : "Aún no hay una instalación configurada.")
+      + ` ${readyServers.length} VPS activos disponibles.`
     : "Supabase no está habilitado en el catálogo.";
 }
 
@@ -3938,6 +4068,7 @@ async function loadSupabaseApplications() {
     renderApplicationDetail(n8nInstances);
   } catch (error) {
     configureSupabaseButton.disabled = true;
+    refreshSupabaseStateButton.disabled = false;
     supabaseStatus.textContent = error.message;
     manualApplicationSubmit.disabled = true;
     manualApplicationsStatus.textContent = error.message;
@@ -4389,6 +4520,32 @@ async function revealPostgresqlCredentials() {
   }
 }
 
+async function revealSupabaseCredentials(taskId, button) {
+  button.disabled = true;
+  try {
+    const { credentials } = await request(
+      `/api/system/applications/supabase/credentials/${encodeURIComponent(taskId)}`,
+    );
+    const fields = {
+      "studio-url": credentials.studioUrl,
+      "api-url": credentials.apiUrl,
+      "dashboard-username": credentials.dashboardUsername,
+      "dashboard-password": credentials.dashboardPassword,
+      "postgres-password": credentials.postgresPassword,
+      "anon-key": credentials.anonKey,
+      "service-role-key": credentials.serviceRoleKey,
+    };
+    for (const [field, value] of Object.entries(fields)) {
+      document.querySelector(`#supabase-credential-${field}`).textContent = value;
+    }
+    supabaseCredentialsDialog.showModal();
+    await loadSupabaseApplications();
+  } catch (error) {
+    supabaseStatus.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
 async function loadResources() {
   refreshButton.disabled = true;
   statusMessage.textContent = "Consultando Docker…";
@@ -4470,6 +4627,11 @@ document.querySelector("#application-detail-delete").addEventListener("click", a
 configureSupabaseButton.addEventListener("click", () => {
   fillSupabaseConfigurationForm(supabaseServerNodeSelect.value);
   supabaseConfigurationDialog.showModal();
+});
+refreshSupabaseStateButton.addEventListener("click", async () => {
+  refreshSupabaseStateButton.disabled = true;
+  supabaseStatus.textContent = "Consultando el estado de los servicios en Docker…";
+  await loadSupabaseApplications();
 });
 supabaseServerNodeSelect.addEventListener("change", () => fillSupabaseConfigurationForm(supabaseServerNodeSelect.value));
 document.querySelector("#close-supabase-configuration").addEventListener("click", () => supabaseConfigurationDialog.close());
@@ -4649,6 +4811,26 @@ document.querySelector("#copy-postgresql-credentials").addEventListener("click",
     postgresqlStatus.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
   } catch (error) {
     postgresqlStatus.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
+  }
+});
+document.querySelector("#close-supabase-credentials").addEventListener("click", () => supabaseCredentialsDialog.close());
+document.querySelector("#copy-supabase-credentials").addEventListener("click", async () => {
+  const fields = [
+    ["Studio", "studio-url"],
+    ["API", "api-url"],
+    ["Usuario del panel", "dashboard-username"],
+    ["Contraseña del panel", "dashboard-password"],
+    ["Contraseña PostgreSQL", "postgres-password"],
+    ["Anon key", "anon-key"],
+    ["Service role key", "service-role-key"],
+  ];
+  const credentials = fields.map(([label, field]) =>
+    `${label}: ${document.querySelector(`#supabase-credential-${field}`).textContent}`).join("\n");
+  try {
+    await navigator.clipboard.writeText(credentials);
+    supabaseStatus.textContent = "Credenciales copiadas. Guárdalas en un gestor seguro.";
+  } catch (error) {
+    supabaseStatus.textContent = `No se pudieron copiar las credenciales: ${error.message}`;
   }
 });
 webUpdateButton.addEventListener("click", startWebUpdate);

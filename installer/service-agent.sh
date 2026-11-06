@@ -659,7 +659,11 @@ elif [[ "${operation}" == "update-project-routes" ]]; then
 elif [[ "${operation}" == "remove-project" ]]; then
   write_status "running" "Validando el retiro del servicio del proyecto."
 elif [[ "${operation}" == "deploy-application" ]]; then
-  write_status "running" "Validando la configuración de la aplicación manual."
+  if [[ "${application_id}" == "supabase" ]]; then
+    write_status "running" "Preparando el stack self-hosted de Supabase."
+  else
+    write_status "running" "Validando la configuración de la aplicación manual."
+  fi
 elif [[ "${operation}" == "remove-application" ]]; then
   write_status "running" "Validando los recursos administrados de la instancia para eliminarlos."
 elif [[ "${operation}" == "enroll-swarm-node" ]]; then
@@ -682,6 +686,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 source /usr/local/libexec/vps-manager-project-deployment-agent.sh
+source /usr/local/libexec/vps-manager-supabase-deployment-agent.sh
 
 if [[ "${operation}" == "configure-registry" ]]; then
   readonly REGISTRY_SERVICE="vps-manager_registry"
@@ -1620,6 +1625,11 @@ fi
 
 if [[ "${operation}" == "deploy-application" ]]; then
   application_config="${STATE_DIRECTORY}/application-deploy-${request_id}.json"
+  if [[ "${application_id}" == "supabase" ]]; then
+    trap 'rm -f -- "${application_config}"' EXIT
+    vps_manager_install_supabase "${application_config}" "${request_id}" "${application_instance_id}"
+    exit 0
+  fi
   temporary_directory=""
   application_secret_names=()
   preserve_application_secrets=false

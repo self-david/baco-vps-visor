@@ -201,6 +201,41 @@ test("queues PostgreSQL installation without credentials and reveals them only o
   }
 });
 
+test("reveals Supabase access credentials once and only accepts public HTTPS URLs", async () => {
+  const fixture = await createFixture();
+  const credentialsPath = join(fixture.directory, `supabase-credentials-${requestId}.json`);
+  try {
+    const credentials = {
+      taskId: requestId,
+      instanceId: secondRequestId,
+      apiUrl: "https://api.example.net",
+      studioUrl: "https://studio.example.net",
+      dashboardUsername: "supabase",
+      dashboardPassword: "a".repeat(32),
+      postgresPassword: "b".repeat(32),
+      anonKey: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.signature",
+      serviceRoleKey: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature",
+    };
+    await writeFile(credentialsPath, JSON.stringify(credentials));
+    assert.equal(await fixture.agent.hasSupabaseCredentials(requestId), true);
+    assert.deepEqual(await fixture.agent.consumeSupabaseCredentials(requestId), {
+      studioUrl: credentials.studioUrl,
+      apiUrl: credentials.apiUrl,
+      dashboardUsername: credentials.dashboardUsername,
+      dashboardPassword: credentials.dashboardPassword,
+      postgresPassword: credentials.postgresPassword,
+      anonKey: credentials.anonKey,
+      serviceRoleKey: credentials.serviceRoleKey,
+    });
+    assert.equal(await fixture.agent.hasSupabaseCredentials(requestId), false);
+    await assert.rejects(fixture.agent.consumeSupabaseCredentials(requestId), {
+      code: "CREDENTIALS_UNAVAILABLE",
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function createFixture(createId = () => requestId) {
   const directory = await mkdtemp(join(tmpdir(), "vps-service-operations-"));
   return {

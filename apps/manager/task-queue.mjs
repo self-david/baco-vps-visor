@@ -642,7 +642,7 @@ export function createProjectDeployHandler(agent, {
 export function createManualApplicationDeployHandler(agent, {
   updateDeployment,
   pollIntervalMs = 1000,
-  maximumDurationMs = 17 * 60 * 1000,
+  maximumDurationMs = 27 * 60 * 1000,
 } = {}) {
   if (!agent || typeof agent.requestApplicationDeploy !== "function"
     || typeof agent.removeApplicationDeployment !== "function"
@@ -678,6 +678,9 @@ export function createManualApplicationDeployHandler(agent, {
             return {
               message: `${applicationName} se desplegó en el VPS principal de Swarm.`,
               serviceId: operation.serviceId,
+              ...(applicationId === "supabase"
+                ? { credentialsAvailable: await agent.hasSupabaseCredentials(task.id) }
+                : {}),
             };
           }
           if (operation.state === "failed") {

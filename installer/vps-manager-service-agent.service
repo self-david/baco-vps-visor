@@ -6,7 +6,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/vps-manager-service-agent
-TimeoutStartSec=15min
+TimeoutStartSec=30min
 UMask=0077
 Environment=HOME=/tmp
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
@@ -16,4 +16,4 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/vps-manager/service-operations /var/lib/vps-manager/registry
+ReadWritePaths=/var/lib/vps-manager/service-operations /var/lib/vps-manager/registry /var/lib/vps-manager/applications /var/lib/vps-manager/supabase

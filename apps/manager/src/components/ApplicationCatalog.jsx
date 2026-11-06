@@ -42,9 +42,9 @@ export default function ApplicationCatalog() {
             <p className="eyebrow">Backend e infraestructura</p>
             <h3 id="application-supabase">Supabase</h3>
           </div>
-          <span className="badge roadmap-badge">Configuración por VPS</span>
+          <span className="badge roadmap-badge">Servicios administrados</span>
         </div>
-        <p className="muted">Define una instalación self-hosted completa por servidor Swarm, con API y Studio bajo dominios HTTPS independientes.</p>
+        <p className="muted">Despliega Supabase en el VPS manager seleccionado. El estado de cada componente se consulta directamente en Docker.</p>
         <ul id="supabase-services" className="roadmap-list">
           <li>Consultando servicios y versiones del catálogo…</li>
         </ul>
@@ -57,6 +57,9 @@ export default function ApplicationCatalog() {
         </p>
         <div id="supabase-instances" className="resource-list"></div>
         <div className="container-heading-actions application-actions">
+          <button id="refresh-supabase-state" className="button secondary resource-action" type="button" disabled>
+            Actualizar estado
+          </button>
           <button id="configure-supabase" className="button resource-action" type="button" disabled>
             Configurar Supabase por servidor
           </button>

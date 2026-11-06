@@ -1096,6 +1096,16 @@ export async function beginApplicationInstanceDeployment(instanceId, taskId) {
   return result.rowCount === 1;
 }
 
+export async function beginSupabaseInstanceDeployment(instanceId, taskId) {
+  const result = await pool.query(`
+    UPDATE application_instances
+    SET status = 'installing', deployment_task_id = $2, updated_at = now()
+    WHERE id = $1 AND application_id = 'supabase'
+    RETURNING id
+  `, [instanceId, taskId]);
+  return result.rowCount === 1;
+}
+
 export async function updateApplicationInstanceDeployment(instanceId, taskId, { status, serviceId = null }) {
   const result = await pool.query(`
     UPDATE application_instances
@@ -1155,7 +1165,8 @@ export async function saveApplicationInstanceConfiguration(instance) {
           name = EXCLUDED.name,
           configuration = EXCLUDED.configuration,
           status = CASE
-            WHEN application_instances.status = 'installed' THEN 'installed'
+            WHEN application_instances.status = 'installed'
+              AND application_instances.configuration = EXCLUDED.configuration THEN 'installed'
             ELSE 'configured'
           END,
           updated_at = now()

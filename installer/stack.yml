@@ -51,6 +51,10 @@ services:
       - --providers.swarm.endpoint=tcp://docker-proxy:2375
       - --providers.swarm.exposedbydefault=false
       - --providers.swarm.network=vps-manager-proxy
+      - --providers.docker=true
+      - --providers.docker.endpoint=tcp://docker-proxy:2375
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=vps-manager-proxy
       - --entrypoints.web.address=:80
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https

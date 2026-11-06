@@ -16,20 +16,35 @@ const resourceServices = [
   "vector",
 ];
 const requiredServices = ["db", "studio", "api-gw", "auth", "rest", "meta"];
+const legacySupabaseMemoryDefaults = {
+  db: 4096,
+  studio: 1024,
+  "api-gw": 512,
+  auth: 512,
+  rest: 512,
+  realtime: 1024,
+  storage: 1024,
+  imgproxy: 512,
+  meta: 256,
+  functions: 2048,
+  supavisor: 1024,
+  analytics: 1024,
+  vector: 512,
+};
 const supabaseDefaults = {
-  db: { cpus: 2, memoryMb: 4096 },
-  studio: { cpus: 1, memoryMb: 1024 },
-  "api-gw": { cpus: 1, memoryMb: 512 },
-  auth: { cpus: 0.5, memoryMb: 512 },
-  rest: { cpus: 0.5, memoryMb: 512 },
-  realtime: { cpus: 1, memoryMb: 1024 },
-  storage: { cpus: 1, memoryMb: 1024 },
-  imgproxy: { cpus: 0.5, memoryMb: 512 },
-  meta: { cpus: 0.25, memoryMb: 256 },
-  functions: { cpus: 1, memoryMb: 2048 },
-  supavisor: { cpus: 1, memoryMb: 1024 },
-  analytics: { cpus: 1, memoryMb: 1024 },
-  vector: { cpus: 0.5, memoryMb: 512 },
+  db: { cpus: 2, memoryMb: 2048 },
+  studio: { cpus: 1, memoryMb: 512 },
+  "api-gw": { cpus: 1, memoryMb: 256 },
+  auth: { cpus: 0.5, memoryMb: 256 },
+  rest: { cpus: 0.5, memoryMb: 256 },
+  realtime: { cpus: 1, memoryMb: 512 },
+  storage: { cpus: 1, memoryMb: 512 },
+  imgproxy: { cpus: 0.5, memoryMb: 256 },
+  meta: { cpus: 0.25, memoryMb: 128 },
+  functions: { cpus: 1, memoryMb: 512 },
+  supavisor: { cpus: 1, memoryMb: 512 },
+  analytics: { cpus: 1, memoryMb: 512 },
+  vector: { cpus: 0.5, memoryMb: 256 },
 };
 
 function isPublicHttpsUrl(value) {
@@ -148,6 +163,21 @@ export function validateSupabaseInstanceConfiguration(input) {
   if (!resourceLimits || typeof resourceLimits !== "object" || Array.isArray(resourceLimits)) {
     throw new TypeError("Los límites de recursos deben declarar todos los servicios de Supabase.");
   }
+  const normalizedResourceLimits = {
+    ...defaults.resourceLimits,
+    ...resourceLimits,
+  };
+  for (const service of resourceServices) {
+    const limits = resourceLimits[service];
+    if (limits && typeof limits === "object" && !Array.isArray(limits)
+      && limits.memoryMb === legacySupabaseMemoryDefaults[service]) {
+      normalizedResourceLimits[service] = {
+        ...defaults.resourceLimits[service],
+        ...limits,
+        memoryMb: defaults.resourceLimits[service].memoryMb,
+      };
+    }
+  }
 
   const configuration = {
     ...defaults,
@@ -156,11 +186,16 @@ export function validateSupabaseInstanceConfiguration(input) {
     apiDomain,
     studioDomain,
     siteUrl,
-    resourceLimits: {
-      ...defaults.resourceLimits,
-      ...resourceLimits,
-    },
+    resourceLimits: normalizedResourceLimits,
   };
+  if (enabledServices.includes("storage")
+    && configuration.enableImageTransformation
+    && !enabledServices.includes("imgproxy")) {
+    throw new TypeError("El procesamiento de imágenes requiere que imgproxy esté seleccionado.");
+  }
+  if (configuration.exposeDatabasePorts && !enabledServices.includes("supavisor")) {
+    throw new TypeError("La exposición pública de PostgreSQL requiere que Supavisor esté seleccionado.");
+  }
   if (!Array.isArray(configuration.additionalRedirectUrls)
     || configuration.additionalRedirectUrls.length > 50
     || !configuration.additionalRedirectUrls.every(isPublicHttpsUrl)) {

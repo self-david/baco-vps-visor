@@ -832,6 +832,17 @@ Logflare/Vector se pueden seleccionar por instalación. Vector requiere Logflare
 El acceso TCP a la base y al pooler está activado inicialmente (puertos 5432 y
 6543); si se habilita, esos puertos deben limitarse mediante el firewall del VPS.
 
+El despliegue obtiene una versión fijada de la configuración oficial, valida los
+límites de memoria contra la capacidad del VPS y usa un perfil inicial compacto
+de 6.528 MiB para ejecutar los 13 servicios en el VPS de 7,8 GiB. Las
+configuraciones guardadas con los límites predeterminados anteriores se migran
+al desplegar, conservando los límites personalizados. Los secretos generados se
+conservan con permisos restringidos. El panel consulta Docker para mostrar por componente
+si está instalado, corriendo, detenido o desactivado; no infiere el estado de
+ejecución a partir de la configuración guardada. Las credenciales iniciales se
+pueden revelar una sola vez. La validación en el VPS de producción sigue pendiente
+hasta contar con permisos administrativos para Docker.
+
 ## 6.5. Instalaciones personalizadas
 
 Permitir instalar stacks propios a partir de configuraciones compatibles con Docker Swarm.
@@ -1861,11 +1872,11 @@ resumen inicial y las secciones funcionales anteriores para saber qué existe.
 - Integrar PostgreSQL opcional, privado y persistente desde el catálogo.
 - Posponer Redis; no se requiere en el alcance actual.
 - Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.
-- Guardar configuración de Supabase self-hosted por VPS, incluyendo dominios, servicios, límites y secretos a generar.
-- Implementar el despliegue Swarm de Supabase, HTTPS y generación/montaje de secretos.
+- [x] Guardar configuración de Supabase self-hosted por VPS, incluyendo dominios, servicios, límites y secretos a generar.
+- [x] Implementar el despliegue de Supabase en Docker con publicación HTTPS y secretos persistentes protegidos.
 - Implementar actualizaciones.
 
-**Resultado:** catálogo de aplicaciones.
+**Resultado:** el catálogo informa el estado instalado y en ejecución de cada componente Supabase. La prueba de instalación en el VPS sigue pendiente de permisos administrativos.
 
 ## Fase 7 — Monitoreo
 

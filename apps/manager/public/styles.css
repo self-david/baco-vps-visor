@@ -63,6 +63,8 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .application-card .eyebrow { margin-bottom: 6px; }
 .application-card > p { margin: 14px 0 0; font-size: .86rem; }
 .application-status { padding-top: 12px; border-top: 1px solid #263247; color: #ffcb75; }
+.application-status[data-state="success"] { color: #9fe2b5; }
+.application-status[data-state="pending"] { color: #aebbd0; }
 .application-domain { margin: 10px 0 0; font-size: .82rem; }
 .application-actions { flex-wrap: wrap; margin-top: 14px; }
 .application-settings { margin-top: 12px; color: #c4cede; font-size: .84rem; }
@@ -74,6 +76,13 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .application-service-selection { display: grid; gap: 8px; }
 .application-service-selection .checkbox-label { align-items: flex-start; }
 .application-service-selection input:disabled { opacity: .65; }
+.supabase-runtime-services { display: grid; gap: 7px; margin-top: 10px; }
+.supabase-runtime-service { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(0, 1.3fr); gap: 12px; align-items: start; padding-top: 7px; border-top: 1px solid #263247; font-size: .8rem; }
+.supabase-runtime-name { color: #c4cede; font-weight: 600; }
+.supabase-runtime-state { color: #9ba8bc; overflow-wrap: anywhere; }
+.supabase-runtime-state[data-state="running"] { color: #9fe2b5; }
+.supabase-runtime-state[data-state="stopped"], .supabase-runtime-state[data-state="missing"] { color: #ffcb75; }
+.supabase-runtime-state[data-state="disabled"] { color: #77869d; }
 .form-stack { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #263247; }
 .form-stack h4 { margin: 0; color: #e1e9f5; font-size: .95rem; }
 .form-stack label { color: #c4cede; font-size: .84rem; }
@@ -435,7 +444,8 @@ textarea { width: 100%; padding: 12px 14px; border: 1px solid #34435b; border-ra
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 
 @media (max-width: 720px) {
-  .topbar { margin-bottom: 32px; }
+  .topbar { margin-bottom: 32px;     .supabase-runtime-service { grid-template-columns: minmax(80px, .65fr) minmax(0, 1.35fr); gap: 8px; }
+  }
   .dashboard-tabs { margin-right: -14px; margin-left: -14px; padding-right: 14px; padding-left: 14px; }
   .topbar, .section-heading, .card-heading { align-items: flex-start; flex-wrap: wrap; }
   .topbar, .section-heading { gap: 14px; }

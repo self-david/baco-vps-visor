@@ -230,6 +230,7 @@ export function createServiceOperationAgent({
   const statusPath = join(directory, "status.json");
   const credentialsPath = (requestId) => join(directory, `gitea-credentials-${requestId}.json`);
   const postgresqlCredentialsPath = (requestId) => join(directory, `postgresql-credentials-${requestId}.json`);
+  const supabaseCredentialsPath = (requestId) => join(directory, `supabase-credentials-${requestId}.json`);
   const projectBuildArchivePath = (requestId) => join(directory, `build-source-${requestId}.zip`);
   const projectBuildStatusPath = (requestId) => join(directory, `project-build-status-${requestId}.json`);
   const applicationDeploymentPath = (requestId) => join(directory, `application-deploy-${requestId}.json`);
@@ -1380,6 +1381,91 @@ export function createServiceOperationAgent({
     }
   }
 
+  async function hasSupabaseCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) return false;
+    const path = supabaseCredentialsPath(requestId);
+    try {
+      const metadata = await lstat(path);
+      if (!metadata.isFile()) throw new Error("The Supabase credential state path must be a regular file.");
+      if (Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        await unlink(path);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
+  async function consumeSupabaseCredentials(requestId) {
+    if (!requestIdPattern.test(requestId ?? "")) {
+      throw new TypeError("A valid Supabase deployment task identifier is required.");
+    }
+    const path = supabaseCredentialsPath(requestId);
+    const claimedPath = `${path}.claimed-${createId()}`;
+    try {
+      await rename(path, claimedPath);
+    } catch (error) {
+      if (isMissing(error)) {
+        const expired = new Error("Las credenciales de un solo uso ya fueron consultadas o expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      throw error;
+    }
+    try {
+      const metadata = await lstat(claimedPath);
+      if (!metadata.isFile() || Date.now() - metadata.mtimeMs > 30 * 60 * 1000) {
+        const expired = new Error("Las credenciales de un solo uso expiraron.");
+        expired.code = "CREDENTIALS_UNAVAILABLE";
+        throw expired;
+      }
+      const credentials = JSON.parse(await readFile(claimedPath, "utf8"));
+      const expectedFields = [
+        "taskId", "instanceId", "apiUrl", "studioUrl", "dashboardUsername",
+        "dashboardPassword", "postgresPassword", "anonKey", "serviceRoleKey",
+      ].sort();
+      const validUrl = (value) => {
+        try {
+          const parsed = new URL(value);
+          return parsed.protocol === "https:" && isPublicHostname(parsed.hostname)
+            && !parsed.username && !parsed.password;
+        } catch {
+          return false;
+        }
+      };
+      if (!credentials || typeof credentials !== "object"
+        || Object.keys(credentials).sort().join(",") !== expectedFields.join(",")
+        || credentials.taskId !== requestId
+        || !requestIdPattern.test(credentials.instanceId ?? "")
+        || !validUrl(credentials.apiUrl)
+        || !validUrl(credentials.studioUrl)
+        || credentials.dashboardUsername !== "supabase"
+        || typeof credentials.dashboardPassword !== "string"
+        || credentials.dashboardPassword.length < 20
+        || typeof credentials.postgresPassword !== "string"
+        || credentials.postgresPassword.length < 20
+        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.anonKey ?? "")
+        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credentials.serviceRoleKey ?? "")) {
+        throw new Error("The Supabase credential file has an invalid format.");
+      }
+      return {
+        studioUrl: credentials.studioUrl,
+        apiUrl: credentials.apiUrl,
+        dashboardUsername: credentials.dashboardUsername,
+        dashboardPassword: credentials.dashboardPassword,
+        postgresPassword: credentials.postgresPassword,
+        anonKey: credentials.anonKey,
+        serviceRoleKey: credentials.serviceRoleKey,
+      };
+    } finally {
+      await unlink(claimedPath).catch((error) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+  }
+
   return {
     getStatus,
     getProjectBuildStatus,
@@ -1387,6 +1473,8 @@ export function createServiceOperationAgent({
     consumeGiteaCredentials,
     hasPostgresqlCredentials,
     consumePostgresqlCredentials,
+    hasSupabaseCredentials,
+    consumeSupabaseCredentials,
     requestRestart: (serviceId, requestId = createId()) =>
       requestOperation("restart-service", serviceId, requestId),
     requestContainerOperation: (operation, serviceId, containerId, requestId = createId()) =>
