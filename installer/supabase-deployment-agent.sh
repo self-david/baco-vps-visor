@@ -77,6 +77,7 @@ vps_manager_install_supabase() {
   local api_container_id
   local credentials_temp_path
   local compose_error
+  local test_mode
 
   if ! command -v git >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 \
     || ! python3 -c 'import yaml' >/dev/null 2>&1; then
@@ -89,6 +90,12 @@ vps_manager_install_supabase() {
   fi
   if [[ ! -r "${staged_config}" || -L "${staged_config}" ]]; then
     write_status "failed" "No se encontró la configuración protegida de Supabase."
+    return 1
+  fi
+  if [[ -L /opt/vps-manager/install.env || ! -r /opt/vps-manager/install.env ]] \
+    || ! test_mode="$(sed -n 's/^VPS_MANAGER_TEST_MODE=//p' /opt/vps-manager/install.env)" \
+    || [[ "${test_mode}" != "true" && "${test_mode}" != "false" ]]; then
+    write_status "failed" "No se pudo determinar de forma segura el modo de enrutamiento del panel."
     return 1
   fi
   if [[ -L "${persistent_credentials_path}" || ( -e "${persistent_credentials_path}" && ! -f "${persistent_credentials_path}" ) ]]; then
@@ -343,7 +350,7 @@ PY
     fi
   done
 
-  if ! python3 - "${temporary_directory}/metadata.json" "${application_directory}" "${compose_project}" "${request_id}" "${instance_id}" "${credentials_temp_path}" <<'PY'
+  if ! python3 - "${temporary_directory}/metadata.json" "${application_directory}" "${compose_project}" "${request_id}" "${instance_id}" "${credentials_temp_path}" "${test_mode}" <<'PY'
 import base64
 import hashlib
 import hmac
@@ -356,7 +363,9 @@ import sys
 import time
 import yaml
 
-metadata_path, application_directory, project, task_id, instance_id, credentials_path = sys.argv[1:]
+metadata_path, application_directory, project, task_id, instance_id, credentials_path, test_mode = sys.argv[1:]
+if test_mode not in {"true", "false"}:
+    raise SystemExit("Invalid VPS Manager routing mode.")
 with open(metadata_path, encoding="utf-8") as metadata_file:
     staged = json.load(metadata_file)
 configuration = staged["configuration"]
@@ -590,15 +599,21 @@ for service_id in service_ids:
         route = f"vps-manager-supabase-{instance_id.replace('-', '')}-{service_id}"
         hostname = configuration["apiDomain"] if service_id == "api-gw" else configuration["studioDomain"]
         port = "8000" if service_id == "api-gw" else "3000"
-        labels.update({
+        route_labels = {
             "traefik.enable": "true",
             "traefik.docker.network": "vps-manager-proxy",
             f"traefik.http.routers.{route}.rule": f"Host(`{hostname}`)",
-            f"traefik.http.routers.{route}.entrypoints": "websecure",
-            f"traefik.http.routers.{route}.tls": "true",
-            f"traefik.http.routers.{route}.tls.certresolver": "vpsmanager",
             f"traefik.http.services.{route}.loadbalancer.server.port": port,
-        })
+        }
+        if test_mode == "true":
+            route_labels[f"traefik.http.routers.{route}.entrypoints"] = "web"
+        else:
+            route_labels.update({
+                f"traefik.http.routers.{route}.entrypoints": "websecure",
+                f"traefik.http.routers.{route}.tls": "true",
+                f"traefik.http.routers.{route}.tls.certresolver": "vpsmanager",
+            })
+        labels.update(route_labels)
     service["labels"] = labels
     if service_id == "storage":
         environment = service.setdefault("environment", {})

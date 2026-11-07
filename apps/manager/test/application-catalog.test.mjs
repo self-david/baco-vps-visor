@@ -62,6 +62,20 @@ test("Supabase source files are readable in containers despite the service agent
   assert.match(agent, /Docker Compose no pudo iniciar el stack self-hosted de Supabase\. Detalle:/);
 });
 
+test("Supabase routes use the active Traefik provider and mode-specific entrypoint", async () => {
+  const [agent, testStack] = await Promise.all([
+    readFile(new URL("../../../installer/supabase-deployment-agent.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../installer/stack.test.yml", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(testStack, /--providers\.docker=true/);
+  assert.match(testStack, /--providers\.docker\.endpoint=tcp:\/\/docker-proxy:2375/);
+  assert.match(testStack, /--providers\.docker\.network=vps-manager-proxy/);
+  assert.match(agent, /test_mode="\$\(sed -n 's\/\^VPS_MANAGER_TEST_MODE=\/\/p' \/opt\/vps-manager\/install\.env\)"/);
+  assert.match(agent, /if test_mode == "true":[\s\S]*?route_labels\[f"[^"]+entrypoints"\] = "web"/);
+  assert.match(agent, /else:[\s\S]*?f"[^"]+entrypoints": "websecure"[\s\S]*?f"[^"]+tls": "true"[\s\S]*?f"[^"]+tls\.certresolver": "vpsmanager"/);
+});
+
 test("Ubuntu 24.04 compatibility checks warn and continue in both installation flows", async () => {
   const [installer, nodeEnrollment] = await Promise.all([
     readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
