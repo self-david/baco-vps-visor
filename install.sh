@@ -5,7 +5,7 @@ readonly INSTALL_DIR="/opt/vps-manager"
 readonly STACK_NAME="vps-manager"
 readonly DEFAULT_REPOSITORY_URL="https://github.com/self-david/baco-vps-visor.git"
 readonly DEFAULT_GITHUB_REPOSITORY="self-david/baco-vps-visor"
-readonly RELEASE_REF="v0.1.0"
+readonly RELEASE_REF="v0.2.6"
 
 ADMIN_PASSWORD_INPUT="${VPS_MANAGER_ADMIN_PASSWORD:-}"
 unset VPS_MANAGER_ADMIN_PASSWORD

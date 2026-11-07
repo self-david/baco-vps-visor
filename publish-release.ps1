@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repositoryDirectory = $PSScriptRoot
 $versionFile = Join-Path $repositoryDirectory "apps\manager\VERSION"
+$installerFile = Join-Path $repositoryDirectory "install.sh"
 
 function Invoke-Git {
   param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -50,6 +51,9 @@ if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
 if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
   throw "Could not find apps\manager\VERSION in $repositoryDirectory."
 }
+if (-not (Test-Path -LiteralPath $installerFile -PathType Leaf)) {
+  throw "Could not find install.sh in $repositoryDirectory."
+}
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   throw "Could not find git in PATH."
 }
@@ -72,6 +76,14 @@ if (-not (Test-GitAncestor -Ancestor "origin/main" -Commit "HEAD")) {
 $currentVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 if ($currentVersion -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
   throw "apps\manager\VERSION does not contain a valid stable semver version: '$currentVersion'."
+}
+$installerContent = Get-Content -LiteralPath $installerFile -Raw
+$releaseRefMatch = [regex]::Match(
+  $installerContent,
+  '(?m)^readonly RELEASE_REF="v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"(?=\r?$)'
+)
+if (-not $releaseRefMatch.Success) {
+  throw "install.sh does not contain a valid stable RELEASE_REF."
 }
 if ([version]$Version -lt [version]$currentVersion) {
   throw "Requested version ($Version) cannot be lower than apps\manager\VERSION ($currentVersion)."
@@ -100,10 +112,26 @@ if ([version]$Version -le $highestVersion) {
   throw "Version must be greater than the highest existing tag ($highestVersion)."
 }
 
+$releasePreparationFiles = @()
 if ([version]$Version -gt [version]$currentVersion) {
   Set-Content -LiteralPath $versionFile -Value $Version -NoNewline -Encoding ascii
-  Invoke-Git -Arguments @("add", "--", "apps/manager/VERSION") | Out-Null
-  Invoke-Git -Arguments @("commit", "-m", "chore: prepare release $tag") | Out-Null
+  $releasePreparationFiles += "apps/manager/VERSION"
+}
+$releaseRefLine = 'readonly RELEASE_REF="v{0}"' -f $Version
+if ($releaseRefMatch.Value -cne $releaseRefLine) {
+  $updatedInstallerContent = $installerContent.Replace($releaseRefMatch.Value, $releaseRefLine)
+  [System.IO.File]::WriteAllText($installerFile, $updatedInstallerContent, [System.Text.UTF8Encoding]::new($false))
+  $releasePreparationFiles += "install.sh"
+}
+if ($releasePreparationFiles.Count -gt 0) {
+  Invoke-Git -Arguments (@("add", "--") + $releasePreparationFiles) | Out-Null
+  Invoke-Git -Arguments @(
+    "commit",
+    "-m",
+    "chore: prepare release $tag",
+    "-m",
+    "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+  ) | Out-Null
 }
 Invoke-Git -Arguments @("push", "origin", "HEAD:main") | Out-Null
 Invoke-Git -Arguments @("tag", "-a", $tag, "-m", "Release $tag") | Out-Null

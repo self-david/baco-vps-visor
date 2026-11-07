@@ -16,6 +16,19 @@ test("project deployment configuration parser imports its fingerprint dependency
   assert.match(parser[1], /^import hashlib$/m);
 });
 
+test("the bootstrap installer and release publisher stay pinned to the current release", async () => {
+  const [version, installer, publisher] = await Promise.all([
+    readFile(new URL("../VERSION", import.meta.url), "utf8"),
+    readFile(new URL("../../../install.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../../publish-release.ps1", import.meta.url), "utf8"),
+  ]);
+  const tag = `v${version.trim()}`;
+
+  assert.match(installer, new RegExp(`^readonly RELEASE_REF="${tag}"$`, "m"));
+  assert.match(publisher, /releaseRefLine = 'readonly RELEASE_REF="v\{0\}"' -f \$Version/);
+  assert.match(publisher, /\$releasePreparationFiles \+= "install\.sh"/);
+});
+
 test("the project service agent can reach external registries inside its systemd sandbox", async () => {
   const serviceUnit = await readFile(
     new URL("../../../installer/vps-manager-service-agent.service", import.meta.url),

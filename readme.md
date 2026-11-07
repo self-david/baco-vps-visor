@@ -2,7 +2,7 @@
 ## Plataforma propia de instalación, administración y despliegue de infraestructura Docker Swarm
 
 **Estado:** Implementación incremental; requiere validación en un VPS antes de producción
-**Versión:** 0.1.0
+**Versión:** 0.2.6
 **Sistema operativo objetivo:** Ubuntu Server 24.04 LTS  
 **Arquitectura:** panel y servicios administrados con Docker Swarm; los builds y servicios de proyectos se ejecutan localmente en el nodo manager.
 **Tipo de proyecto:** panel propio para administrar un VPS y publicar proyectos web.
@@ -286,6 +286,20 @@ Desde la raíz del checkout en Ubuntu 24.04, ejecuta:
 sudo bash install.sh
 ```
 
+Para una instalación nueva desde un servidor sin checkout local, usa el instalador
+de la release estable correspondiente. Este descarga el mismo tag de código que
+el instalador y evita arrancar con una versión inicial antigua:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/self-david/baco-vps-visor/main/install.sh | sudo bash
+```
+
+El dominio del panel debe resolver al VPS y los puertos TCP 80/443 deben estar
+permitidos por el firewall del proveedor. El instalador solicita el dominio,
+correo de Let's Encrypt y contraseña administrativa. En VPS domésticos o sin
+IPv4 pública, instala en una red privada con `VPS_MANAGER_TEST_MODE=true` y
+configura después Cloudflare Tunnel desde el panel.
+
 El instalador solicitará dominio, correo de Let's Encrypt y contraseña usando el terminal (`/dev/tty`), aunque el propio script llegue por una tubería `curl | sudo bash`. Para uso no interactivo se pueden definir `VPS_MANAGER_DOMAIN`, `VPS_MANAGER_EMAIL`, `VPS_MANAGER_ADMIN_PASSWORD` y, si la detección automática de red no aplica, `VPS_MANAGER_ADVERTISE_ADDR`. Nunca pases la contraseña como argumento de línea de comandos.
 
 Diagnóstico, actualización y desinstalación:
@@ -315,7 +329,7 @@ En una instalación existente, actualiza una vez por SSH con `sudo vps-manager-u
 
 El actualizador host obtiene la última release estable y requiere que tenga el asset `vps-manager-source.tar.gz` con un digest SHA-256 publicado por GitHub. Verifica ese digest, valida las rutas del archivo y que `apps/manager/VERSION` coincida con el tag antes de ejecutar el instalador. Antes de actualizar crea un respaldo cifrado de PostgreSQL con la clave Swarm ya configurada; después reconstruye la imagen, actualiza el servicio del panel con orden `start-first` para reducir la ventana sin router y valida tres veces consecutivas la raíz, los assets estáticos y `/api/health`. El instalador espera a que cada servicio alcance su propio número deseado de réplicas. Ante un fallo intenta solicitar a Swarm rollback del servicio manager. PostgreSQL y los volúmenes/secretos persistentes no se eliminan.
 
-La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto ya está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador descarga el tag inicial `v0.1.0`. Si todavía no hay tags ni releases, publica primero `v0.1.0`; después, los tags/releases posteriores habilitarán la detección y actualización.
+La release debe ser pública y publicarse mediante el workflow `.github/workflows/release.yml`, que exige un tag estable `vX.Y.Z` igual al contenido de `apps/manager/VERSION` y adjunta el archivo fuente al release de GitHub. El proyecto está configurado para `self-david/baco-vps-visor`; durante la instalación se guarda ese repositorio en `/opt/vps-manager/install.env`. El instalador remoto fija el tag de código en `RELEASE_REF` dentro de `install.sh`; `publish-release.ps1` actualiza ese tag junto con la versión al preparar cada release. Si alojas una copia de `install.sh` para usarla por `curl`, vuelve a publicar el archivo actualizado con cada release para que el tag de arranque coincida.
 
 ##### Crear y publicar una release desde PowerShell
 
@@ -347,13 +361,13 @@ La desinstalación conserva los secretos y los datos persistentes de Traefik y P
 
 #### Publicación para el comando `curl`
 
-El repositorio predeterminado es `https://github.com/self-david/baco-vps-visor.git`. Para habilitar una instalación remota estable con `curl`, primero publica el tag inicial y aloja `install.sh`:
+El repositorio predeterminado es `https://github.com/self-david/baco-vps-visor.git`. Para habilitar una instalación remota con `curl`, publica la release estable y aloja el `install.sh` de esa misma versión:
 
-1. Crea y publica el tag `v0.1.0`, cuyo archivo `apps/manager/VERSION` debe contener `0.1.0`.
+1. Prepara la release con `.\publish-release.ps1 X.Y.Z`; el script sincroniza `apps/manager/VERSION` y el `RELEASE_REF` del instalador.
 2. Publica el `install.sh` de ese tag en la ruta `https://mipagina.com/install.sh`.
 3. Configura el DNS del dominio del panel y permite TCP 80/443 para el modo de producción.
 
-El servidor remoto descarga el código desde el repositorio configurado; alojar solo `install.sh` no basta. Después de completar esos pasos, los usuarios podrán ejecutar:
+El servidor remoto descarga el código del tag fijado por `RELEASE_REF`; alojar solo `install.sh` no basta. Después de completar esos pasos, los usuarios podrán ejecutar:
 
 ```bash
 curl -fsSL https://mipagina.com/install.sh | sudo bash
@@ -666,6 +680,59 @@ guardadas y vuelve a crear el conector utilizando las credenciales protegidas.
 La primera configuración todavía requiere conectar una cuenta y una zona
 Cloudflare desde el panel; sin esas credenciales no se puede autorizar un túnel.
 
+#### Enrutamiento de Supabase
+
+Supabase se despliega como un proyecto Docker Compose cuyos contenedores no son
+servicios Swarm. Por eso Traefik necesita ambos proveedores: el proveedor Swarm
+para los servicios del panel y el proveedor Docker para los contenedores Compose.
+El proveedor Docker mantiene `exposedByDefault=false`; solo publica `api-gw` y
+`studio`, que tienen etiquetas explícitas `traefik.enable=true`, su red proxy y
+el puerto interno correspondiente. No se publican puertos web de Supabase en el
+host.
+
+Las rutas de Supabase se generan según el modo persistido de la instalación:
+
+- **Producción:** routers `websecure`, TLS y el resolver de certificados
+  `vpsmanager`.
+- **Modo de prueba:** router `web` por HTTP en la red privada; si se usa
+  Cloudflare Tunnel, el usuario sigue entrando por HTTPS y el conector llega al
+  origen privado `vps-manager_traefik:80`.
+
+No cambies manualmente etiquetas ni abras puertos para corregir rutas. Para una
+instalación nueva, instala una release que incluya esta lógica (actualmente
+`v0.2.6`). Para actualizar una instalación anterior, usa **Sistema → Actualizar
+desde el panel** y, cuando el panel vuelva a estar disponible, abre
+**Aplicaciones → Supabase → Reaplicar** en cada instancia existente. Reaplicar
+actualiza el Compose y sus etiquetas sin eliminar volúmenes ni datos. No borres
+ni reinstales la instancia para resolver un 404 de enrutamiento.
+
+#### Diagnóstico de una URL de Supabase
+
+1. Confirma en Aplicaciones que la instancia está instalada y que `api-gw` y
+   `studio` aparecen ejecutándose.
+2. Prueba `https://<dominio-studio>/`; Studio puede redirigir a
+   `/project/default`, que debe cargar.
+3. La ruta `https://<dominio-api>/auth/v1/health` sin credencial puede responder
+   `401 Unauthorized`: esto confirma que la petición llegó a Kong/Auth, no que
+   el hostname siga sin ruta. Para validar el uso autenticado, usa las
+   credenciales de la instancia desde su página de detalles y no las compartas
+   ni las pegues en logs o reportes.
+4. Si recibes `404`, abre **Docker → Logs** y consulta `vps-manager_traefik`.
+   Busca routers con nombres que comienzan con
+   `vps-manager-supabase-<id-sin-guiones>-api-gw@docker` y
+   `...-studio@docker`. Un registro de acceso con `@docker` demuestra que
+   Traefik seleccionó el router Docker; si no existen routers, verifica que se
+   haya aplicado la versión y ejecuta **Reaplicar** desde el panel.
+5. Si Traefik muestra `Router uses a nonexistent certificate resolver`, revisa
+   que la instalación y la instancia usen el mismo modo: producción usa
+   `websecure`/`vpsmanager`; modo de prueba usa `web` y no debe solicitar un
+   certificado local.
+
+La respuesta pública de una ruta HTTP puede cambiar según su autenticación; la
+prueba operativa es que Studio cargue y que los logs de Traefik asignen las
+peticiones al router y servicio Supabase esperados. No es necesario reiniciar
+Cloudflare Tunnel si su conector está activo y los demás hostnames enrutan bien.
+
 Traefik solicita certificados mediante el desafío HTTP de Let's Encrypt. El
 proxy de Cloudflare es opcional; si se activa, configura el modo SSL/TLS de
 Cloudflare como Full (strict).
@@ -768,7 +835,7 @@ Permitir instalar aplicaciones completas sin escribir manualmente sus configurac
 
 Cada aplicación tendrá una plantilla de instalación. El formato inicial implementado está versionado y describe una imagen Docker con etiqueta o digest explícito y sus variables de entorno configurables. Las variables declaran nombre, etiqueta, descripción, obligatoriedad y si son secretas; las plantillas no pueden incluir valores predeterminados para variables secretas.
 
-Esta primera versión se limita intencionalmente a aplicaciones de un contenedor y no admite puertos publicados, volúmenes, comandos arbitrarios, recursos ni healthchecks configurables. Esas capacidades y las aplicaciones multicontenedor requieren extensiones posteriores del formato y validación específica antes de poder instalarse.
+Esta primera versión se limita intencionalmente a plantillas genéricas de un contenedor y no admite puertos publicados, volúmenes, comandos arbitrarios, recursos ni healthchecks configurables. Supabase es una excepción con un flujo específico multicontenedor, configuración validada y recursos persistentes administrados; no se instala mediante la plantilla genérica.
 
 ## 6.2. Aplicaciones iniciales
 
@@ -1904,9 +1971,11 @@ resumen inicial y las secciones funcionales anteriores para saber qué existe.
 - Evaluar MinIO solo si una aplicación o los backups requieren almacenamiento de objetos.
 - [x] Guardar configuración de Supabase self-hosted por VPS, incluyendo dominios, servicios, límites y secretos a generar.
 - [x] Implementar el despliegue de Supabase en Docker con publicación HTTPS y secretos persistentes protegidos.
-- Implementar actualizaciones.
+- [x] Enrutar Studio y API mediante Traefik en producción y en modo de prueba; incluir los proveedores Swarm y Docker necesarios.
+- [x] Permitir reaplicar la configuración de una instancia desde el panel sin eliminar sus volúmenes.
+- Automatizar actualizaciones de versiones upstream de Supabase.
 
-**Resultado:** el catálogo informa el estado instalado y en ejecución de cada componente Supabase. La prueba de instalación en el VPS sigue pendiente de permisos administrativos.
+**Validación VPS:** una instalación con 10/10 servicios seleccionados quedó en ejecución; Studio cargó detrás de Cloudflare Tunnel y el endpoint de Auth respondió `401` sin credenciales, confirmando que el router llegó al API Gateway. La versión `0.2.6` corrige el proveedor Docker de Traefik en modo de prueba y selecciona `web` en vez del resolver TLS de producción. Las versiones upstream aún se actualizan manualmente.
 
 ## Fase 7 — Monitoreo
 
